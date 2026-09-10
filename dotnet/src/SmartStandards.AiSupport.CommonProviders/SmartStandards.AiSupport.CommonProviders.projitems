@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>cf0a161a-99ba-4f01-af5e-16c6fcbc85ae</SharedGUID>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <Import_RootNamespace>AI.SmartStandards</Import_RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\CheapPromptingUIBackend.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\FileBasedPromtingSessionStore.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedCodeArtifactMap.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\AggregatedKnowledgeRepository.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\GitBasedKnowledgeRepository.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedKnowledgeRepository.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedPromtLibrary.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\OpenAiLLMConnector.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)UjmwSupport\DynamicAiServiceFactory.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)[Helpers]\XmlCommentAccessExtensions.cs" />
+  </ItemGroup>
+</Project>
