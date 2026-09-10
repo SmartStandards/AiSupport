@@ -51,7 +51,9 @@ namespace AI.SmartStandards.DemoWebService {
       );
 
 
-
+      services.AddSingleton<IJoplinSyncStateStore>(
+        new FileBasedJoplinSyncStateStore("C:\\Temp\\Joplin")
+      );
 
 
 
@@ -80,10 +82,10 @@ namespace AI.SmartStandards.DemoWebService {
       IWebHostEnvironment environment, IHostApplicationLifetime lifetime
     ) {
 
+      app.UseAmbientFieldAdapterMiddleware();
+
       //required for the www-root
       app.UseStaticFiles();
-
-      app.UseAmbientFieldAdapterMiddleware();
 
       if (!config.GetValue<bool>("ProdMode")) {
         app.UseDeveloperExceptionPage();
