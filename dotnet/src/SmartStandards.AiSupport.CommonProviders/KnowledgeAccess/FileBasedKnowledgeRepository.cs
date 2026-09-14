@@ -14,11 +14,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// containing an arbitrary hierarchy of directories and Markdown files.
   /// 
   /// The configured directory itself represents the logical repository root "/".
-  /// Directories are exposed as <see cref="ContentLevel.ContentAggregation"/> areas.
-  /// Markdown files are exposed as <see cref="ContentLevel.ContentContainer"/> areas
-  /// whose logical names are enclosed in square brackets. Markdown headings below a
+  /// Directories are exposed with square brackets in their logical area segment.
+  /// A directory is <see cref="ContentLevel.ContentAggregation"/> only when it contains
+  /// at least one Markdown file directly on that directory level. A directory without
+  /// direct Markdown files is <see cref="ContentLevel.BeyondContent"/> and therefore acts
+  /// as a pure navigation node.
+  /// 
+  /// Markdown files are exposed as unbracketed
+  /// <see cref="ContentLevel.ContentContainer"/> areas. Markdown headings below a
   /// document are exposed as additional <see cref="ContentLevel.ContentContainer"/>
   /// areas.
+  /// 
+  /// Directory aggregation is deliberately limited to one physical directory level.
+  /// Subdirectories are exposed as separate bracketed navigation areas and are never
+  /// recursively folded into the aggregated Markdown content of their parent directory.
   /// 
   /// Files other than Markdown files are not exposed as knowledge areas. They are
   /// therefore ignored by content enumeration and content reads. Directory rename
@@ -293,7 +302,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Returns only the direct textual content owned by the specified area.
     /// 
-    /// Directories are content aggregations and therefore return an empty string.
+    /// Directory areas never own direct content and therefore return an empty string,
+    /// regardless of whether the concrete directory is BeyondContent or ContentAggregation.
     /// A Markdown document returns its preamble before the first heading. A Markdown
     /// heading returns the text belonging to that heading before its first child heading.
     /// </summary>
@@ -313,11 +323,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// its complete subordinate heading tree. The addressed heading itself is not emitted
     /// as framing; descendants are rebased relative to the requested area.
     /// 
-    /// For a directory aggregation, the result is a deterministic Markdown projection of
-    /// all exposed descendant directories and documents. Directory children are rendered
-    /// as headings using their logical name. Markdown document children are rendered as
-    /// headings whose names are enclosed in square brackets. This projection allows a
-    /// structured aggregate to be understood without leaking physical paths.
+    /// For a directory aggregation, the result contains only Markdown documents located
+    /// directly in that directory. Every direct document is rendered as one level-one
+    /// section. Subdirectories are not recursively aggregated; they remain independent
+    /// bracketed navigation areas that must be entered explicitly.
     /// </summary>
     public string GetAggregatedContent(string area) {
       lock (_SyncRoot) {
@@ -331,7 +340,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         if (descriptor.Kind == AreaKind.Root || descriptor.Kind == AreaKind.Directory) {
           StringBuilder aggregationBuilder = new StringBuilder();
-          this.RenderAggregationChildren(descriptor, aggregationBuilder, 1, null);
+          this.RenderDirectDocumentAggregation(
+            descriptor,
+            aggregationBuilder
+          );
           return aggregationBuilder.ToString();
         }
 
@@ -389,8 +401,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Atomically creates one direct child area.
     /// 
-    /// Below a directory aggregation, an unbracketed name creates a subdirectory and a
-    /// name enclosed in square brackets creates a Markdown document.
+    /// Below a directory area, a name enclosed in square brackets creates a
+    /// subdirectory while an unbracketed name creates a Markdown document.
     /// 
     /// Below a Markdown document or heading container, the name creates a new subordinate
     /// Markdown heading appended after all existing direct child headings.
@@ -413,8 +425,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// 
     /// On a directory content aggregation, free root text is invalid because aggregation
     /// areas own no direct content. Incoming heading structure is interpreted as logical
-    /// subordinate areas. Unbracketed headings represent directory aggregation areas;
-    /// bracketed headings represent Markdown document containers. Once a document
+    /// subordinate areas. Bracketed headings represent directory areas; unbracketed
+    /// headings represent Markdown document containers. Once a document
     /// container is reached, subordinate headings represent content-container sections
     /// inside that document.
     /// 
@@ -438,9 +450,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// For a heading, its direct content and subordinate headings are removed while the
     /// addressed heading itself remains present.
     /// 
-    /// For a directory aggregation, all exposed direct sub-areas are removed. Direct
-    /// non-Markdown files that are not themselves exposed as knowledge areas remain
-    /// untouched.
+    /// For a directory aggregation, all Markdown documents located directly in that
+    /// directory are removed. Subdirectories are independent navigation scopes and are
+    /// preserved. Non-Markdown files remain untouched.
     /// </summary>
     public bool TryTruncate(string area) {
       return this.ExecuteMutation(
@@ -573,38 +585,27 @@ namespace AI.SmartStandards.KnowledgeAccess {
       string normalizedArea = this.NormalizeAreaPath(area);
 
       if (normalizedArea == _RootArea) {
-        return AreaDescriptor.CreateRoot(_RootDirectory);
+        return AreaDescriptor.CreateRoot(
+          _RootDirectory,
+          this.GetDirectoryContentLevel(_RootDirectory)
+        );
       }
 
       string[] segments = normalizedArea
         .Split('/', StringSplitOptions.RemoveEmptyEntries);
 
-      AreaDescriptor current = AreaDescriptor.CreateRoot(_RootDirectory);
+      AreaDescriptor current = AreaDescriptor.CreateRoot(
+        _RootDirectory,
+        this.GetDirectoryContentLevel(_RootDirectory)
+      );
 
       foreach (string segment in segments) {
         if (current.Kind == AreaKind.Root || current.Kind == AreaKind.Directory) {
-          if (this.IsDocumentSegment(segment)) {
-            string documentName = this.DecodeAreaSegment(segment.Substring(1, segment.Length - 2));
-            string documentPath = this.GetSafePhysicalChildPath(
-              current.PhysicalPath,
-              documentName,
-              _MarkdownExtension
+          if (this.IsDirectorySegment(segment)) {
+            string directoryName = this.DecodeAreaSegment(
+              segment.Substring(1, segment.Length - 2)
             );
 
-            if (!File.Exists(documentPath)) {
-              throw new InvalidOperationException("The knowledge area does not exist: " + normalizedArea);
-            }
-
-            MarkdownDocumentModel document = this.LoadDocument(documentPath, context);
-            current = AreaDescriptor.CreateDocument(
-              this.CombineAreaPath(current.AreaPath, this.CreateDocumentSegment(documentName)),
-              documentName,
-              documentPath,
-              document
-            );
-          }
-          else {
-            string directoryName = this.DecodeAreaSegment(segment);
             string directoryPath = this.GetSafePhysicalChildPath(
               current.PhysicalPath,
               directoryName,
@@ -612,13 +613,45 @@ namespace AI.SmartStandards.KnowledgeAccess {
             );
 
             if (!Directory.Exists(directoryPath)) {
-              throw new InvalidOperationException("The knowledge area does not exist: " + normalizedArea);
+              throw new InvalidOperationException(
+                "The knowledge area does not exist: " + normalizedArea
+              );
             }
 
             current = AreaDescriptor.CreateDirectory(
-              this.CombineAreaPath(current.AreaPath, this.EncodeAreaSegment(directoryName)),
+              this.CombineAreaPath(
+                current.AreaPath,
+                this.CreateDirectorySegment(directoryName)
+              ),
               directoryName,
-              directoryPath
+              directoryPath,
+              this.GetDirectoryContentLevel(directoryPath)
+            );
+          }
+          else {
+            string documentName = this.DecodeAreaSegment(segment);
+            string documentPath = this.GetSafePhysicalChildPath(
+              current.PhysicalPath,
+              documentName,
+              _MarkdownExtension
+            );
+
+            if (!File.Exists(documentPath)) {
+              throw new InvalidOperationException(
+                "The knowledge area does not exist: " + normalizedArea
+              );
+            }
+
+            MarkdownDocumentModel document = this.LoadDocument(documentPath, context);
+
+            current = AreaDescriptor.CreateDocument(
+              this.CombineAreaPath(
+                current.AreaPath,
+                this.EncodeAreaSegment(documentName)
+              ),
+              documentName,
+              documentPath,
+              document
             );
           }
 
@@ -705,8 +738,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       if (descriptor.Kind == AreaKind.Directory) {
-        if (this.IsDocumentSegment(newName)) {
-          return false;
+        string directoryName = newName.Trim();
+
+        if (this.IsDirectorySegment(directoryName)) {
+          directoryName = directoryName.Substring(
+            1,
+            directoryName.Length - 2
+          );
         }
 
         string parentDirectory = Path.GetDirectoryName(descriptor.PhysicalPath);
@@ -715,15 +753,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        string normalizedNewName = newName.Trim();
-
-        if (!this.IsValidPhysicalName(normalizedNewName)) {
+        if (!this.IsValidPhysicalName(directoryName)) {
           return false;
         }
 
         string targetPath = this.GetSafePhysicalChildPath(
           parentDirectory,
-          normalizedNewName,
+          directoryName,
           string.Empty
         );
 
@@ -737,13 +773,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       if (descriptor.Kind == AreaKind.Document) {
-        string documentName = newName;
+        string documentName = newName.Trim();
 
-        if (this.IsDocumentSegment(newName)) {
-          documentName = newName.Substring(1, newName.Length - 2);
+        if (this.IsDirectorySegment(documentName)) {
+          return false;
         }
-
-        documentName = documentName.Trim();
 
         if (string.IsNullOrWhiteSpace(documentName)) {
           return false;
@@ -810,49 +844,53 @@ namespace AI.SmartStandards.KnowledgeAccess {
       AreaDescriptor descriptor = this.ResolveArea(area, context);
 
       if (descriptor.Kind == AreaKind.Root || descriptor.Kind == AreaKind.Directory) {
-        if (this.IsDocumentSegment(name)) {
-          string documentName = name.Substring(1, name.Length - 2).Trim();
+        if (this.IsDirectorySegment(name)) {
+          string directoryName = name.Substring(
+            1,
+            name.Length - 2
+          ).Trim();
 
-          if (string.IsNullOrWhiteSpace(documentName)) {
+          if (!this.IsValidPhysicalName(directoryName)) {
             return false;
           }
 
-          if (!this.IsValidPhysicalName(documentName)) {
-            return false;
-          }
-
-          string documentPath = this.GetSafePhysicalChildPath(
+          string directoryPath = this.GetSafePhysicalChildPath(
             descriptor.PhysicalPath,
-            documentName,
-            _MarkdownExtension
+            directoryName,
+            string.Empty
           );
 
-          if (File.Exists(documentPath) || Directory.Exists(documentPath)) {
+          if (Directory.Exists(directoryPath) || File.Exists(directoryPath)) {
             return false;
           }
 
-          File.WriteAllText(documentPath, string.Empty, new UTF8Encoding(false));
-          context.ForgetDocument(documentPath);
+          Directory.CreateDirectory(directoryPath);
           return true;
         }
 
-        string directoryName = name.Trim();
+        string documentName = name.Trim();
 
-        if (!this.IsValidPhysicalName(directoryName)) {
+        if (!this.IsValidPhysicalName(documentName)) {
           return false;
         }
 
-        string directoryPath = this.GetSafePhysicalChildPath(
+        string documentPath = this.GetSafePhysicalChildPath(
           descriptor.PhysicalPath,
-          directoryName,
-          string.Empty
+          documentName,
+          _MarkdownExtension
         );
 
-        if (Directory.Exists(directoryPath) || File.Exists(directoryPath)) {
+        if (File.Exists(documentPath) || Directory.Exists(documentPath)) {
           return false;
         }
 
-        Directory.CreateDirectory(directoryPath);
+        File.WriteAllText(
+          documentPath,
+          string.Empty,
+          new UTF8Encoding(false)
+        );
+
+        context.ForgetDocument(documentPath);
         return true;
       }
 
@@ -942,13 +980,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       if (descriptor.Kind == AreaKind.Root || descriptor.Kind == AreaKind.Directory) {
-        string[] directDirectories = Directory.GetDirectories(descriptor.PhysicalPath);
-
-        foreach (string directory in directDirectories) {
-          context.ForgetDocumentsBelow(directory);
-          Directory.Delete(directory, true);
-        }
-
         string[] markdownFiles = Directory.GetFiles(
           descriptor.PhysicalPath,
           "*" + _MarkdownExtension,
@@ -956,6 +987,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
         );
 
         foreach (string markdownFile in markdownFiles) {
+          if (this.IsReparsePoint(markdownFile)) {
+            continue;
+          }
+
           context.ForgetDocument(markdownFile);
           File.Delete(markdownFile);
         }
@@ -1059,96 +1094,109 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       foreach (MarkdownNode incomingChild in incomingRoot.Children) {
-        bool documentChild = this.IsDocumentDisplayName(incomingChild.Title);
+        bool directoryChild = this.IsDirectoryDisplayName(
+          incomingChild.Title
+        );
 
-        if (documentChild) {
-          string documentName = incomingChild.Title.Substring(1, incomingChild.Title.Length - 2).Trim();
+        if (directoryChild) {
+          string directoryName = incomingChild.Title.Substring(
+            1,
+            incomingChild.Title.Length - 2
+          ).Trim();
 
-          if (string.IsNullOrWhiteSpace(documentName)) {
+          if (!this.IsValidPhysicalName(directoryName)) {
             return false;
           }
 
-          if (!this.IsValidPhysicalName(documentName)) {
+          if (!string.IsNullOrWhiteSpace(incomingChild.DirectContent)) {
             return false;
           }
 
-          string documentPath = this.GetSafePhysicalChildPath(
+          string directoryPath = this.GetSafePhysicalChildPath(
             target.PhysicalPath,
-            documentName,
-            _MarkdownExtension
+            directoryName,
+            string.Empty
           );
 
-          if (!File.Exists(documentPath)) {
-            if (Directory.Exists(documentPath)) {
+          if (!Directory.Exists(directoryPath)) {
+            if (File.Exists(directoryPath)) {
               return false;
             }
 
-            File.WriteAllText(documentPath, string.Empty, new UTF8Encoding(false));
+            Directory.CreateDirectory(directoryPath);
           }
 
-          MarkdownDocumentModel document = this.LoadDocument(documentPath, context);
-
-          MarkdownNode virtualIncomingRoot = new MarkdownNode();
-          virtualIncomingRoot.DirectContent = incomingChild.DirectContent;
-
-          foreach (MarkdownNode child in incomingChild.Children) {
-            virtualIncomingRoot.Children.Add(child);
-          }
-
-          bool merged2 = this.MergeIntoContentContainer(
-            document,
-            document.Root,
-            0,
-            virtualIncomingRoot
+          AreaDescriptor directoryDescriptor = AreaDescriptor.CreateDirectory(
+            this.CombineAreaPath(
+              target.AreaPath,
+              this.CreateDirectorySegment(directoryName)
+            ),
+            directoryName,
+            directoryPath,
+            this.GetDirectoryContentLevel(directoryPath)
           );
 
-          if (!merged2) {
+          bool directoryMerged = this.MergeIntoAggregation(
+            directoryDescriptor,
+            incomingChild,
+            context
+          );
+
+          if (!directoryMerged) {
             return false;
           }
 
-          document.MarkChanged();
           continue;
         }
 
-        string directoryName = incomingChild.Title.Trim();
+        string documentName = incomingChild.Title.Trim();
 
-        if (string.IsNullOrWhiteSpace(directoryName)) {
+        if (!this.IsValidPhysicalName(documentName)) {
           return false;
         }
 
-        if (!this.IsValidPhysicalName(directoryName)) {
-          return false;
-        }
-
-        string directoryPath = this.GetSafePhysicalChildPath(
+        string documentPath = this.GetSafePhysicalChildPath(
           target.PhysicalPath,
-          directoryName,
-          string.Empty
+          documentName,
+          _MarkdownExtension
         );
 
-        if (!Directory.Exists(directoryPath)) {
-          if (File.Exists(directoryPath)) {
+        if (!File.Exists(documentPath)) {
+          if (Directory.Exists(documentPath)) {
             return false;
           }
 
-          Directory.CreateDirectory(directoryPath);
+          File.WriteAllText(
+            documentPath,
+            string.Empty,
+            new UTF8Encoding(false)
+          );
         }
 
-        if (!string.IsNullOrWhiteSpace(incomingChild.DirectContent)) {
-          return false;
-        }
-
-        AreaDescriptor directoryDescriptor = AreaDescriptor.CreateDirectory(
-          this.CombineAreaPath(target.AreaPath, this.EncodeAreaSegment(directoryName)),
-          directoryName,
-          directoryPath
+        MarkdownDocumentModel document = this.LoadDocument(
+          documentPath,
+          context
         );
 
-        bool merged = this.MergeIntoAggregation(directoryDescriptor, incomingChild, context);
+        MarkdownNode virtualIncomingRoot = new MarkdownNode();
+        virtualIncomingRoot.DirectContent = incomingChild.DirectContent;
 
-        if (!merged) {
+        foreach (MarkdownNode child in incomingChild.Children) {
+          virtualIncomingRoot.Children.Add(child);
+        }
+
+        bool documentMerged = this.MergeIntoContentContainer(
+          document,
+          document.Root,
+          0,
+          virtualIncomingRoot
+        );
+
+        if (!documentMerged) {
           return false;
         }
+
+        document.MarkChanged();
       }
 
       return true;
@@ -1290,7 +1338,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         MarkdownNode incomingChild = new MarkdownNode();
 
         if (child.Kind == AreaKind.Document) {
-          incomingChild.Title = "[" + child.DisplayName + "]";
+          incomingChild.Title = child.DisplayName;
           incomingChild.DirectContent = child.Document.Root.DirectContent;
 
           foreach (MarkdownNode documentChild in child.Document.Root.Children) {
@@ -1300,7 +1348,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
           }
         }
         else {
-          incomingChild.Title = child.DisplayName;
+          incomingChild.Title = "[" + child.DisplayName + "]";
           this.PopulateIncomingFromAggregation(child, incomingChild);
         }
 
@@ -1388,58 +1436,50 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
     }
 
-    private void RenderAggregationChildren(
+    /// <summary>
+    /// Renders only Markdown documents located directly inside one directory aggregation.
+    /// 
+    /// Subdirectories are deliberately excluded. They are separate navigation scopes and
+    /// must be entered explicitly by the caller. Every direct Markdown document is
+    /// rendered as one level-one section.
+    /// </summary>
+    private void RenderDirectDocumentAggregation(
       AreaDescriptor aggregation,
-      StringBuilder builder,
-      int headingLevel,
-      MutationContext context
+      StringBuilder builder
     ) {
       AreaDescriptor[] children = this.GetDirectoryChildren(aggregation);
 
       foreach (AreaDescriptor child in children) {
-        int effectiveHeadingLevel = headingLevel;
-
-        if (effectiveHeadingLevel > _MaximumMarkdownHeadingLevel) {
-          effectiveHeadingLevel = _MaximumMarkdownHeadingLevel;
+        if (child.Kind != AreaKind.Document) {
+          continue;
         }
 
-        builder.Append(new string('#', effectiveHeadingLevel));
-        builder.Append(' ');
-
-        if (child.Kind == AreaKind.Document) {
-          builder.Append('[');
-          builder.Append(child.DisplayName);
-          builder.Append(']');
-        }
-        else {
-          builder.Append(child.DisplayName);
-        }
-
+        builder.Append("# ");
+        builder.Append(child.DisplayName);
         builder.Append(Environment.NewLine);
         builder.Append(Environment.NewLine);
 
-        if (child.Kind == AreaKind.Document) {
-          string directContent = this.NormalizeContentForRead(
-            child.Document.Root.DirectContent
+        string directContent = this.NormalizeContentForRead(
+          child.Document.Root.DirectContent
+        );
+
+        if (!string.IsNullOrEmpty(directContent)) {
+          builder.Append(directContent);
+          builder.Append(Environment.NewLine);
+          builder.Append(Environment.NewLine);
+        }
+
+        foreach (MarkdownNode documentChild in child.Document.Root.Children) {
+          this.RenderRebasedNode(
+            documentChild,
+            builder,
+            2,
+            child.Document.NewLine
           );
-
-          if (!string.IsNullOrEmpty(directContent)) {
-            builder.Append(directContent);
-            builder.Append(Environment.NewLine);
-            builder.Append(Environment.NewLine);
-          }
-
-          foreach (MarkdownNode documentChild in child.Document.Root.Children) {
-            this.RenderRebasedNode(
-              documentChild,
-              builder,
-              headingLevel + 1,
-              child.Document.NewLine
-            );
-          }
         }
-        else {
-          this.RenderAggregationChildren(child, builder, headingLevel + 1, context);
+
+        if (builder.Length > 0) {
+          builder.Append(Environment.NewLine);
         }
       }
     }
@@ -1506,14 +1546,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         string areaPath = this.CombineAreaPath(
           directoryDescriptor.AreaPath,
-          this.EncodeAreaSegment(directoryInfo.Name)
+          this.CreateDirectorySegment(directoryInfo.Name)
         );
 
         children.Add(
           AreaDescriptor.CreateDirectory(
             areaPath,
             directoryInfo.Name,
-            directoryInfo.FullName
+            directoryInfo.FullName,
+            this.GetDirectoryContentLevel(directoryInfo.FullName)
           )
         );
       }
@@ -1532,7 +1573,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         string documentName = Path.GetFileNameWithoutExtension(markdownFile);
         string areaPath = this.CombineAreaPath(
           directoryDescriptor.AreaPath,
-          this.CreateDocumentSegment(documentName)
+          this.EncodeAreaSegment(documentName)
         );
 
         MarkdownDocumentModel document = this.LoadDocument(markdownFile, null);
@@ -1932,18 +1973,51 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return parent + "/" + segment;
     }
 
-    private string CreateDocumentSegment(string documentName) {
-      return "[" + this.EncodeAreaSegment(documentName) + "]";
+    /// <summary>
+    /// Creates the canonical logical path segment used for a physical directory.
+    /// </summary>
+    private string CreateDirectorySegment(string directoryName) {
+      return "[" + this.EncodeAreaSegment(directoryName) + "]";
     }
 
-    private bool IsDocumentSegment(string segment) {
+    /// <summary>
+    /// Determines whether a logical segment explicitly addresses a physical directory.
+    /// </summary>
+    private bool IsDirectorySegment(string segment) {
       return segment.Length >= 2
         && segment.StartsWith("[", StringComparison.Ordinal)
         && segment.EndsWith("]", StringComparison.Ordinal);
     }
 
-    private bool IsDocumentDisplayName(string name) {
-      return this.IsDocumentSegment(name.Trim());
+    /// <summary>
+    /// Determines whether an incoming aggregation heading explicitly denotes a directory.
+    /// </summary>
+    private bool IsDirectoryDisplayName(string name) {
+      return this.IsDirectorySegment(name.Trim());
+    }
+
+    /// <summary>
+    /// Resolves whether a directory is a pure navigation area or a one-level content
+    /// aggregation area.
+    /// 
+    /// A directory becomes ContentAggregation only when it contains at least one
+    /// Markdown file directly. Markdown files located in descendant directories do not
+    /// affect the content level of this directory.
+    /// </summary>
+    private ContentLevel GetDirectoryContentLevel(string directoryPath) {
+      string[] markdownFiles = Directory.GetFiles(
+        directoryPath,
+        "*" + _MarkdownExtension,
+        SearchOption.TopDirectoryOnly
+      );
+
+      foreach (string markdownFile in markdownFiles) {
+        if (!this.IsReparsePoint(markdownFile)) {
+          return ContentLevel.ContentAggregation;
+        }
+      }
+
+      return ContentLevel.BeyondContent;
     }
 
     private string EncodeAreaSegment(string value) {
@@ -2169,13 +2243,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
       /// <summary>
       /// Creates the logical root descriptor.
       /// </summary>
-      public static AreaDescriptor CreateRoot(string physicalPath) {
+      public static AreaDescriptor CreateRoot(
+        string physicalPath,
+        ContentLevel contentLevel
+      ) {
         AreaDescriptor descriptor = new AreaDescriptor();
         descriptor.Kind = AreaKind.Root;
         descriptor.AreaPath = "/";
         descriptor.DisplayName = "/";
         descriptor.PhysicalPath = physicalPath;
-        descriptor.ContentLevel = ContentLevel.ContentAggregation;
+        descriptor.ContentLevel = contentLevel;
         return descriptor;
       }
 
@@ -2185,14 +2262,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
       public static AreaDescriptor CreateDirectory(
         string areaPath,
         string displayName,
-        string physicalPath
+        string physicalPath,
+        ContentLevel contentLevel
       ) {
         AreaDescriptor descriptor = new AreaDescriptor();
         descriptor.Kind = AreaKind.Directory;
         descriptor.AreaPath = areaPath;
         descriptor.DisplayName = displayName;
         descriptor.PhysicalPath = physicalPath;
-        descriptor.ContentLevel = ContentLevel.ContentAggregation;
+        descriptor.ContentLevel = contentLevel;
         return descriptor;
       }
 
@@ -2571,6 +2649,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
     }
   }
+
 
 
 }

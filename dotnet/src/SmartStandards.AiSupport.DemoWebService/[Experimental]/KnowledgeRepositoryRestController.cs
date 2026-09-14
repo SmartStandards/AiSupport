@@ -14,10 +14,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// 
   /// The controller is intentionally self-describing from its entry URL:
   /// 
-  /// - GET on a BeyondContent area returns a plain-text navigation response containing
-  ///   fully qualified absolute URLs for all direct child areas.
-  /// - GET on a ContentAggregation or ContentContainer area returns the complete
-  ///   aggregated Markdown content exposed through that area.
+  /// - GET on a BeyondContent area returns a self-describing Markdown navigation response
+  ///   containing logical child area paths and fully qualified absolute URLs.
+  /// - GET on a ContentAggregation area returns the same self-describing navigation
+  ///   preamble followed by the one-level aggregated Markdown content of that area.
+  /// - GET on a ContentContainer area returns the complete aggregated Markdown content
+  ///   exposed through that container.
   /// - POST appends Markdown content through <see cref="IKnowledgeRepository.TryAppendContent(string, string)"/>.
   /// - DELETE truncates the addressed content area through
   ///   <see cref="IKnowledgeRepository.TryTruncate(string)"/>.
@@ -31,7 +33,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
   public class KnowledgeRepositoryController : ControllerBase {
 
     private const string _MarkdownContentType = "text/markdown; charset=utf-8";
-    private const string _TextContentType = "text/plain; charset=utf-8";
 
     private readonly IKnowledgeRepository _KnowledgeRepository;
 
@@ -68,8 +69,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Handles GET requests for any nested logical knowledge area.
     /// 
-    /// BeyondContent areas return a compact plain-text navigation document containing
-    /// fully qualified direct child URLs.
+    /// BeyondContent areas return a compact Markdown navigation document containing
+    /// logical direct child paths and fully qualified direct child URLs.
     /// 
     /// ContentAggregation and ContentContainer areas return
     /// <see cref="IKnowledgeRepository.GetAggregatedContent(string)"/> as Markdown.
@@ -165,7 +166,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         return this.Content(
           navigation,
-          _TextContentType,
+          _MarkdownContentType,
+          Encoding.UTF8
+        );
+      }
+
+      if (contentLevel == ContentLevel.ContentAggregation) {
+        string response = this.BuildContentAggregationResponse(
+          repositoryArea,
+          supportsSubAreas
+        );
+
+        return this.Content(
+          response,
+          _MarkdownContentType,
           Encoding.UTF8
         );
       }
@@ -313,12 +327,14 @@ namespace AI.SmartStandards.KnowledgeAccess {
     ) {
       StringBuilder builder = new StringBuilder();
 
-      builder.Append("Knowledge area: ");
+      builder.Append("Knowledge area: `");
       builder.Append(repositoryArea);
+      builder.Append('`');
+      builder.Append(Environment.NewLine);
       builder.Append(Environment.NewLine);
 
       if (!supportsSubAreas) {
-        builder.Append("This area contains no accessible sub-areas.");
+        builder.Append("This knowledge area contains no directly accessible sub-areas.");
         return builder.ToString();
       }
 
@@ -328,21 +344,69 @@ namespace AI.SmartStandards.KnowledgeAccess {
       );
 
       if (childAreas.Length == 0) {
-        builder.Append("This area contains no accessible sub-areas.");
+        builder.Append("This knowledge area contains no directly accessible sub-areas.");
         return builder.ToString();
       }
 
-      builder.Append("The following sub-area URLs are available:");
+      builder.Append("The following directly accessible sub-area URLs are available:");
+      builder.Append(Environment.NewLine);
       builder.Append(Environment.NewLine);
 
       foreach (string childArea in childAreas) {
-        builder.Append("- ");
+        builder.Append("- `");
+        builder.Append(childArea);
+        builder.Append("` -> <");
         builder.Append(this.BuildAbsoluteAreaUrl(childArea));
+        builder.Append('>');
         builder.Append(Environment.NewLine);
       }
 
       builder.Append(Environment.NewLine);
-      builder.Append("Use HTTP GET on any URL above to continue browsing or to retrieve aggregated Markdown content.");
+      builder.Append("Use HTTP GET on any URL above to continue browsing or to retrieve its Markdown content.");
+
+      return builder.ToString();
+    }
+
+    /// <summary>
+    /// Builds the self-describing response for a ContentAggregation area.
+    /// 
+    /// Direct child URLs are rendered first so a simple client can continue navigating
+    /// into subdirectories or address individual content containers directly. The
+    /// repository's one-level aggregated Markdown content follows after a separator.
+    /// 
+    /// The repository implementation is responsible for ensuring that aggregation does
+    /// not recursively absorb independent child navigation scopes.
+    /// </summary>
+    private string BuildContentAggregationResponse(
+      string repositoryArea,
+      bool supportsSubAreas
+    ) {
+      StringBuilder builder = new StringBuilder();
+
+      string navigation = this.BuildNavigationResponse(
+        repositoryArea,
+        supportsSubAreas
+      );
+
+      if (!string.IsNullOrWhiteSpace(navigation)) {
+        builder.Append(navigation.TrimEnd('\r', '\n'));
+      }
+
+      string content = _KnowledgeRepository.GetAggregatedContent(
+        repositoryArea
+      );
+
+      if (!string.IsNullOrWhiteSpace(content)) {
+        if (builder.Length > 0) {
+          builder.Append(Environment.NewLine);
+          builder.Append(Environment.NewLine);
+          builder.Append("---");
+          builder.Append(Environment.NewLine);
+          builder.Append(Environment.NewLine);
+        }
+
+        builder.Append(content.TrimStart('\r', '\n'));
+      }
 
       return builder.ToString();
     }
@@ -445,7 +509,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return false;
       }
     }
-
   }
 
 }

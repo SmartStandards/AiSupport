@@ -55,7 +55,7 @@ namespace AI.SmartStandards.DemoWebService {
         new FileBasedJoplinSyncStateStore("C:\\Temp\\Joplin")
       );
 
-
+      
 
 
       services.AddAiSupport((ai) => { 
@@ -83,6 +83,8 @@ namespace AI.SmartStandards.DemoWebService {
     ) {
 
       app.UseAmbientFieldAdapterMiddleware();
+
+      app.UseJoplinKnowledgeRepositoryWebDav();
 
       //required for the www-root
       app.UseStaticFiles();
