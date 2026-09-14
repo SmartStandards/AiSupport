@@ -33,6 +33,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// knowledge operation against the new remote state, creates a new commit and retries.
   /// It never performs an automatic textual Git merge and never force-pushes.
   /// 
+  /// The inherited knowledge semantics remain provider-neutral. In particular, logical
+  /// moves are expressed only through <see cref="IKnowledgeRepository.TryMoveContent(string, string)"/>;
+  /// this provider merely persists the resulting filesystem/Markdown changes as Git
+  /// changes and MUST NOT depend on any protocol or exposure mechanism used by consumers.
+  /// 
   /// The temporary session is removed during <see cref="Dispose"/>. The constructor also
   /// performs best-effort cleanup of stale provider session directories left by abnormal
   /// process termination.
@@ -649,5 +654,4 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
     }
   }
-
 }

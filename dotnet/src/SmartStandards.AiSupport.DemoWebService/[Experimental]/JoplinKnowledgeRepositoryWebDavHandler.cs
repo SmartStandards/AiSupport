@@ -606,7 +606,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Finds an existing direct knowledge area that represents the supplied Joplin title
-    /// and item type.
+    /// and semantic item type without relying on provider-specific path syntax.
     /// </summary>
     private string FindExistingDirectArea(
       string parentArea,
@@ -619,7 +619,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       );
 
       foreach (string child in children) {
-        string childTitle = this.GetAreaDisplayName(
+        string childTitle = _KnowledgeRepository.GetAreaName(
           child
         );
 
@@ -631,28 +631,32 @@ namespace AI.SmartStandards.KnowledgeAccess {
           continue;
         }
 
-        string lastSegment = child;
+        ContentLevel contentLevel;
+        bool supportsSubAreas;
+        bool canBeRenamed;
+        bool canBeDeleted;
+        bool canAddSubAreas;
+        bool canAppendContent;
+        bool canTruncate;
 
-        int separatorIndex = child.LastIndexOf(
-          "/",
-          StringComparison.Ordinal
+        _KnowledgeRepository.GetAreaCapabilities(
+          child,
+          out contentLevel,
+          out supportsSubAreas,
+          out canBeRenamed,
+          out canBeDeleted,
+          out canAddSubAreas,
+          out canAppendContent,
+          out canTruncate
         );
 
-        if (separatorIndex >= 0) {
-          lastSegment = child.Substring(
-            separatorIndex + 1
-          );
-        }
-
-        bool directoryArea =
-          lastSegment.StartsWith("[", StringComparison.Ordinal)
-          && lastSegment.EndsWith("]", StringComparison.Ordinal);
-
-        if (itemType == _JoplinFolderType && directoryArea) {
+        if (itemType == _JoplinNoteType &&
+            contentLevel == ContentLevel.ContentContainer) {
           return child;
         }
 
-        if (itemType == _JoplinNoteType && !directoryArea) {
+        if (itemType == _JoplinFolderType &&
+            contentLevel != ContentLevel.ContentContainer) {
           return child;
         }
       }
@@ -788,9 +792,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
       );
 
       string childName = item.Title;
+      KnowledgeAreaKind childKind = KnowledgeAreaKind.Content;
 
       if (item.Type == _JoplinFolderType) {
-        childName = "[" + item.Title + "]";
+        childKind = KnowledgeAreaKind.Structural;
       }
 
       string existingArea = this.FindExistingDirectArea(
@@ -838,7 +843,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       bool added = _KnowledgeRepository.TryAddSubArea(
         parentArea,
-        childName
+        childName,
+        childKind
       );
 
       if (!added) {
@@ -918,53 +924,41 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Applies a Joplin note or notebook update to an existing logical knowledge area.
-    /// 
-    /// Joplin parent changes are persisted as presentation-level parent overrides so
-    /// notebook organization can change without requiring a provider-neutral
-    /// TryMoveArea operation. Content identity and storage remain bound to the original
-    /// knowledge area unless an explicit rename is performed.
-    /// </summary>
-    /// <summary>
-    /// Moves an existing Joplin note to the logical knowledge parent referenced by its
-    /// current <c>parent_id</c>.
+    /// Applies a Joplin parent change through the provider-neutral repository move
+    /// contract.
     ///
-    /// The generic knowledge contract intentionally has no TryMoveArea operation. A note
-    /// move can nevertheless be represented safely by creating the destination document,
-    /// atomically moving its content, deleting the now-empty source document and finally
-    /// rebinding the projection record to the new logical area.
+    /// This adapter deliberately has no knowledge of files, folders, Markdown rewrite
+    /// mechanics or any other concrete repository representation. It resolves only the
+    /// logical new parent and delegates the complete structural move to
+    /// <see cref="IKnowledgeRepository.TryMoveContent(string, string)"/>.
     /// </summary>
-    private MaterializationResult MoveExistingNoteToUpdatedParent(
+    private MaterializationResult MoveExistingItemToUpdatedParent(
       JoplinSerializedItem item,
       JoplinProjectionRecord record,
       JoplinProjection projection
     ) {
-      if (item.Type != _JoplinNoteType) {
-        return MaterializationResult.Success;
-      }
-
-      string targetParentArea = "/";
+      string newParentArea = "/";
 
       if (!string.IsNullOrWhiteSpace(item.ParentId)) {
-        JoplinProjectionRecord targetParentRecord =
+        JoplinProjectionRecord newParentRecord =
           projection.FindRecordById(
             item.ParentId
           );
 
-        if (targetParentRecord == null ||
-            targetParentRecord.IsSuppressed) {
+        if (newParentRecord == null ||
+            newParentRecord.IsSuppressed) {
           DevLogger.LogTrace(
             0,
             99999,
-            "Joplin note move deferred because target parent_id '"
+            "Joplin move deferred because parent_id '"
             + item.ParentId
-            + "' is not available in the current projection."
+            + "' is not available in the current logical projection."
           );
 
           return MaterializationResult.PendingDependency;
         }
 
-        targetParentArea = targetParentRecord.Area;
+        newParentArea = newParentRecord.Area;
       }
 
       string currentParentArea = this.GetParentArea(
@@ -973,155 +967,91 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       if (string.Equals(
             currentParentArea,
-            targetParentArea,
+            newParentArea,
             StringComparison.Ordinal
           )) {
         record.ParentIdOverride = item.ParentId;
         return MaterializationResult.Success;
       }
 
-      string currentTitle = this.GetAreaDisplayName(
-        record.Area
+      string oldArea = record.Area;
+      string logicalName = _KnowledgeRepository.GetAreaName(
+        oldArea
       );
-
-      string existingTargetArea = this.FindExistingDirectArea(
-        targetParentArea,
-        currentTitle,
-        _JoplinNoteType
-      );
-
-      if (!string.IsNullOrEmpty(existingTargetArea)) {
-        DevLogger.LogTrace(
-          0,
-          99999,
-          "Joplin note move rejected because the destination already contains a note named '"
-          + currentTitle
-          + "': source='"
-          + record.Area
-          + "' target='"
-          + existingTargetArea
-          + "'."
-        );
-
-        return MaterializationResult.Failed;
-      }
-
-      string sourceArea = record.Area;
-
-      IKnowledgeRepositoryAreaMoveSupport nativeMoveSupport =
-        _KnowledgeRepository as IKnowledgeRepositoryAreaMoveSupport;
-
-      if (nativeMoveSupport != null) {
-        bool movedNatively = nativeMoveSupport.TryMoveArea(
-          sourceArea,
-          targetParentArea
-        );
-
-        if (!movedNatively) {
-          DevLogger.LogTrace(
-            0,
-            99999,
-            "Joplin note move temporarily unavailable during native area move: source='"
-            + sourceArea
-            + "' targetParent='"
-            + targetParentArea
-            + "'."
-          );
-
-          return MaterializationResult.TemporarilyUnavailable;
-        }
-
-        string nativeTargetArea = this.FindExistingDirectArea(
-          targetParentArea,
-          currentTitle,
-          _JoplinNoteType
-        );
-
-        if (string.IsNullOrEmpty(nativeTargetArea)) {
-          DevLogger.LogTrace(
-            0,
-            99999,
-            "Joplin native note move completed physically but the destination area could not be resolved: source='"
-            + sourceArea
-            + "' targetParent='"
-            + targetParentArea
-            + "'."
-          );
-
-          return MaterializationResult.Failed;
-        }
-
-        record.Area = nativeTargetArea;
-        record.ParentIdOverride = item.ParentId;
-
-        DevLogger.LogTrace(
-          0,
-          99999,
-          "Joplin note move completed natively: id="
-          + item.Id
-          + " source='"
-          + sourceArea
-          + "' target='"
-          + nativeTargetArea
-          + "'."
-        );
-
-        return MaterializationResult.Success;
-      }
-
-      bool created = _KnowledgeRepository.TryAddSubArea(
-        targetParentArea,
-        currentTitle
-      );
-
-      if (!created) {
-        return MaterializationResult.TemporarilyUnavailable;
-      }
-
-      string targetArea = this.FindExistingDirectArea(
-        targetParentArea,
-        currentTitle,
-        _JoplinNoteType
-      );
-
-      if (string.IsNullOrEmpty(targetArea)) {
-        return MaterializationResult.Failed;
-      }
 
       bool moved = _KnowledgeRepository.TryMoveContent(
-        sourceArea,
-        targetArea
+        oldArea,
+        newParentArea
       );
 
       if (!moved) {
-        _KnowledgeRepository.TryDelete(
-          targetArea
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin logical move temporarily unavailable: id="
+          + item.Id
+          + " contentAreaToMove='"
+          + oldArea
+          + "' newParentArea='"
+          + newParentArea
+          + "'."
         );
 
         return MaterializationResult.TemporarilyUnavailable;
       }
 
-      bool sourceDeleted = _KnowledgeRepository.TryDelete(
-        sourceArea
+      string movedArea = this.FindExistingDirectArea(
+        newParentArea,
+        logicalName,
+        item.Type
       );
 
-      if (!sourceDeleted) {
-        return MaterializationResult.TemporarilyUnavailable;
+      if (string.IsNullOrEmpty(movedArea)) {
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin logical move completed but the moved area could not be resolved below its new parent: id="
+          + item.Id
+          + " oldArea='"
+          + oldArea
+          + "' newParentArea='"
+          + newParentArea
+          + "'."
+        );
+
+        return MaterializationResult.Failed;
       }
 
-      record.Area = targetArea;
+      record.Area = movedArea;
       record.ParentIdOverride = item.ParentId;
+
+      DevLogger.LogTrace(
+        0,
+        99999,
+        "Joplin logical move completed: id="
+        + item.Id
+        + " oldArea='"
+        + oldArea
+        + "' newArea='"
+        + movedArea
+        + "'."
+      );
 
       return MaterializationResult.Success;
     }
 
+    /// <summary>
+    /// Applies a Joplin note or notebook update to an existing logical knowledge area.
+    /// Parent changes are delegated exclusively through the provider-neutral
+    /// <see cref="IKnowledgeRepository.TryMoveContent(string, string)"/> operation.
+    /// </summary>
     private MaterializationResult UpdateKnowledgeItemFromJoplin(
       JoplinSerializedItem item,
       JoplinProjectionRecord record,
       JoplinProjection projection
     ) {
       MaterializationResult parentMoveResult =
-        this.MoveExistingNoteToUpdatedParent(
+        this.MoveExistingItemToUpdatedParent(
           item,
           record,
           projection
@@ -1131,7 +1061,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return parentMoveResult;
       }
 
-      string currentTitle = this.GetAreaDisplayName(record.Area);
+      string currentTitle = _KnowledgeRepository.GetAreaName(record.Area);
 
       if (!string.Equals(
             currentTitle,
@@ -1435,7 +1365,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         JoplinProjectedItem projectedItem = new JoplinProjectedItem();
         projectedItem.Record = record;
-        projectedItem.Title = this.GetAreaDisplayName(area);
+        projectedItem.Title = _KnowledgeRepository.GetAreaName(area);
         projectedItem.ParentId = this.ResolveProjectedParentId(
           area,
           record,
@@ -1560,9 +1490,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Serializes one projected knowledge item using Joplin's textual sync-item format.
-    /// </summary>
-    /// <summary>
     /// Normalizes textual content for diagnostic write-through comparison.
     /// </summary>
     private string NormalizeContentForComparison(
@@ -1605,7 +1532,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       JoplinProjectedItem projectedItem = new JoplinProjectedItem();
       projectedItem.Record = record;
-      projectedItem.Title = this.GetAreaDisplayName(
+      projectedItem.Title = _KnowledgeRepository.GetAreaName(
         record.Area
       );
       projectedItem.ParentId = item.ParentId;
@@ -2260,7 +2187,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
           continue;
         }
 
-        string childTitle = this.GetAreaDisplayName(child);
+        string childTitle = _KnowledgeRepository.GetAreaName(child);
 
         if (string.Equals(
               this.NormalizeDisplayName(childTitle),
@@ -2274,35 +2201,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return string.Empty;
     }
 
-    /// <summary>
-    /// Gets a human-readable title from one logical area path.
-    /// </summary>
-    private string GetAreaDisplayName(string area) {
-      if (area == "/") {
-        return "Knowledge";
-      }
-
-      int separator = area.LastIndexOf('/');
-      string segment = area;
-
-      if (separator >= 0 && separator < area.Length - 1) {
-        segment = area.Substring(separator + 1);
-      }
-
-      if (segment.StartsWith("[", StringComparison.Ordinal) &&
-          segment.EndsWith("]", StringComparison.Ordinal) &&
-          segment.Length >= 2) {
-        segment = segment.Substring(1, segment.Length - 2);
-      }
-
-      try {
-        return Uri.UnescapeDataString(segment);
-      }
-      catch (UriFormatException ex) {
-        DevLogger.LogError(ex);
-        return segment;
-      }
-    }
 
     /// <summary>
     /// Normalizes a display title for post-rename matching.

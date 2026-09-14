@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-
-
 namespace AI.SmartStandards.KnowledgeAccess {
 
   /// <summary>
@@ -33,8 +31,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// reports the required capability. The implementation never guesses which provider
   /// should be modified when several repositories overlap the same logical area.
   /// 
-  /// <see cref="TryMoveContent(string, string)"/> is supported only when source and target
-  /// resolve uniquely to the same concrete repository instance. Cross-repository moves are
+  /// <see cref="TryMoveContent(string, string)"/> is supported only when the content area
+  /// to move and its new parent resolve uniquely to the same concrete repository instance.
+  /// Cross-repository moves are
   /// intentionally rejected because the <see cref="IKnowledgeRepository"/> contract
   /// requires atomic mutations and arbitrary repository implementations cannot provide a
   /// shared distributed transaction.
@@ -136,6 +135,32 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
 
         return result.ToArray();
+      }
+    }
+
+    /// <summary>
+    /// Returns the direct logical display name exposed by the aggregated tree.
+    /// </summary>
+    public string GetAreaName(
+      string area
+    ) {
+      lock (_SyncRoot) {
+        AggregatedTree tree = this.BuildTree();
+        AggregatedNode node = tree.Find(
+          this.NormalizeAreaPath(area)
+        );
+
+        if (node == null) {
+          throw new InvalidOperationException(
+            "The aggregated knowledge area does not exist: " + area
+          );
+        }
+
+        if (node.Path == _RootArea) {
+          return "Knowledge";
+        }
+
+        return node.DisplayName;
       }
     }
 
@@ -498,7 +523,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// The aggregator does not infer which mounted repository should receive a new child
     /// when several providers overlap the same parent.
     /// </summary>
-    public bool TryAddSubArea(string area, string name) {
+    public bool TryAddSubArea(
+      string area,
+      string name,
+      KnowledgeAreaKind kind
+    ) {
       lock (_SyncRoot) {
         AreaContribution contribution;
 
@@ -512,7 +541,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         return contribution.MountedRepository.Repository.TryAddSubArea(
           contribution.LocalArea,
-          name
+          name,
+          kind
         );
       }
     }
@@ -615,94 +645,49 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Moves content only when source and target each resolve uniquely to the same mounted
-    /// repository instance.
-    /// 
-    /// Cross-repository movement is intentionally rejected. Although it could be emulated
-    /// through read/append/truncate calls, arbitrary <see cref="IKnowledgeRepository"/>
-    /// implementations do not share a distributed transaction and therefore such an
-    /// emulation could not satisfy the atomicity contract.
+    /// Reparents one logical content area only when the area being moved and its new
+    /// parent each resolve uniquely to the same mounted repository registration.
+    ///
+    /// Cross-repository movement is intentionally rejected. Arbitrary
+    /// <see cref="IKnowledgeRepository"/> implementations do not share a distributed
+    /// transaction, so this aggregator cannot preserve the atomicity required by the
+    /// provider-neutral move contract across repository boundaries.
+    ///
+    /// No truncate/append capability inference is performed. The underlying repository
+    /// receives the move request unchanged and decides whether that concrete logical
+    /// source/new-parent combination is representable.
     /// </summary>
-    public bool TryMoveContent(string sourceArea, string targetArea) {
+    public bool TryMoveContent(
+      string contentAreaToMove,
+      string newParentArea
+    ) {
       lock (_SyncRoot) {
-        AggregatedNode sourceNode = this.RequireNode(sourceArea);
-        AggregatedNode targetNode = this.RequireNode(targetArea);
+        AggregatedNode contentNode = this.RequireNode(
+          contentAreaToMove
+        );
 
-        if (sourceNode.Contributions.Count != 1 ||
-            targetNode.Contributions.Count != 1) {
+        AggregatedNode newParentNode = this.RequireNode(
+          newParentArea
+        );
+
+        if (contentNode.Contributions.Count != 1 ||
+            newParentNode.Contributions.Count != 1) {
           return false;
         }
 
-        AreaContribution sourceContribution = sourceNode.Contributions[0];
-        AreaContribution targetContribution = targetNode.Contributions[0];
+        AreaContribution contentContribution = contentNode.Contributions[0];
+        AreaContribution newParentContribution = newParentNode.Contributions[0];
 
         if (!object.ReferenceEquals(
-              sourceContribution.MountedRepository.Repository,
-              targetContribution.MountedRepository.Repository
+              contentContribution.MountedRepository,
+              newParentContribution.MountedRepository
             )) {
           return false;
         }
 
-        if (!object.ReferenceEquals(
-              sourceContribution.MountedRepository,
-              targetContribution.MountedRepository
-            )) {
-          return false;
-        }
-
-        ContentLevel sourceContentLevel;
-        bool sourceSupportsSubAreas;
-        bool sourceCanBeRenamed;
-        bool sourceCanBeDeleted;
-        bool sourceCanAddSubAreas;
-        bool sourceCanAppendContent;
-        bool sourceCanTruncate;
-
-        sourceContribution.MountedRepository.Repository.GetAreaCapabilities(
-          sourceContribution.LocalArea,
-          out sourceContentLevel,
-          out sourceSupportsSubAreas,
-          out sourceCanBeRenamed,
-          out sourceCanBeDeleted,
-          out sourceCanAddSubAreas,
-          out sourceCanAppendContent,
-          out sourceCanTruncate
-        );
-
-        ContentLevel targetContentLevel;
-        bool targetSupportsSubAreas;
-        bool targetCanBeRenamed;
-        bool targetCanBeDeleted;
-        bool targetCanAddSubAreas;
-        bool targetCanAppendContent;
-        bool targetCanTruncate;
-
-        targetContribution.MountedRepository.Repository.GetAreaCapabilities(
-          targetContribution.LocalArea,
-          out targetContentLevel,
-          out targetSupportsSubAreas,
-          out targetCanBeRenamed,
-          out targetCanBeDeleted,
-          out targetCanAddSubAreas,
-          out targetCanAppendContent,
-          out targetCanTruncate
-        );
-
-        if (sourceContentLevel == ContentLevel.BeyondContent) {
-          return false;
-        }
-
-        if (targetContentLevel == ContentLevel.BeyondContent) {
-          return false;
-        }
-
-        if (!sourceCanTruncate || !targetCanAppendContent) {
-          return false;
-        }
-
-        return sourceContribution.MountedRepository.Repository.TryMoveContent(
-          sourceContribution.LocalArea,
-          targetContribution.LocalArea
+        return contentContribution.MountedRepository.Repository.TryMoveContent(
+          contentContribution.LocalArea,
+          newParentContribution.LocalArea
         );
       }
     }
@@ -743,7 +728,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
             localArea
           );
 
-          string displayName = this.GetLastAreaSegment(globalArea);
+          string displayName = mountedRepository.Repository.GetAreaName(
+            localArea
+          );
 
           AggregatedNode globalNode = tree.GetOrCreate(
             globalArea,
@@ -1527,6 +1514,4 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
     }
   }
-
-
 }

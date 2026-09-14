@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace AI.SmartStandards.KnowledgeAccess {
@@ -66,7 +67,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     public Task Invoke(
       HttpContext context,
       IKnowledgeRepository knowledgeRepository,
-      IJoplinSyncStateStore syncStateStore
+      IJoplinSyncStateStore syncStateStore,
+      IServiceProvider serviceProvider
     ) {
       if (context == null) {
         throw new ArgumentNullException(nameof(context));
@@ -77,6 +79,17 @@ namespace AI.SmartStandards.KnowledgeAccess {
             out PathString remainingPath
           )) {
         return _Next(context);
+      }
+
+      IJoplinWebDavAuthenticationValidator authenticationValidator =
+        serviceProvider.GetService<IJoplinWebDavAuthenticationValidator>();
+
+      if (authenticationValidator != null &&
+          !this.TryAuthenticate(
+            context,
+            authenticationValidator
+          )) {
+        return Task.CompletedTask;
       }
 
       this.EnableSynchronousIoForWebDav(context);
@@ -246,6 +259,94 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       return null;
+    }
+
+    /// <summary>
+    /// Authenticates one WebDAV request using HTTP Basic Authentication and the
+    /// application-provided credential validator.
+    ///
+    /// The middleware is responsible only for protocol handling. Credential storage,
+    /// password hashing, user lookup, authorization rules and auditing remain entirely
+    /// application-defined.
+    /// </summary>
+    private bool TryAuthenticate(
+      HttpContext context,
+      IJoplinWebDavAuthenticationValidator authenticationValidator
+    ) {
+      string authorization = context.Request.Headers.Authorization.ToString();
+
+      if (string.IsNullOrWhiteSpace(authorization) ||
+          !authorization.StartsWith(
+            "Basic ",
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        this.WriteAuthenticationChallenge(context);
+        return false;
+      }
+
+      string encodedCredentials = authorization.Substring(
+        "Basic ".Length
+      ).Trim();
+
+      try {
+        byte[] credentialBytes = Convert.FromBase64String(
+          encodedCredentials
+        );
+
+        string credentials = Encoding.UTF8.GetString(
+          credentialBytes
+        );
+
+        int separatorIndex = credentials.IndexOf(
+          ':'
+        );
+
+        if (separatorIndex < 0) {
+          this.WriteAuthenticationChallenge(context);
+          return false;
+        }
+
+        string userName = credentials.Substring(
+          0,
+          separatorIndex
+        );
+
+        string password = credentials.Substring(
+          separatorIndex + 1
+        );
+
+        bool valid = authenticationValidator.ValidateCredentials(
+          userName,
+          password,
+          context
+        );
+
+        if (!valid) {
+          this.WriteAuthenticationChallenge(context);
+          return false;
+        }
+
+        return true;
+      }
+      catch (FormatException ex) {
+        DevLogger.LogError(ex);
+        this.WriteAuthenticationChallenge(context);
+        return false;
+      }
+    }
+
+    /// <summary>
+    /// Writes the standard HTTP Basic Authentication challenge expected by WebDAV
+    /// clients such as Joplin.
+    /// </summary>
+    private void WriteAuthenticationChallenge(
+      HttpContext context
+    ) {
+      context.Response.Headers.WWWAuthenticate =
+        "Basic realm=\"Joplin Knowledge Repository\", charset=\"UTF-8\"";
+
+      context.Response.StatusCode =
+        StatusCodes.Status401Unauthorized;
     }
 
     /// <summary>

@@ -1,9 +1,4 @@
-﻿using System.ComponentModel;
-using System.Diagnostics.Contracts;
-#if NET_FX
-using System.ServiceModel;
-using System.ServiceModel.Web;
-#endif
+﻿using System;
 
 namespace AI.SmartStandards.KnowledgeAccess {
 
@@ -56,6 +51,29 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// representation is provider-specific and MUST NOT be assumed by consumers.
     /// </summary>
     ContentContainer = 2
+  }
+
+  /// <summary>
+  /// Describes the semantic kind requested when a new direct child area is created.
+  /// 
+  /// This value expresses logical intent only. It deliberately does not prescribe a
+  /// physical representation such as a file, directory, page, database row or remote
+  /// resource.
+  /// </summary>
+  public enum KnowledgeAreaKind {
+
+    /// <summary>
+    /// The new area is intended as a structural/grouping scope that does not itself own
+    /// direct textual content. Its effective <see cref="ContentLevel"/> may later depend
+    /// on the provider and on the children that exist below it.
+    /// </summary>
+    Structural = 0,
+
+    /// <summary>
+    /// The new area is intended as a concrete content-bearing scope that can own direct
+    /// textual content.
+    /// </summary>
+    Content = 1
   }
 
   /// <summary>
@@ -127,41 +145,41 @@ namespace AI.SmartStandards.KnowledgeAccess {
     string[] GetAreas(bool recurse, string startArea = "/");
 
     /// <summary>
-    /// Searches the logical repository for areas whose effective searchable representation
-    /// matches the specified keyword.
-    /// 
-    /// The search starts at <paramref name="startArea"/> and includes all descendant areas
-    /// below that point.
-    /// 
-    /// The exact searchable representation is provider-specific, but it SHOULD at minimum
-    /// consider the logical area name and MAY additionally consider path segments, direct
-    /// content, aggregated metadata, tags or other provider-defined searchable information.
-    /// 
-    /// The method returns logical area paths only. It does not return matching content
-    /// fragments or provider-specific search metadata.
-    /// 
-    /// Returned areas MUST use the same canonical absolute area-path format as
-    /// <see cref="GetAreas(bool, string)"/>.
-    /// 
-    /// Result ordering MUST be deterministic. Providers SHOULD preserve natural repository
-    /// order whenever practical rather than applying arbitrary relevance-based sorting,
-    /// unless the provider explicitly defines a stable search-ranking strategy.
-    /// 
-    /// The search MUST respect the logical visibility of the repository. Virtual areas,
-    /// including virtual <see cref="ContentLevel.ContentAggregation"/> areas, MAY participate
-    /// in keyword search when the provider defines them as searchable.
+    /// Returns logical area paths that match the supplied keyword within the subtree
+    /// rooted at <paramref name="startArea"/>.
+    ///
+    /// Matching semantics are provider-defined but MUST remain provider-neutral from the
+    /// caller's perspective. A provider MAY match against logical area names, logical
+    /// paths, direct textual content or another deterministic searchable representation.
+    ///
+    /// The operation is read-only and MUST NOT mutate, normalize or rewrite the
+    /// underlying repository. Returned paths MUST be absolute logical area paths and MUST
+    /// refer to areas that are addressable through the same repository instance.
+    ///
+    /// Providers SHOULD preserve their natural stable repository order in the returned
+    /// result rather than introducing an unrelated ranking or storage order.
     /// </summary>
-    /// <param name="keyword">
-    /// The keyword or search expression used to identify matching logical areas.
-    /// </param>
-    /// <param name="startArea">
-    /// The absolute logical area path that limits the search scope. "/" represents the
-    /// complete repository.
-    /// </param>
-    /// <returns>
-    /// The matching absolute logical area paths in deterministic order.
-    /// </returns>
-    string[] GetAreasByKeyword(string keyword, string startArea = "/");
+    /// <param name="keyword">The keyword or search term to match.</param>
+    /// <param name="startArea">The absolute logical area path at which searching starts.</param>
+    /// <returns>The matching absolute logical area paths in stable provider order.</returns>
+    string[] GetAreasByKeyword(
+      string keyword,
+      string startArea = "/"
+    );
+
+    /// <summary>
+    /// Returns the provider-neutral logical display name of the specified area.
+    /// 
+    /// Consumers MUST use this method when they need the human-readable identity of an
+    /// area. They MUST NOT derive display names by decoding logical path segments because
+    /// path-segment encoding is provider-specific.
+    /// 
+    /// The returned name represents only the addressed area's direct logical name and
+    /// does not include ancestor names or physical storage syntax.
+    /// </summary>
+    /// <param name="area">The absolute logical area path.</param>
+    /// <returns>The direct logical display name of the addressed area.</returns>
+    string GetAreaName(string area);
 
     /// <summary>
     /// Returns the effective capabilities of the specified logical area.
@@ -210,8 +228,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// 
     /// Composite operations derive their effective permission from these capabilities.
     /// <see cref="TryReplace(string, string)"/> requires both truncate and append
-    /// capability. <see cref="TryMoveContent(string, string)"/> requires a truncatable
-    /// source and an append-capable target, in addition to structural validation.
+    /// capability.
+    /// 
+    /// <see cref="TryMoveContent(string, string)"/> is intentionally NOT derived from
+    /// truncate and append capabilities. Moving a logical content scope to a new parent
+    /// is structurally different from copying textual payload into another area and then
+    /// clearing the source. Whether a concrete pair of areas can participate in a move is
+    /// therefore validated by the provider when the move is attempted.
     /// 
     /// A purely virtual aggregation area may legitimately report all mutation
     /// capabilities as false while still supporting aggregated reads.
@@ -349,25 +372,33 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Atomically creates one new direct child area below the specified parent area.
-    /// 
+    ///
+    /// <paramref name="kind"/> communicates only the semantic role requested by the
+    /// caller. It MUST NOT be encoded indirectly into <paramref name="name"/>. Consumers
+    /// must therefore never need provider-specific naming conventions in order to request
+    /// a structural child versus a content-bearing child.
+    ///
+    /// A provider maps the requested semantic kind to its own representation and may
+    /// reject combinations that it cannot represent below the supplied parent.
+    ///
     /// The new child is appended after existing direct children unless the provider's
-    /// logical model explicitly defines another stable natural insertion rule.
-    /// Existing siblings MUST NOT be reordered.
-    /// 
-    /// The new child's content level and physical representation are determined by the
-    /// provider from the parent context, requested name and provider-specific rules.
-    /// 
+    /// logical model explicitly defines another stable natural insertion rule. Existing
+    /// siblings MUST NOT be reordered.
+    ///
     /// The method creates only the requested direct child area. Complex subtrees and
     /// distributed additive changes should be performed through
     /// <see cref="TryAppendContent(string, string)"/>.
-    /// 
-    /// Read-only virtual aggregation areas commonly report that this operation is not
-    /// supported.
     /// </summary>
     /// <param name="area">The absolute logical parent area path.</param>
-    /// <param name="name">The logical name of the new direct child area.</param>
+    /// <param name="name">The direct logical name of the new child area.</param>
+    /// <param name="kind">The provider-neutral semantic kind requested for the new child.</param>
     /// <returns>true if the child area was created atomically; otherwise false.</returns>
-    bool TryAddSubArea(string area, string name);
+    bool TryAddSubArea(
+      string area,
+      string name,
+      KnowledgeAreaKind kind
+    );
+
 
     /// <summary>
     /// Atomically performs a non-destructive sparse hierarchical merge of the supplied
@@ -486,59 +517,74 @@ namespace AI.SmartStandards.KnowledgeAccess {
     bool TryReplace(string area, string newContent);
 
     /// <summary>
-    /// Atomically moves the complete content scope of one existing content-capable area
-    /// into another existing content-capable area.
+    /// Atomically reparents the complete logical scope addressed by
+    /// <paramref name="contentAreaToMove"/> below
+    /// <paramref name="newParentArea"/>.
     /// 
-    /// Both <see cref="ContentLevel.ContentAggregation"/> and
-    /// <see cref="ContentLevel.ContentContainer"/> may participate as source or target,
-    /// provided that their capabilities allow the operation.
+    /// This operation moves the addressed logical element itself. It does NOT copy the
+    /// source payload into <paramref name="newParentArea"/>, does NOT replace or truncate
+    /// <paramref name="newParentArea"/>, and does NOT interpret the new parent as the
+    /// resulting address of the moved element.
     /// 
-    /// The source area itself is NOT moved, renamed or deleted.
-    /// Instead:
+    /// The two parameters deliberately represent different structural levels:
     /// 
-    /// 1. The complete source content scope is merged into the target using exactly the
-    ///    same sparse hierarchical merge semantics as
-    ///    <see cref="TryAppendContent(string, string)"/>.
-    /// 2. After the target merge succeeds, the source is truncated using exactly the
-    ///    semantics of <see cref="TryTruncate(string)"/>.
-    /// 3. The complete operation is atomic. If either phase cannot be completed, neither
-    ///    source nor target may remain changed.
+    /// - <paramref name="contentAreaToMove"/> identifies the existing logical child scope
+    ///   whose parent relationship shall change.
+    /// - <paramref name="newParentArea"/> identifies the existing logical area that shall
+    ///   become the parent of that moved scope.
     /// 
-    /// When the source is a <see cref="ContentLevel.ContentAggregation"/>, it contributes
-    /// only its subordinate content structure because it has no direct content.
+    /// After a successful move, the moved scope keeps its logical name, its direct
+    /// content and its complete descendant tree. Its former parent remains present and
+    /// merely loses that child. The new parent remains present and unchanged except for
+    /// gaining the moved child at the provider-defined insertion position.
     /// 
-    /// When the target is a <see cref="ContentLevel.ContentAggregation"/>, the moved
-    /// content must be representable entirely as subordinate structure. Direct
-    /// unstructured content cannot be attached to the aggregation area itself.
+    /// Examples of the same abstract operation include:
     /// 
-    /// Existing target content is preserved. Matching target branches receive additive
-    /// recursive merges, missing branches are appended, and existing target siblings are
-    /// not reordered.
+    /// - moving a Markdown section from one section to another section,
+    /// - moving a section from one document to another document,
+    /// - moving a document from one collection/folder scope to another,
+    /// - moving an equivalent content scope in a database-, API-, Git- or virtual-backed
+    ///   provider.
     /// 
-    /// The source and target MUST be different areas.
-    /// The target MUST NOT be located inside the source area's descendant subtree,
-    /// because moving a content scope into itself would be structurally recursive.
+    /// The physical mechanism is entirely provider-specific. A provider may implement the
+    /// operation through a filesystem move, a Markdown subtree rewrite, a database parent
+    /// update, a Git rename, an API call or any other representation-specific mechanism.
+    /// Consumers MUST NOT depend on any such representation detail.
     /// 
-    /// Moving content from a descendant into one of its ancestors is valid when all
-    /// capability and provider-specific constraints are satisfied.
+    /// <paramref name="newParentArea"/> does not need to own direct textual content. A
+    /// purely structural or aggregating area may be a valid new parent when the provider
+    /// can represent the moved scope below it. Conversely, a content-bearing area may be
+    /// an invalid parent for a particular source type. The provider validates the concrete
+    /// source/parent combination.
     /// 
-    /// Providers may move content across physical storage boundaries, documents, pages
-    /// or other provider-specific containers. Such physical details MUST remain hidden
-    /// through this interface.
+    /// The provider MUST reject a move when the new parent is the moved area itself, lies
+    /// inside the moved area's descendant subtree, cannot structurally contain the moved
+    /// scope, or would create an ambiguous/colliding direct child identity.
     /// 
-    /// Purely virtual read-only aggregation areas will normally not support this method.
+    /// Moving an area below its current parent MAY be treated as an idempotent successful
+    /// no-op. Providers MUST preserve the natural relative order of unaffected siblings.
+    /// 
+    /// The complete operation MUST be atomic from the consumer's perspective. If the move
+    /// cannot be completed, the previously observable logical tree and content MUST remain
+    /// unchanged.
     /// </summary>
-    /// <param name="sourceArea">
-    /// The absolute logical content-capable source area. The source area itself remains
-    /// present and empty after success.
+    /// <param name="contentAreaToMove">
+    /// The absolute logical area path of the existing scope that shall change its parent.
+    /// This path addresses the element being moved, not its former parent.
     /// </param>
-    /// <param name="targetArea">
-    /// The absolute logical content-capable target area receiving the moved content
-    /// through sparse hierarchical merge semantics.
+    /// <param name="newParentArea">
+    /// The absolute logical area path that shall become the parent of the moved scope.
+    /// This area is not replaced, truncated or otherwise used as the destination content
+    /// payload itself.
     /// </param>
-    /// <returns>true if the complete move succeeded atomically; otherwise false.</returns>
-    bool TryMoveContent(string sourceArea, string targetArea);
+    /// <returns>
+    /// true if the complete reparenting operation succeeded atomically or was already in
+    /// the requested parent relationship; otherwise false.
+    /// </returns>
+    bool TryMoveContent(
+      string contentAreaToMove,
+      string newParentArea
+    );
 
   }
-
 }

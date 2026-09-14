@@ -50,6 +50,14 @@ namespace AI.SmartStandards.DemoWebService {
         new FileBasedKnowledgeRepository("C:\\Temp\\_OneNoteExport", false, true)
       );
 
+      services.AddSingleton<IJoplinWebDavAuthenticationValidator>(
+        new DelegateBasedJoplinWebDavAuthenticationValidator((userName, password, context) => {
+          if (string.IsNullOrWhiteSpace(userName) || string.IsNullOrWhiteSpace(password)) {
+            return false;
+          }
+          return true;
+        })
+      );
 
       services.AddSingleton<IJoplinSyncStateStore>(
         new FileBasedJoplinSyncStateStore("C:\\Temp\\Joplin")

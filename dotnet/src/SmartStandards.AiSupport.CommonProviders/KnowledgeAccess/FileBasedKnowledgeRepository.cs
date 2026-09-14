@@ -41,7 +41,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// operation is published, a provider-level snapshot is created. If the mutation
   /// cannot be completed, the previous state is restored.
   /// </summary>
-  public class FileBasedKnowledgeRepository : IKnowledgeRepository, IKnowledgeRepositoryAreaMoveSupport {
+  public class FileBasedKnowledgeRepository : IKnowledgeRepository {
 
     private const int _FileIoRetryCount = 5;
     private const int _FileIoRetryDelayMilliseconds = 100;
@@ -201,9 +201,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Returns logical area paths below the specified start area.
     /// 
-    /// Directories are returned in deterministic ordinal name order. Markdown files are
-    /// represented as bracketed document areas and participate in the same deterministic
-    /// directory ordering. Headings inside a Markdown document preserve their exact
+    /// Directories are returned in deterministic ordinal name order using this provider's
+    /// bracketed logical path syntax. Markdown documents use unbracketed logical path
+    /// segments and participate in the same deterministic directory ordering. Headings
+    /// inside a Markdown document preserve their exact
     /// document order.
     /// 
     /// Recursive enumeration uses pre-order traversal. Each parent is returned before
@@ -226,6 +227,29 @@ namespace AI.SmartStandards.KnowledgeAccess {
         this.CollectChildAreas(startDescriptor, recurse, result, null);
 
         return result.ToArray();
+      }
+    }
+
+    /// <summary>
+    /// Returns the direct provider-neutral logical display name of one area.
+    /// Consumers never need to decode this provider's path-segment syntax.
+    /// </summary>
+    public string GetAreaName(
+      string area
+    ) {
+      lock (_SyncRoot) {
+        this.PrepareForRead();
+
+        AreaDescriptor descriptor = this.ResolveArea(
+          area,
+          null
+        );
+
+        if (descriptor.Kind == AreaKind.Root) {
+          return "Knowledge";
+        }
+
+        return descriptor.DisplayName;
       }
     }
 
@@ -285,10 +309,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Returns the effective capabilities of a logical area.
     /// 
-    /// Directories are exposed as content aggregations. They support child areas and,
-    /// when writable, may create directories or bracketed Markdown document children,
-    /// accept structured sparse content merges, and truncate their exposed subordinate
-    /// area tree.
+    /// Directories support child areas. A directory is exposed as a content aggregation
+    /// only while it directly contains at least one visible Markdown document; otherwise
+    /// it is a pure navigation area. When writable, structural and content-bearing child
+    /// creation is selected through <see cref="KnowledgeAreaKind"/> rather than encoded
+    /// into the requested logical name.
     /// 
     /// Markdown documents and headings are content containers. They may own direct
     /// content, may receive appended content, and may contain subordinate headings.
@@ -456,18 +481,23 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Atomically creates one direct child area.
-    /// 
-    /// Below a directory area, a name enclosed in square brackets creates a
-    /// subdirectory while an unbracketed name creates a Markdown document.
-    /// 
-    /// Below a Markdown document or heading container, the name creates a new subordinate
-    /// Markdown heading appended after all existing direct child headings.
+    /// Atomically creates one direct child area using only provider-neutral semantic
+    /// creation intent. The caller never encodes filesystem representation choices into
+    /// the logical name.
     /// </summary>
-    public bool TryAddSubArea(string area, string name) {
+    public bool TryAddSubArea(
+      string area,
+      string name,
+      KnowledgeAreaKind kind
+    ) {
       return this.ExecuteMutation(
         "Add knowledge sub-area '" + name + "' below '" + area + "'",
-        (MutationContext context) => this.TryAddSubAreaCore(area, name, context)
+        (MutationContext context) => this.TryAddSubAreaCore(
+          area,
+          name,
+          kind,
+          context
+        )
       );
     }
 
@@ -553,35 +583,30 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// The target may not equal the source and may not be located inside the source
     /// subtree.
     /// </summary>
-    public bool TryMoveContent(string sourceArea, string targetArea) {
-      return this.ExecuteMutation(
-        "Move content from knowledge area '" + sourceArea + "' to '" + targetArea + "'",
-        (MutationContext context) => this.TryMoveContentCore(sourceArea, targetArea, context)
-      );
-    }
-
-
     /// <summary>
-    /// Atomically moves one logical area below a different logical parent while
-    /// preserving the area's name, content and subtree.
-    ///
-    /// For file-based repositories this operation is mapped directly to the physical
-    /// filesystem. It therefore does not invoke delete semantics and does not trigger
-    /// soft-delete behavior.
+    /// Atomically moves one complete logical area below a new logical parent.
+    /// 
+    /// The first argument identifies the logical element being moved. The second
+    /// argument identifies its new parent; it is never interpreted as a replacement
+    /// target whose own content should be truncated or overwritten.
+    /// 
+    /// This provider maps the abstract operation to the most natural filesystem or
+    /// Markdown representation available. Documents and directories are physically
+    /// moved, while Markdown heading scopes are reparented within or across documents.
     /// </summary>
-    public bool TryMoveArea(
-      string sourceArea,
-      string targetParentArea
+    public bool TryMoveContent(
+      string contentAreaToMove,
+      string newParentArea
     ) {
       return this.ExecuteMutation(
         "Move knowledge area '"
-        + sourceArea
+        + contentAreaToMove
         + "' below '"
-        + targetParentArea
+        + newParentArea
         + "'",
-        (MutationContext context) => this.TryMoveAreaCore(
-          sourceArea,
-          targetParentArea,
+        (MutationContext context) => this.TryMoveContentCore(
+          contentAreaToMove,
+          newParentArea,
           context
         )
       );
@@ -1058,27 +1083,31 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return true;
     }
 
-    private bool TryAddSubAreaCore(string area, string name, MutationContext context) {
+    private bool TryAddSubAreaCore(
+      string area,
+      string name,
+      KnowledgeAreaKind kind,
+      MutationContext context
+    ) {
       if (string.IsNullOrWhiteSpace(name)) {
         return false;
       }
 
-      AreaDescriptor descriptor = this.ResolveArea(area, context);
+      string logicalName = name.Trim();
+      AreaDescriptor descriptor = this.ResolveArea(
+        area,
+        context
+      );
 
       if (descriptor.Kind == AreaKind.Root || descriptor.Kind == AreaKind.Directory) {
-        if (this.IsDirectorySegment(name)) {
-          string directoryName = name.Substring(
-            1,
-            name.Length - 2
-          ).Trim();
+        if (!this.IsValidPhysicalName(logicalName)) {
+          return false;
+        }
 
-          if (!this.IsValidPhysicalName(directoryName)) {
-            return false;
-          }
-
+        if (kind == KnowledgeAreaKind.Structural) {
           string directoryPath = this.GetSafePhysicalChildPath(
             descriptor.PhysicalPath,
-            directoryName,
+            logicalName,
             string.Empty
           );
 
@@ -1086,19 +1115,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
             return false;
           }
 
-          Directory.CreateDirectory(directoryPath);
+          Directory.CreateDirectory(
+            directoryPath
+          );
+
           return true;
         }
 
-        string documentName = name.Trim();
-
-        if (!this.IsValidPhysicalName(documentName)) {
+        if (kind != KnowledgeAreaKind.Content) {
           return false;
         }
 
         string documentPath = this.GetSafePhysicalChildPath(
           descriptor.PhysicalPath,
-          documentName,
+          logicalName,
           _MarkdownExtension
         );
 
@@ -1112,8 +1142,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
           new UTF8Encoding(false)
         );
 
-        context.ForgetDocument(documentPath);
+        context.ForgetDocument(
+          documentPath
+        );
+
         return true;
+      }
+
+      if (kind != KnowledgeAreaKind.Content) {
+        return false;
       }
 
       MarkdownNode parentNode;
@@ -1132,17 +1169,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return false;
       }
 
-      string title = name.Trim();
-
       bool duplicate = parentNode.Children.Any((MarkdownNode child) =>
-        string.Equals(child.Title, title, StringComparison.Ordinal));
+        string.Equals(child.Title, logicalName, StringComparison.Ordinal));
 
       if (duplicate) {
         return false;
       }
 
       MarkdownNode newNode = MarkdownNode.CreateNewHeading(
-        title,
+        logicalName,
         newHeadingLevel,
         descriptor.Document.NewLine
       );
@@ -1252,218 +1287,350 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Implements a native filesystem move for one logical area.
+    /// Implements provider-neutral logical reparenting using the concrete file/Markdown
+    /// representation of the addressed areas.
     /// </summary>
-    private bool TryMoveAreaCore(
-      string sourceArea,
-      string targetParentArea,
+    private bool TryMoveContentCore(
+      string contentAreaToMove,
+      string newParentArea,
       MutationContext context
     ) {
-      string normalizedSource = this.NormalizeAreaPath(
-        sourceArea
+      string normalizedContentAreaToMove = this.NormalizeAreaPath(
+        contentAreaToMove
       );
 
-      string normalizedTargetParent = this.NormalizeAreaPath(
-        targetParentArea
+      string normalizedNewParentArea = this.NormalizeAreaPath(
+        newParentArea
       );
 
       if (string.Equals(
-            normalizedSource,
+            normalizedContentAreaToMove,
+            _RootArea,
+            StringComparison.Ordinal
+          )) {
+        return false;
+      }
+
+      if (string.Equals(
+            normalizedContentAreaToMove,
+            normalizedNewParentArea,
+            StringComparison.Ordinal
+          )) {
+        return false;
+      }
+
+      string movedSubtreePrefix = normalizedContentAreaToMove;
+
+      if (!movedSubtreePrefix.EndsWith(
             "/",
             StringComparison.Ordinal
           )) {
-        return false;
+        movedSubtreePrefix += "/";
       }
 
-      string sourcePrefix = normalizedSource;
-
-      if (!sourcePrefix.EndsWith(
-            "/",
-            StringComparison.Ordinal
-          )) {
-        sourcePrefix += "/";
-      }
-
-      if (normalizedTargetParent.StartsWith(
-            sourcePrefix,
+      if (normalizedNewParentArea.StartsWith(
+            movedSubtreePrefix,
             StringComparison.Ordinal
           )) {
         return false;
       }
 
-      AreaDescriptor source = this.ResolveArea(
-        normalizedSource,
+      AreaDescriptor contentToMove = this.ResolveArea(
+        normalizedContentAreaToMove,
         context
       );
 
-      AreaDescriptor targetParent = this.ResolveArea(
-        normalizedTargetParent,
+      AreaDescriptor newParent = this.ResolveArea(
+        normalizedNewParentArea,
         context
       );
 
-      if (source.Kind == AreaKind.Root ||
-          source.Kind == AreaKind.Heading) {
-        return false;
-      }
+      string currentParentArea = this.GetLogicalParentArea(
+        normalizedContentAreaToMove
+      );
 
-      if (targetParent.Kind != AreaKind.Root &&
-          targetParent.Kind != AreaKind.Directory) {
-        return false;
-      }
-
-      string targetDirectoryPath;
-
-      if (targetParent.Kind == AreaKind.Root) {
-        targetDirectoryPath = _RootDirectory;
-      }
-      else {
-        targetDirectoryPath = targetParent.PhysicalPath;
-      }
-
-      if (source.Kind == AreaKind.Document) {
-        string fileName = Path.GetFileName(
-          source.PhysicalPath
-        );
-
-        string targetPath = Path.Combine(
-          targetDirectoryPath,
-          fileName
-        );
-
-        targetPath = Path.GetFullPath(
-          targetPath
-        );
-
-        this.EnsureInsideRoot(
-          targetPath
-        );
-
-        if (File.Exists(targetPath) ||
-            Directory.Exists(targetPath)) {
-          return false;
-        }
-
-        context.ForgetDocument(
-          source.PhysicalPath
-        );
-
-        File.Move(
-          source.PhysicalPath,
-          targetPath
-        );
-
+      if (string.Equals(
+            currentParentArea,
+            normalizedNewParentArea,
+            StringComparison.Ordinal
+          )) {
         return true;
       }
 
+      if (contentToMove.Kind == AreaKind.Directory) {
+        return this.MoveDirectoryArea(
+          contentToMove,
+          newParent,
+          context
+        );
+      }
+
+      if (contentToMove.Kind == AreaKind.Document) {
+        return this.MoveDocumentArea(
+          contentToMove,
+          newParent,
+          context
+        );
+      }
+
+      if (contentToMove.Kind == AreaKind.Heading) {
+        return this.MoveHeadingArea(
+          contentToMove,
+          newParent
+        );
+      }
+
+      return false;
+    }
+
+    /// <summary>
+    /// Moves one physical directory below a new physical directory/root parent.
+    /// </summary>
+    private bool MoveDirectoryArea(
+      AreaDescriptor contentToMove,
+      AreaDescriptor newParent,
+      MutationContext context
+    ) {
+      if (newParent.Kind != AreaKind.Root &&
+          newParent.Kind != AreaKind.Directory) {
+        return false;
+      }
+
       string directoryName = Path.GetFileName(
-        source.PhysicalPath
+        contentToMove.PhysicalPath
       );
 
-      string targetDirectory = Path.Combine(
-        targetDirectoryPath,
-        directoryName
+      string targetPath = this.GetSafePhysicalChildPath(
+        newParent.PhysicalPath,
+        directoryName,
+        string.Empty
       );
 
-      targetDirectory = Path.GetFullPath(
-        targetDirectory
-      );
-
-      this.EnsureInsideRoot(
-        targetDirectory
-      );
-
-      if (Directory.Exists(targetDirectory) ||
-          File.Exists(targetDirectory)) {
+      if (Directory.Exists(targetPath) || File.Exists(targetPath)) {
         return false;
       }
 
       context.ForgetDocumentsBelow(
-        source.PhysicalPath
+        contentToMove.PhysicalPath
       );
 
       Directory.Move(
-        source.PhysicalPath,
-        targetDirectory
+        contentToMove.PhysicalPath,
+        targetPath
       );
 
       return true;
     }
 
-    private bool TryMoveContentCore(
-      string sourceArea,
-      string targetArea,
+    /// <summary>
+    /// Moves one physical Markdown document below a new physical directory/root parent.
+    /// </summary>
+    private bool MoveDocumentArea(
+      AreaDescriptor contentToMove,
+      AreaDescriptor newParent,
       MutationContext context
     ) {
-      string normalizedSource = this.NormalizeAreaPath(sourceArea);
-      string normalizedTarget = this.NormalizeAreaPath(targetArea);
-
-      if (string.Equals(normalizedSource, normalizedTarget, StringComparison.Ordinal)) {
+      if (newParent.Kind != AreaKind.Root &&
+          newParent.Kind != AreaKind.Directory) {
         return false;
       }
 
-      string sourcePrefix = normalizedSource;
+      string documentName = Path.GetFileNameWithoutExtension(
+        contentToMove.PhysicalPath
+      );
 
-      if (!sourcePrefix.EndsWith("/", StringComparison.Ordinal)) {
-        sourcePrefix += "/";
-      }
+      string targetPath = this.GetSafePhysicalChildPath(
+        newParent.PhysicalPath,
+        documentName,
+        _MarkdownExtension
+      );
 
-      if (normalizedTarget.StartsWith(sourcePrefix, StringComparison.Ordinal)) {
+      if (File.Exists(targetPath) || Directory.Exists(targetPath)) {
         return false;
       }
 
-      AreaDescriptor source = this.ResolveArea(normalizedSource, context);
-      AreaDescriptor target = this.ResolveArea(normalizedTarget, context);
+      context.ForgetDocument(
+        contentToMove.PhysicalPath
+      );
 
-      if (source.ContentLevel == ContentLevel.BeyondContent) {
+      File.Move(
+        contentToMove.PhysicalPath,
+        targetPath
+      );
+
+      return true;
+    }
+
+    /// <summary>
+    /// Reparents one complete Markdown heading subtree below a document or heading.
+    /// </summary>
+    private bool MoveHeadingArea(
+      AreaDescriptor contentToMove,
+      AreaDescriptor newParent
+    ) {
+      if (newParent.Kind != AreaKind.Document &&
+          newParent.Kind != AreaKind.Heading) {
         return false;
       }
 
-      if (target.ContentLevel == ContentLevel.BeyondContent) {
+      MarkdownNode sourceNode = contentToMove.Node;
+      MarkdownNode oldParentNode = sourceNode.Parent;
+
+      if (oldParentNode == null) {
         return false;
       }
 
-      ParsedIncomingContent sourceContent = this.CreateIncomingContentFromArea(source);
+      MarkdownNode newParentNode;
+      int requiredHeadingLevel;
 
-      if (target.ContentLevel == ContentLevel.ContentAggregation &&
-          !string.IsNullOrWhiteSpace(sourceContent.Root.DirectContent)) {
-        return false;
-      }
-
-      bool merged;
-
-      if (target.ContentLevel == ContentLevel.ContentAggregation) {
-        merged = this.MergeIntoAggregation(target, sourceContent.Root, context);
+      if (newParent.Kind == AreaKind.Document) {
+        newParentNode = newParent.Document.Root;
+        requiredHeadingLevel = 1;
       }
       else {
-        MarkdownNode targetNode;
-        int targetHeadingLevel;
-
-        if (target.Kind == AreaKind.Document) {
-          targetNode = target.Document.Root;
-          targetHeadingLevel = 0;
-        }
-        else {
-          targetNode = target.Node;
-          targetHeadingLevel = target.Node.HeadingLevel;
-        }
-
-        merged = this.MergeIntoContentContainer(
-          target.Document,
-          targetNode,
-          targetHeadingLevel,
-          sourceContent.Root
-        );
-
-        if (merged) {
-          target.Document.MarkChanged();
-        }
+        newParentNode = newParent.Node;
+        requiredHeadingLevel = newParent.Node.HeadingLevel + 1;
       }
 
-      if (!merged) {
+      if (object.ReferenceEquals(sourceNode, newParentNode) ||
+          this.IsMarkdownDescendant(newParentNode, sourceNode)) {
         return false;
       }
 
-      return this.TryTruncateCore(normalizedSource, context);
+      bool duplicate = newParentNode.Children.Any((MarkdownNode child) =>
+        !object.ReferenceEquals(child, sourceNode) &&
+        string.Equals(
+          child.Title,
+          sourceNode.Title,
+          StringComparison.Ordinal
+        ));
+
+      if (duplicate) {
+        return false;
+      }
+
+      int headingLevelDelta = requiredHeadingLevel - sourceNode.HeadingLevel;
+
+      if (!this.CanRebaseHeadingSubtree(
+            sourceNode,
+            headingLevelDelta
+          )) {
+        return false;
+      }
+
+      oldParentNode.Children.Remove(
+        sourceNode
+      );
+
+      sourceNode.Parent = newParentNode;
+      newParentNode.Children.Add(
+        sourceNode
+      );
+
+      this.RebaseHeadingSubtree(
+        sourceNode,
+        headingLevelDelta
+      );
+
+      this.RebuildLogicalSegments(
+        oldParentNode
+      );
+
+      if (!object.ReferenceEquals(oldParentNode, newParentNode)) {
+        this.RebuildLogicalSegments(
+          newParentNode
+        );
+      }
+
+      contentToMove.Document.MarkChanged();
+      newParent.Document.MarkChanged();
+
+      return true;
+    }
+
+    /// <summary>
+    /// Returns whether one Markdown node is located below another Markdown node.
+    /// </summary>
+    private bool IsMarkdownDescendant(
+      MarkdownNode candidate,
+      MarkdownNode ancestor
+    ) {
+      MarkdownNode current = candidate.Parent;
+
+      while (current != null) {
+        if (object.ReferenceEquals(current, ancestor)) {
+          return true;
+        }
+
+        current = current.Parent;
+      }
+
+      return false;
+    }
+
+    /// <summary>
+    /// Validates that rebasing a complete Markdown subtree keeps all headings within the
+    /// supported Markdown heading range.
+    /// </summary>
+    private bool CanRebaseHeadingSubtree(
+      MarkdownNode node,
+      int headingLevelDelta
+    ) {
+      int newLevel = node.HeadingLevel + headingLevelDelta;
+
+      if (newLevel < 1 || newLevel > _MaximumMarkdownHeadingLevel) {
+        return false;
+      }
+
+      foreach (MarkdownNode child in node.Children) {
+        if (!this.CanRebaseHeadingSubtree(
+              child,
+              headingLevelDelta
+            )) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    /// <summary>
+    /// Rebases all Markdown heading levels in one complete subtree.
+    /// </summary>
+    private void RebaseHeadingSubtree(
+      MarkdownNode node,
+      int headingLevelDelta
+    ) {
+      node.HeadingLevel += headingLevelDelta;
+      node.HeadingLineModified = true;
+
+      foreach (MarkdownNode child in node.Children) {
+        this.RebaseHeadingSubtree(
+          child,
+          headingLevelDelta
+        );
+      }
+    }
+
+    /// <summary>
+    /// Returns the logical parent path of an already normalized area path.
+    /// </summary>
+    private string GetLogicalParentArea(
+      string normalizedArea
+    ) {
+      int separatorIndex = normalizedArea.LastIndexOf(
+        "/",
+        StringComparison.Ordinal
+      );
+
+      if (separatorIndex <= 0) {
+        return _RootArea;
+      }
+
+      return normalizedArea.Substring(
+        0,
+        separatorIndex
+      );
     }
 
     private bool MergeIntoAggregation(
