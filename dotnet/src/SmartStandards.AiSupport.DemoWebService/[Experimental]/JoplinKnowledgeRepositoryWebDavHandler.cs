@@ -925,11 +925,212 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// TryMoveArea operation. Content identity and storage remain bound to the original
     /// knowledge area unless an explicit rename is performed.
     /// </summary>
+    /// <summary>
+    /// Moves an existing Joplin note to the logical knowledge parent referenced by its
+    /// current <c>parent_id</c>.
+    ///
+    /// The generic knowledge contract intentionally has no TryMoveArea operation. A note
+    /// move can nevertheless be represented safely by creating the destination document,
+    /// atomically moving its content, deleting the now-empty source document and finally
+    /// rebinding the projection record to the new logical area.
+    /// </summary>
+    private MaterializationResult MoveExistingNoteToUpdatedParent(
+      JoplinSerializedItem item,
+      JoplinProjectionRecord record,
+      JoplinProjection projection
+    ) {
+      if (item.Type != _JoplinNoteType) {
+        return MaterializationResult.Success;
+      }
+
+      string targetParentArea = "/";
+
+      if (!string.IsNullOrWhiteSpace(item.ParentId)) {
+        JoplinProjectionRecord targetParentRecord =
+          projection.FindRecordById(
+            item.ParentId
+          );
+
+        if (targetParentRecord == null ||
+            targetParentRecord.IsSuppressed) {
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin note move deferred because target parent_id '"
+            + item.ParentId
+            + "' is not available in the current projection."
+          );
+
+          return MaterializationResult.PendingDependency;
+        }
+
+        targetParentArea = targetParentRecord.Area;
+      }
+
+      string currentParentArea = this.GetParentArea(
+        record.Area
+      );
+
+      if (string.Equals(
+            currentParentArea,
+            targetParentArea,
+            StringComparison.Ordinal
+          )) {
+        record.ParentIdOverride = item.ParentId;
+        return MaterializationResult.Success;
+      }
+
+      string currentTitle = this.GetAreaDisplayName(
+        record.Area
+      );
+
+      string existingTargetArea = this.FindExistingDirectArea(
+        targetParentArea,
+        currentTitle,
+        _JoplinNoteType
+      );
+
+      if (!string.IsNullOrEmpty(existingTargetArea)) {
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin note move rejected because the destination already contains a note named '"
+          + currentTitle
+          + "': source='"
+          + record.Area
+          + "' target='"
+          + existingTargetArea
+          + "'."
+        );
+
+        return MaterializationResult.Failed;
+      }
+
+      string sourceArea = record.Area;
+
+      IKnowledgeRepositoryAreaMoveSupport nativeMoveSupport =
+        _KnowledgeRepository as IKnowledgeRepositoryAreaMoveSupport;
+
+      if (nativeMoveSupport != null) {
+        bool movedNatively = nativeMoveSupport.TryMoveArea(
+          sourceArea,
+          targetParentArea
+        );
+
+        if (!movedNatively) {
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin note move temporarily unavailable during native area move: source='"
+            + sourceArea
+            + "' targetParent='"
+            + targetParentArea
+            + "'."
+          );
+
+          return MaterializationResult.TemporarilyUnavailable;
+        }
+
+        string nativeTargetArea = this.FindExistingDirectArea(
+          targetParentArea,
+          currentTitle,
+          _JoplinNoteType
+        );
+
+        if (string.IsNullOrEmpty(nativeTargetArea)) {
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin native note move completed physically but the destination area could not be resolved: source='"
+            + sourceArea
+            + "' targetParent='"
+            + targetParentArea
+            + "'."
+          );
+
+          return MaterializationResult.Failed;
+        }
+
+        record.Area = nativeTargetArea;
+        record.ParentIdOverride = item.ParentId;
+
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin note move completed natively: id="
+          + item.Id
+          + " source='"
+          + sourceArea
+          + "' target='"
+          + nativeTargetArea
+          + "'."
+        );
+
+        return MaterializationResult.Success;
+      }
+
+      bool created = _KnowledgeRepository.TryAddSubArea(
+        targetParentArea,
+        currentTitle
+      );
+
+      if (!created) {
+        return MaterializationResult.TemporarilyUnavailable;
+      }
+
+      string targetArea = this.FindExistingDirectArea(
+        targetParentArea,
+        currentTitle,
+        _JoplinNoteType
+      );
+
+      if (string.IsNullOrEmpty(targetArea)) {
+        return MaterializationResult.Failed;
+      }
+
+      bool moved = _KnowledgeRepository.TryMoveContent(
+        sourceArea,
+        targetArea
+      );
+
+      if (!moved) {
+        _KnowledgeRepository.TryDelete(
+          targetArea
+        );
+
+        return MaterializationResult.TemporarilyUnavailable;
+      }
+
+      bool sourceDeleted = _KnowledgeRepository.TryDelete(
+        sourceArea
+      );
+
+      if (!sourceDeleted) {
+        return MaterializationResult.TemporarilyUnavailable;
+      }
+
+      record.Area = targetArea;
+      record.ParentIdOverride = item.ParentId;
+
+      return MaterializationResult.Success;
+    }
+
     private MaterializationResult UpdateKnowledgeItemFromJoplin(
       JoplinSerializedItem item,
       JoplinProjectionRecord record,
       JoplinProjection projection
     ) {
+      MaterializationResult parentMoveResult =
+        this.MoveExistingNoteToUpdatedParent(
+          item,
+          record,
+          projection
+        );
+
+      if (parentMoveResult != MaterializationResult.Success) {
+        return parentMoveResult;
+      }
+
       string currentTitle = this.GetAreaDisplayName(record.Area);
 
       if (!string.Equals(

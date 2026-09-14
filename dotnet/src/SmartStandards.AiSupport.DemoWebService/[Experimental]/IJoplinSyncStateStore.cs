@@ -1,6 +1,32 @@
 ﻿using System;
 using System.IO;
 
+
+namespace AI.SmartStandards.KnowledgeAccess {
+
+  /// <summary>
+  /// Optional repository capability for moving one logical area to another parent while
+  /// preserving the area's identity, name and content.
+  /// </summary>
+  public interface IKnowledgeRepositoryAreaMoveSupport {
+
+    /// <summary>
+    /// Moves one logical area below a different parent area.
+    ///
+    /// The operation must preserve the complete source area, including its direct content
+    /// and descendants, and must be atomic from the consumer's perspective.
+    /// </summary>
+    /// <param name="sourceArea">The logical area to move.</param>
+    /// <param name="targetParentArea">The logical parent that shall receive the area.</param>
+    /// <returns>true when the move succeeded; otherwise false.</returns>
+    bool TryMoveArea(
+      string sourceArea,
+      string targetParentArea
+    );
+  }
+}
+
+
 namespace AI.SmartStandards.KnowledgeAccess {
   /// <summary>
   /// Provides persistent opaque storage required by the Joplin WebDAV synchronization

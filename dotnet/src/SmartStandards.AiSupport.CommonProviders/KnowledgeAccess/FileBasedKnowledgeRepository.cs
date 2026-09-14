@@ -41,7 +41,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// operation is published, a provider-level snapshot is created. If the mutation
   /// cannot be completed, the previous state is restored.
   /// </summary>
-  public class FileBasedKnowledgeRepository : IKnowledgeRepository {
+  public class FileBasedKnowledgeRepository : IKnowledgeRepository, IKnowledgeRepositoryAreaMoveSupport {
 
     private const int _FileIoRetryCount = 5;
     private const int _FileIoRetryDelayMilliseconds = 100;
@@ -557,6 +557,33 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return this.ExecuteMutation(
         "Move content from knowledge area '" + sourceArea + "' to '" + targetArea + "'",
         (MutationContext context) => this.TryMoveContentCore(sourceArea, targetArea, context)
+      );
+    }
+
+
+    /// <summary>
+    /// Atomically moves one logical area below a different logical parent while
+    /// preserving the area's name, content and subtree.
+    ///
+    /// For file-based repositories this operation is mapped directly to the physical
+    /// filesystem. It therefore does not invoke delete semantics and does not trigger
+    /// soft-delete behavior.
+    /// </summary>
+    public bool TryMoveArea(
+      string sourceArea,
+      string targetParentArea
+    ) {
+      return this.ExecuteMutation(
+        "Move knowledge area '"
+        + sourceArea
+        + "' below '"
+        + targetParentArea
+        + "'",
+        (MutationContext context) => this.TryMoveAreaCore(
+          sourceArea,
+          targetParentArea,
+          context
+        )
       );
     }
 
@@ -1220,6 +1247,144 @@ namespace AI.SmartStandards.KnowledgeAccess {
       targetNode.DirectContent = string.Empty;
       targetNode.Children.Clear();
       descriptor.Document.MarkChanged();
+
+      return true;
+    }
+
+    /// <summary>
+    /// Implements a native filesystem move for one logical area.
+    /// </summary>
+    private bool TryMoveAreaCore(
+      string sourceArea,
+      string targetParentArea,
+      MutationContext context
+    ) {
+      string normalizedSource = this.NormalizeAreaPath(
+        sourceArea
+      );
+
+      string normalizedTargetParent = this.NormalizeAreaPath(
+        targetParentArea
+      );
+
+      if (string.Equals(
+            normalizedSource,
+            "/",
+            StringComparison.Ordinal
+          )) {
+        return false;
+      }
+
+      string sourcePrefix = normalizedSource;
+
+      if (!sourcePrefix.EndsWith(
+            "/",
+            StringComparison.Ordinal
+          )) {
+        sourcePrefix += "/";
+      }
+
+      if (normalizedTargetParent.StartsWith(
+            sourcePrefix,
+            StringComparison.Ordinal
+          )) {
+        return false;
+      }
+
+      AreaDescriptor source = this.ResolveArea(
+        normalizedSource,
+        context
+      );
+
+      AreaDescriptor targetParent = this.ResolveArea(
+        normalizedTargetParent,
+        context
+      );
+
+      if (source.Kind == AreaKind.Root ||
+          source.Kind == AreaKind.Heading) {
+        return false;
+      }
+
+      if (targetParent.Kind != AreaKind.Root &&
+          targetParent.Kind != AreaKind.Directory) {
+        return false;
+      }
+
+      string targetDirectoryPath;
+
+      if (targetParent.Kind == AreaKind.Root) {
+        targetDirectoryPath = _RootDirectory;
+      }
+      else {
+        targetDirectoryPath = targetParent.PhysicalPath;
+      }
+
+      if (source.Kind == AreaKind.Document) {
+        string fileName = Path.GetFileName(
+          source.PhysicalPath
+        );
+
+        string targetPath = Path.Combine(
+          targetDirectoryPath,
+          fileName
+        );
+
+        targetPath = Path.GetFullPath(
+          targetPath
+        );
+
+        this.EnsureInsideRoot(
+          targetPath
+        );
+
+        if (File.Exists(targetPath) ||
+            Directory.Exists(targetPath)) {
+          return false;
+        }
+
+        context.ForgetDocument(
+          source.PhysicalPath
+        );
+
+        File.Move(
+          source.PhysicalPath,
+          targetPath
+        );
+
+        return true;
+      }
+
+      string directoryName = Path.GetFileName(
+        source.PhysicalPath
+      );
+
+      string targetDirectory = Path.Combine(
+        targetDirectoryPath,
+        directoryName
+      );
+
+      targetDirectory = Path.GetFullPath(
+        targetDirectory
+      );
+
+      this.EnsureInsideRoot(
+        targetDirectory
+      );
+
+      if (Directory.Exists(targetDirectory) ||
+          File.Exists(targetDirectory)) {
+        return false;
+      }
+
+      context.ForgetDocumentsBelow(
+        source.PhysicalPath
+      );
+
+      Directory.Move(
+        source.PhysicalPath,
+        targetDirectory
+      );
 
       return true;
     }
