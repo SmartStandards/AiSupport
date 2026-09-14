@@ -439,6 +439,26 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return this.StatusCode(StatusCodes.Status204NoContent);
         }
 
+        if (materializationResult == MaterializationResult.TemporarilyUnavailable) {
+          _SyncStateStore.Delete(
+            path
+          );
+
+          this.Response.Headers["Retry-After"] = "1";
+
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin PUT could not be committed because the knowledge storage is temporarily unavailable: id="
+            + item.Id
+            + "."
+          );
+
+          return this.StatusCode(
+            StatusCodes.Status503ServiceUnavailable
+          );
+        }
+
         if (materializationResult == MaterializationResult.Failed) {
           return this.Conflict(
             "The Joplin item was accepted by the sync target but could not be mapped to the knowledge repository."
@@ -476,19 +496,34 @@ namespace AI.SmartStandards.KnowledgeAccess {
           JoplinProjectionRecord record = projection.FindRecordById(itemId);
 
           if (record != null) {
-            bool deleted = _KnowledgeRepository.TryDelete(
-              record.Area
+            // A WebDAV DELETE is a synchronization-protocol operation. It must not be
+            // translated blindly into a destructive knowledge-repository delete because
+            // Joplin may remove/reconcile remote sync items for reasons that do not mean
+            // "physically destroy the source knowledge document".
+            //
+            // Suppress the item from the Joplin projection instead. The knowledge source
+            // remains untouched and can therefore never be lost merely because of a
+            // synchronization reconciliation cycle.
+            record.IsSuppressed = true;
+            record.ModifiedUtc = DateTime.UtcNow;
+
+            this.SaveProjectionState(
+              projection.State
             );
 
-            if (!deleted) {
-              return this.Conflict(
-                "The corresponding knowledge area could not be deleted."
-              );
-            }
+            DevLogger.LogTrace(
+              0,
+              99999,
+              "Joplin DELETE suppressed projected item without deleting knowledge: id="
+              + record.Id
+              + " area='"
+              + record.Area
+              + "'."
+            );
 
-            projection.State.Records.Remove(record);
-            this.SaveProjectionState(projection.State);
-            return this.StatusCode(StatusCodes.Status204NoContent);
+            return this.StatusCode(
+              StatusCodes.Status204NoContent
+            );
           }
         }
 
@@ -570,6 +605,155 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
+    /// Finds an existing direct knowledge area that represents the supplied Joplin title
+    /// and item type.
+    /// </summary>
+    private string FindExistingDirectArea(
+      string parentArea,
+      string title,
+      int itemType
+    ) {
+      string[] children = _KnowledgeRepository.GetAreas(
+        false,
+        parentArea
+      );
+
+      foreach (string child in children) {
+        string childTitle = this.GetAreaDisplayName(
+          child
+        );
+
+        if (!string.Equals(
+              childTitle,
+              title,
+              StringComparison.Ordinal
+            )) {
+          continue;
+        }
+
+        string lastSegment = child;
+
+        int separatorIndex = child.LastIndexOf(
+          "/",
+          StringComparison.Ordinal
+        );
+
+        if (separatorIndex >= 0) {
+          lastSegment = child.Substring(
+            separatorIndex + 1
+          );
+        }
+
+        bool directoryArea =
+          lastSegment.StartsWith("[", StringComparison.Ordinal)
+          && lastSegment.EndsWith("]", StringComparison.Ordinal);
+
+        if (itemType == _JoplinFolderType && directoryArea) {
+          return child;
+        }
+
+        if (itemType == _JoplinNoteType && !directoryArea) {
+          return child;
+        }
+      }
+
+      return string.Empty;
+    }
+
+    /// <summary>
+    /// Finds a suppressed projection record bound to one existing logical area.
+    /// </summary>
+    private JoplinProjectionRecord FindSuppressedRecordByArea(
+      JoplinProjectionState state,
+      string area
+    ) {
+      foreach (JoplinProjectionRecord record in state.Records) {
+        if (!record.IsSuppressed) {
+          continue;
+        }
+
+        if (string.Equals(
+              record.Area,
+              area,
+              StringComparison.Ordinal
+            )) {
+          return record;
+        }
+      }
+
+      return null;
+    }
+
+    /// <summary>
+    /// Rebinds a newly created Joplin sync identity to an existing knowledge area whose
+    /// previous Joplin identity was suppressed during conflict reconciliation.
+    /// </summary>
+    private MaterializationResult RebindSuppressedArea(
+      JoplinSerializedItem item,
+      JoplinProjection projection,
+      JoplinProjectionRecord suppressedRecord,
+      string existingArea
+    ) {
+      if (item.Type == _JoplinNoteType) {
+        bool replaced = _KnowledgeRepository.TryReplace(
+          existingArea,
+          item.Body
+        );
+
+        if (!replaced) {
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin conflict rebind temporarily blocked while replacing knowledge area '"
+            + existingArea
+            + "'."
+          );
+
+          return MaterializationResult.TemporarilyUnavailable;
+        }
+      }
+
+      string oldId = suppressedRecord.Id;
+
+      projection.State.Records.Remove(
+        suppressedRecord
+      );
+
+      JoplinProjectionRecord record = new JoplinProjectionRecord();
+      record.Id = item.Id;
+      record.Area = existingArea;
+      record.Type = item.Type;
+      record.CreatedUtc = DateTime.MinValue;
+      record.ModifiedUtc = DateTime.MinValue;
+      record.ParentIdOverride = item.ParentId;
+      record.LastContentHash = string.Empty;
+      record.IsSuppressed = false;
+
+      this.SynchronizeProjectionRecordAfterJoplinWrite(
+        record,
+        item
+      );
+
+      projection.State.Records.Add(
+        record
+      );
+
+      DevLogger.LogTrace(
+        0,
+        99999,
+        "Joplin conflict rebind: oldId="
+        + oldId
+        + " newId="
+        + item.Id
+        + " area='"
+        + existingArea
+        + "'."
+      );
+
+      return MaterializationResult.Success;
+    }
+
+    /// <summary>
     /// Creates a new logical knowledge area from a Joplin note or notebook item.
     /// </summary>
     private MaterializationResult CreateKnowledgeItemFromJoplin(
@@ -607,6 +791,33 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       if (item.Type == _JoplinFolderType) {
         childName = "[" + item.Title + "]";
+      }
+
+      string existingArea = this.FindExistingDirectArea(
+        parentArea,
+        item.Title,
+        item.Type
+      );
+
+      if (!string.IsNullOrEmpty(existingArea)) {
+        JoplinProjectionRecord suppressedRecord =
+          this.FindSuppressedRecordByArea(
+            projection.State,
+            existingArea
+          );
+
+        if (suppressedRecord != null) {
+          MaterializationResult rebindResult = this.RebindSuppressedArea(
+            item,
+            projection,
+            suppressedRecord,
+            existingArea
+          );
+
+          if (rebindResult != MaterializationResult.Failed) {
+            return rebindResult;
+          }
+        }
       }
 
       DevLogger.LogTrace(
@@ -687,16 +898,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
       }
 
-      DateTime now = DateTime.UtcNow;
-
       JoplinProjectionRecord record = new JoplinProjectionRecord();
       record.Id = item.Id;
       record.Area = newArea;
       record.Type = item.Type;
-      record.CreatedUtc = now;
-      record.ModifiedUtc = now;
+      record.CreatedUtc = DateTime.MinValue;
+      record.ModifiedUtc = DateTime.MinValue;
       record.ParentIdOverride = item.ParentId;
       record.LastContentHash = string.Empty;
+      record.IsSuppressed = false;
+
+      this.SynchronizeProjectionRecordAfterJoplinWrite(
+        record,
+        item
+      );
 
       projection.State.Records.Add(record);
       return MaterializationResult.Success;
@@ -748,19 +963,72 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       if (item.Type == _JoplinNoteType) {
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin note update: id="
+          + item.Id
+          + " area='"
+          + record.Area
+          + "' bodyLength="
+          + item.Body.Length.ToString(CultureInfo.InvariantCulture)
+        );
+
         bool replaced = _KnowledgeRepository.TryReplace(
           record.Area,
           item.Body
         );
 
         if (!replaced) {
-          return MaterializationResult.Failed;
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin note update failed at TryReplace: id="
+            + item.Id
+            + " area='"
+            + record.Area
+            + "'"
+          );
+
+          return MaterializationResult.TemporarilyUnavailable;
         }
+
+        string repositoryContent = _KnowledgeRepository.GetAggregatedContent(
+          record.Area
+        );
+
+        string uploadedHash = this.ComputeHash(
+          this.NormalizeContentForComparison(item.Body)
+        );
+
+        string repositoryHash = this.ComputeHash(
+          this.NormalizeContentForComparison(repositoryContent)
+        );
+
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin note update persisted: id="
+          + item.Id
+          + " area='"
+          + record.Area
+          + "' uploadedHash="
+          + uploadedHash
+          + " repositoryHash="
+          + repositoryHash
+          + " equal="
+          + string.Equals(
+              uploadedHash,
+              repositoryHash,
+              StringComparison.Ordinal
+            ).ToString()
+        );
       }
 
-      record.ParentIdOverride = item.ParentId;
-      record.ModifiedUtc = DateTime.UtcNow;
-      record.LastContentHash = string.Empty;
+      this.SynchronizeProjectionRecordAfterJoplinWrite(
+        record,
+        item
+      );
 
       return MaterializationResult.Success;
     }
@@ -951,6 +1219,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
           record.ModifiedUtc = record.CreatedUtc;
           record.ParentIdOverride = string.Empty;
           record.LastContentHash = string.Empty;
+          record.IsSuppressed = false;
 
           state.Records.Add(record);
         }
@@ -958,6 +1227,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
         currentlyProjectedAreas.Add(
           type.ToString(CultureInfo.InvariantCulture) + ":" + area
         );
+
+        if (record.IsSuppressed) {
+          continue;
+        }
 
         JoplinProjectedItem projectedItem = new JoplinProjectedItem();
         projectedItem.Record = record;
@@ -978,23 +1251,30 @@ namespace AI.SmartStandards.KnowledgeAccess {
           projectedItem.Body = string.Empty;
         }
 
+        string semanticHash = this.ComputeProjectedSemanticHash(
+          projectedItem
+        );
+
+        if (!string.Equals(
+              record.LastContentHash,
+              semanticHash,
+              StringComparison.Ordinal
+            )) {
+          record.LastContentHash = semanticHash;
+          record.ModifiedUtc = DateTime.UtcNow;
+        }
+
+        // Serialize only after the semantic modification timestamp has reached its final
+        // value for this projection pass. Otherwise updated_time becomes part of the
+        // previous hash decision and causes every subsequent projection to modify itself.
         string serialized = this.SerializeJoplinItem(
           projectedItem
         );
 
-        string hash = this.ComputeHash(serialized);
-
-        if (!string.Equals(
-              record.LastContentHash,
-              hash,
-              StringComparison.Ordinal
-            )) {
-          record.LastContentHash = hash;
-          record.ModifiedUtc = DateTime.UtcNow;
-        }
+        string transportHash = this.ComputeHash(serialized);
 
         projectedItem.SerializedContent = serialized;
-        projectedItem.ContentHash = hash;
+        projectedItem.ContentHash = transportHash;
         items.Add(projectedItem);
       }
 
@@ -1014,6 +1294,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       this.SaveProjectionState(state);
+
+      DevLogger.LogTrace(
+        0,
+        99999,
+        "Joplin projection state: records="
+        + state.Records.Count.ToString(CultureInfo.InvariantCulture)
+        + " items="
+        + items.Count.ToString(CultureInfo.InvariantCulture)
+      );
 
       return new JoplinProjection(
         state,
@@ -1072,6 +1361,100 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Serializes one projected knowledge item using Joplin's textual sync-item format.
     /// </summary>
+    /// <summary>
+    /// Normalizes textual content for diagnostic write-through comparison.
+    /// </summary>
+    private string NormalizeContentForComparison(
+      string content
+    ) {
+      if (content == null) {
+        return string.Empty;
+      }
+
+      return content
+        .Replace("\r\n", "\n", StringComparison.Ordinal)
+        .Replace('\r', '\n')
+        .TrimEnd('\n');
+    }
+
+    /// <summary>
+    /// Synchronizes the persistent projection record with a successfully materialized
+    /// Joplin item so the immediately following projection pass is byte-stable and does
+    /// not manufacture another remote modification.
+    /// </summary>
+    private void SynchronizeProjectionRecordAfterJoplinWrite(
+      JoplinProjectionRecord record,
+      JoplinSerializedItem item
+    ) {
+      if (item.CreatedUtc != DateTime.MinValue) {
+        record.CreatedUtc = item.CreatedUtc;
+      }
+      else if (record.CreatedUtc == DateTime.MinValue) {
+        record.CreatedUtc = DateTime.UtcNow;
+      }
+
+      if (item.ModifiedUtc != DateTime.MinValue) {
+        record.ModifiedUtc = item.ModifiedUtc;
+      }
+      else {
+        record.ModifiedUtc = DateTime.UtcNow;
+      }
+
+      record.ParentIdOverride = item.ParentId;
+
+      JoplinProjectedItem projectedItem = new JoplinProjectedItem();
+      projectedItem.Record = record;
+      projectedItem.Title = this.GetAreaDisplayName(
+        record.Area
+      );
+      projectedItem.ParentId = item.ParentId;
+
+      if (record.Type == _JoplinNoteType) {
+        projectedItem.Body = _KnowledgeRepository.GetAggregatedContent(
+          record.Area
+        );
+      }
+      else {
+        projectedItem.Body = string.Empty;
+      }
+
+      record.LastContentHash = this.ComputeProjectedSemanticHash(
+        projectedItem
+      );
+    }
+
+    /// <summary>
+    /// Computes a stable semantic fingerprint for one projected Joplin item.
+    ///
+    /// Transport metadata such as <c>updated_time</c> is deliberately excluded. Including
+    /// the modification timestamp in the change detector would make the projection
+    /// self-modifying: changing the timestamp would change the hash, which would change
+    /// the timestamp again during the next projection pass.
+    /// </summary>
+    private string ComputeProjectedSemanticHash(
+      JoplinProjectedItem item
+    ) {
+      StringBuilder builder = new StringBuilder();
+
+      builder.Append(
+        item.Record.Type.ToString(
+          CultureInfo.InvariantCulture
+        )
+      );
+      builder.Append('\n');
+      builder.Append(item.Record.Area);
+      builder.Append('\n');
+      builder.Append(item.Title);
+      builder.Append('\n');
+      builder.Append(item.ParentId);
+      builder.Append('\n');
+      builder.Append(item.Body);
+
+      return this.ComputeHash(
+        builder.ToString()
+      );
+    }
+
     private string SerializeJoplinItem(JoplinProjectedItem item) {
       List<string> blocks = new List<string>();
 
@@ -1170,6 +1553,35 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
+    /// Parses one UTC timestamp from Joplin sync-item metadata.
+    /// </summary>
+    private DateTime ParseJoplinTime(
+      Dictionary<string, string> metadata,
+      string key
+    ) {
+      if (!metadata.TryGetValue(
+            key,
+            out string value
+          )) {
+        return DateTime.MinValue;
+      }
+
+      DateTime parsed;
+
+      if (!DateTime.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal |
+            DateTimeStyles.AdjustToUniversal,
+            out parsed
+          )) {
+        return DateTime.MinValue;
+      }
+
+      return parsed;
+    }
+
+    /// <summary>
     /// Parses the subset of Joplin sync-item metadata required to map notes and notebooks
     /// back to the provider-neutral knowledge repository.
     /// </summary>
@@ -1234,6 +1646,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
       JoplinSerializedItem item = new JoplinSerializedItem();
       item.Id = metadata["id"];
       item.Type = type;
+
+      item.CreatedUtc = this.ParseJoplinTime(
+        metadata,
+        "created_time"
+      );
+
+      item.ModifiedUtc = this.ParseJoplinTime(
+        metadata,
+        "updated_time"
+      );
 
       if (metadata.TryGetValue("parent_id", out string parentId)) {
         item.ParentId = parentId;
@@ -1300,7 +1722,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         root.DisplayName = "Joplin";
         root.IsCollection = true;
         root.Length = 0;
-        root.LastModifiedUtc = DateTime.UtcNow;
+        root.LastModifiedUtc = DateTime.UnixEpoch;
         root.ETag = "root";
         root.SourceKind = JoplinWebDavSourceKind.Root;
         return root;
@@ -1994,6 +2416,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       private DateTime _ModifiedUtc;
       private string _ParentIdOverride;
       private string _LastContentHash;
+      private bool _IsSuppressed;
 
       /// <summary>
       /// Gets or sets the stable Joplin item ID.
@@ -2076,6 +2499,22 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
         set {
           _LastContentHash = value;
+        }
+      }
+
+      /// <summary>
+      /// Gets or sets whether this knowledge-backed item is intentionally hidden from the
+      /// Joplin projection after a WebDAV DELETE.
+      ///
+      /// Suppression is persistent synchronization state only. It never deletes or
+      /// modifies the backing knowledge area.
+      /// </summary>
+      public bool IsSuppressed {
+        get {
+          return _IsSuppressed;
+        }
+        set {
+          _IsSuppressed = value;
         }
       }
     }
@@ -2237,6 +2676,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
       private string _ParentId;
       private string _Title;
       private string _Body;
+      private DateTime _CreatedUtc;
+      private DateTime _ModifiedUtc;
 
       /// <summary>
       /// Gets or sets the Joplin item ID.
@@ -2297,6 +2738,31 @@ namespace AI.SmartStandards.KnowledgeAccess {
           _Body = value;
         }
       }
+
+
+      /// <summary>
+      /// Gets or sets the Joplin creation timestamp.
+      /// </summary>
+      public DateTime CreatedUtc {
+        get {
+          return _CreatedUtc;
+        }
+        set {
+          _CreatedUtc = value;
+        }
+      }
+
+      /// <summary>
+      /// Gets or sets the Joplin modification timestamp.
+      /// </summary>
+      public DateTime ModifiedUtc {
+        get {
+          return _ModifiedUtc;
+        }
+        set {
+          _ModifiedUtc = value;
+        }
+      }
     }
 
     /// <summary>
@@ -2306,7 +2772,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private enum MaterializationResult {
       Success = 0,
       PendingDependency = 1,
-      Failed = 2
+      Failed = 2,
+      TemporarilyUnavailable = 3
     }
 
     /// <summary>

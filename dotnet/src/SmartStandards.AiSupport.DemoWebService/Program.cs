@@ -47,7 +47,7 @@ namespace AI.SmartStandards.DemoWebService {
 
 
       services.AddSingleton<IKnowledgeRepository>(
-        new FileBasedKnowledgeRepository("C:\\Temp\\_OneNoteExport", false)
+        new FileBasedKnowledgeRepository("C:\\Temp\\_OneNoteExport", false, true)
       );
 
 
