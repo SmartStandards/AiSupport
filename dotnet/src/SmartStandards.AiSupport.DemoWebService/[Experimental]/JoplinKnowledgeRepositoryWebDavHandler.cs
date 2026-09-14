@@ -389,6 +389,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return this.StatusCode(StatusCodes.Status204NoContent);
         }
 
+        // A real Joplin sync target must accept an item independently of whether its
+        // semantic parent has already arrived. Persist the raw item first. It remains
+        // authoritative for WebDAV reads until it can be materialized successfully into
+        // the knowledge repository.
+        _SyncStateStore.WriteFile(path, content);
+
         string itemId = Path.GetFileNameWithoutExtension(path);
 
         if (!string.Equals(
@@ -404,29 +410,49 @@ namespace AI.SmartStandards.KnowledgeAccess {
         JoplinProjection projection = this.BuildProjection();
         JoplinProjectionRecord existingRecord = projection.FindRecordById(itemId);
 
-        bool success;
+        MaterializationResult materializationResult;
 
         if (existingRecord == null) {
-          success = this.CreateKnowledgeItemFromJoplin(
+          materializationResult = this.CreateKnowledgeItemFromJoplin(
             item,
             projection
           );
         }
         else {
-          success = this.UpdateKnowledgeItemFromJoplin(
+          materializationResult = this.UpdateKnowledgeItemFromJoplin(
             item,
             existingRecord,
             projection
           );
         }
 
-        if (!success) {
+        if (materializationResult == MaterializationResult.PendingDependency) {
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin item '"
+            + item.Id
+            + "' accepted as pending because a referenced parent item is not available yet."
+          );
+
+          this.SaveProjectionState(projection.State);
+          return this.StatusCode(StatusCodes.Status204NoContent);
+        }
+
+        if (materializationResult == MaterializationResult.Failed) {
           return this.Conflict(
-            "The Joplin item could not be mapped atomically to the knowledge repository."
+            "The Joplin item was accepted by the sync target but could not be mapped to the knowledge repository."
           );
         }
 
+        // The knowledge repository now represents the item. Remove the temporary raw
+        // sync copy so subsequent reads use the dynamic knowledge projection.
+        _SyncStateStore.Delete(path);
+
         this.SaveProjectionState(projection.State);
+
+        // A newly materialized notebook may unlock notes that arrived before it.
+        this.MaterializePendingKnowledgeItems();
 
         return this.StatusCode(StatusCodes.Status204NoContent);
       }
@@ -546,7 +572,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Creates a new logical knowledge area from a Joplin note or notebook item.
     /// </summary>
-    private bool CreateKnowledgeItemFromJoplin(
+    private MaterializationResult CreateKnowledgeItemFromJoplin(
       JoplinSerializedItem item,
       JoplinProjection projection
     ) {
@@ -558,7 +584,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
         );
 
         if (parentRecord == null) {
-          return false;
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin create mapping deferred because parent_id '"
+            + item.ParentId
+            + "' is not known in the current projection."
+          );
+
+          return MaterializationResult.PendingDependency;
         }
 
         parentArea = parentRecord.Area;
@@ -571,24 +605,43 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       string childName = item.Title;
 
-      if (item.Type == _JoplinNoteType) {
+      if (item.Type == _JoplinFolderType) {
         childName = "[" + item.Title + "]";
       }
+
+      DevLogger.LogTrace(
+        0,
+        99999,
+        "Joplin create mapping: id="
+        + item.Id
+        + " type="
+        + item.Type.ToString(CultureInfo.InvariantCulture)
+        + " title='"
+        + item.Title
+        + "' parentArea='"
+        + parentArea
+        + "' childName='"
+        + childName
+        + "'"
+      );
 
       bool added = _KnowledgeRepository.TryAddSubArea(
         parentArea,
         childName
       );
 
-      if (!added && item.Type == _JoplinNoteType) {
-        added = _KnowledgeRepository.TryAddSubArea(
-          parentArea,
-          item.Title
-        );
-      }
-
       if (!added) {
-        return false;
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin create mapping failed at TryAddSubArea: parentArea='"
+          + parentArea
+          + "' childName='"
+          + childName
+          + "'"
+        );
+
+        return MaterializationResult.Failed;
       }
 
       string[] afterAreas = _KnowledgeRepository.GetAreas(
@@ -602,7 +655,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
       );
 
       if (string.IsNullOrEmpty(newArea)) {
-        return false;
+        DevLogger.LogTrace(
+          0,
+          99999,
+          "Joplin create mapping failed because the newly added area could not be identified uniquely below '"
+          + parentArea
+          + "'."
+        );
+
+        return MaterializationResult.Failed;
       }
 
       if (item.Type == _JoplinNoteType &&
@@ -613,8 +674,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
         );
 
         if (!appended) {
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Joplin create mapping failed while appending note content to '"
+            + newArea
+            + "'. The newly created area will be rolled back."
+          );
+
           _KnowledgeRepository.TryDelete(newArea);
-          return false;
+          return MaterializationResult.Failed;
         }
       }
 
@@ -630,7 +699,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       record.LastContentHash = string.Empty;
 
       projection.State.Records.Add(record);
-      return true;
+      return MaterializationResult.Success;
     }
 
     /// <summary>
@@ -641,7 +710,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// TryMoveArea operation. Content identity and storage remain bound to the original
     /// knowledge area unless an explicit rename is performed.
     /// </summary>
-    private bool UpdateKnowledgeItemFromJoplin(
+    private MaterializationResult UpdateKnowledgeItemFromJoplin(
       JoplinSerializedItem item,
       JoplinProjectionRecord record,
       JoplinProjection projection
@@ -662,7 +731,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         );
 
         if (!renamed) {
-          return false;
+          return MaterializationResult.Failed;
         }
 
         string renamedArea = this.FindRenamedArea(
@@ -672,7 +741,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         );
 
         if (string.IsNullOrEmpty(renamedArea)) {
-          return false;
+          return MaterializationResult.Failed;
         }
 
         record.Area = renamedArea;
@@ -685,7 +754,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         );
 
         if (!replaced) {
-          return false;
+          return MaterializationResult.Failed;
         }
       }
 
@@ -693,7 +762,99 @@ namespace AI.SmartStandards.KnowledgeAccess {
       record.ModifiedUtc = DateTime.UtcNow;
       record.LastContentHash = string.Empty;
 
-      return true;
+      return MaterializationResult.Success;
+    }
+
+    /// <summary>
+    /// Attempts to materialize accepted Joplin note and notebook items that previously
+    /// could not be projected because their parent item had not yet arrived.
+    /// 
+    /// The method repeatedly scans root sync-item files until no additional item can be
+    /// materialized. This handles arbitrary parent-before-child upload ordering without
+    /// requiring Joplin to retry the original PUT.
+    /// </summary>
+    private void MaterializePendingKnowledgeItems() {
+      bool progress = true;
+
+      while (progress) {
+        progress = false;
+
+        JoplinSyncStateEntry[] rootEntries = _SyncStateStore.GetChildren("/");
+        JoplinProjection projection = this.BuildProjection();
+
+        foreach (JoplinSyncStateEntry entry in rootEntries) {
+          if (entry.IsCollection) {
+            continue;
+          }
+
+          if (!this.IsRootItemFile(entry.Path)) {
+            continue;
+          }
+
+          byte[] content = _SyncStateStore.ReadFile(entry.Path);
+          JoplinSerializedItem item = this.ParseJoplinItem(
+            Encoding.UTF8.GetString(content)
+          );
+
+          if (item == null) {
+            continue;
+          }
+
+          if (item.Type != _JoplinNoteType &&
+              item.Type != _JoplinFolderType) {
+            continue;
+          }
+
+          JoplinProjectionRecord existingRecord =
+            projection.FindRecordById(item.Id);
+
+          MaterializationResult result;
+
+          if (existingRecord == null) {
+            result = this.CreateKnowledgeItemFromJoplin(
+              item,
+              projection
+            );
+          }
+          else {
+            result = this.UpdateKnowledgeItemFromJoplin(
+              item,
+              existingRecord,
+              projection
+            );
+          }
+
+          if (result == MaterializationResult.PendingDependency) {
+            continue;
+          }
+
+          if (result == MaterializationResult.Failed) {
+            DevLogger.LogTrace(
+              0,
+              99999,
+              "Pending Joplin item '"
+              + item.Id
+              + "' still cannot be materialized."
+            );
+
+            continue;
+          }
+
+          _SyncStateStore.Delete(entry.Path);
+          this.SaveProjectionState(projection.State);
+
+          DevLogger.LogTrace(
+            0,
+            99999,
+            "Pending Joplin item '"
+            + item.Id
+            + "' was materialized successfully."
+          );
+
+          progress = true;
+          break;
+        }
+      }
     }
 
     /// <summary>
@@ -912,81 +1073,100 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Serializes one projected knowledge item using Joplin's textual sync-item format.
     /// </summary>
     private string SerializeJoplinItem(JoplinProjectedItem item) {
-      StringBuilder builder = new StringBuilder();
+      List<string> blocks = new List<string>();
 
-      builder.Append(item.Title.TrimEnd('\r', '\n'));
-      builder.Append("\n\n");
+      blocks.Add(
+        item.Title.TrimEnd('\r', '\n')
+      );
 
       if (item.Record.Type == _JoplinNoteType &&
           !string.IsNullOrEmpty(item.Body)) {
-        builder.Append(item.Body.TrimEnd('\r', '\n'));
-        builder.Append("\n\n");
+        blocks.Add(
+          item.Body.TrimEnd('\r', '\n')
+        );
       }
 
-      builder.Append("id: ");
-      builder.Append(item.Record.Id);
-      builder.Append('\n');
-      builder.Append("parent_id: ");
-      builder.Append(item.ParentId);
-      builder.Append('\n');
-      builder.Append("created_time: ");
-      builder.Append(this.FormatJoplinTime(item.Record.CreatedUtc));
-      builder.Append('\n');
-      builder.Append("updated_time: ");
-      builder.Append(this.FormatJoplinTime(item.Record.ModifiedUtc));
-      builder.Append('\n');
+      StringBuilder properties = new StringBuilder();
+
+      properties.Append("id: ");
+      properties.Append(item.Record.Id);
+      properties.Append('\n');
+      properties.Append("parent_id: ");
+      properties.Append(item.ParentId);
+      properties.Append('\n');
+      properties.Append("created_time: ");
+      properties.Append(this.FormatJoplinTime(item.Record.CreatedUtc));
+      properties.Append('\n');
+      properties.Append("updated_time: ");
+      properties.Append(this.FormatJoplinTime(item.Record.ModifiedUtc));
+      properties.Append('\n');
 
       if (item.Record.Type == _JoplinNoteType) {
-        builder.Append("is_conflict: 0\n");
-        builder.Append("latitude: 0.00000000\n");
-        builder.Append("longitude: 0.00000000\n");
-        builder.Append("altitude: 0.0000\n");
-        builder.Append("author: \n");
-        builder.Append("source_url: \n");
-        builder.Append("is_todo: 0\n");
-        builder.Append("todo_due: 0\n");
-        builder.Append("todo_completed: 0\n");
-        builder.Append("source: knowledge-repository\n");
-        builder.Append("source_application: knowledge-repository\n");
-        builder.Append("application_data: \n");
-        builder.Append("order: 0\n");
-        builder.Append("user_created_time: ");
-        builder.Append(this.FormatJoplinTime(item.Record.CreatedUtc));
-        builder.Append('\n');
-        builder.Append("user_updated_time: ");
-        builder.Append(this.FormatJoplinTime(item.Record.ModifiedUtc));
-        builder.Append('\n');
-        builder.Append("encryption_cipher_text: \n");
-        builder.Append("encryption_applied: 0\n");
-        builder.Append("markup_language: 1\n");
-        builder.Append("is_shared: 0\n");
-        builder.Append("share_id: \n");
-        builder.Append("conflict_original_id: \n");
-        builder.Append("master_key_id: \n");
-        builder.Append("user_data: \n");
-        builder.Append("deleted_time: 0\n");
+        properties.Append("is_conflict: 0\n");
+        properties.Append("latitude: 0.00000000\n");
+        properties.Append("longitude: 0.00000000\n");
+        properties.Append("altitude: 0.0000\n");
+        properties.Append("author: \n");
+        properties.Append("source_url: \n");
+        properties.Append("is_todo: 0\n");
+        properties.Append("todo_due: 0\n");
+        properties.Append("todo_completed: 0\n");
+        properties.Append("source: knowledge-repository\n");
+        properties.Append("source_application: knowledge-repository\n");
+        properties.Append("application_data: \n");
+        properties.Append("order: 0\n");
+        properties.Append("user_created_time: ");
+        properties.Append(this.FormatJoplinTime(item.Record.CreatedUtc));
+        properties.Append('\n');
+        properties.Append("user_updated_time: ");
+        properties.Append(this.FormatJoplinTime(item.Record.ModifiedUtc));
+        properties.Append('\n');
+        properties.Append("encryption_cipher_text: \n");
+        properties.Append("encryption_applied: 0\n");
+        properties.Append("markup_language: 1\n");
+        properties.Append("is_shared: 0\n");
+        properties.Append("share_id: \n");
+        properties.Append("conflict_original_id: \n");
+        properties.Append("master_key_id: \n");
+        properties.Append("user_data: \n");
+        properties.Append("deleted_time: 0\n");
       }
       else {
-        builder.Append("user_created_time: ");
-        builder.Append(this.FormatJoplinTime(item.Record.CreatedUtc));
-        builder.Append('\n');
-        builder.Append("user_updated_time: ");
-        builder.Append(this.FormatJoplinTime(item.Record.ModifiedUtc));
-        builder.Append('\n');
-        builder.Append("encryption_cipher_text: \n");
-        builder.Append("encryption_applied: 0\n");
-        builder.Append("is_shared: 0\n");
-        builder.Append("share_id: \n");
-        builder.Append("master_key_id: \n");
-        builder.Append("user_data: \n");
-        builder.Append("deleted_time: 0\n");
+        properties.Append("user_created_time: ");
+        properties.Append(this.FormatJoplinTime(item.Record.CreatedUtc));
+        properties.Append('\n');
+        properties.Append("user_updated_time: ");
+        properties.Append(this.FormatJoplinTime(item.Record.ModifiedUtc));
+        properties.Append('\n');
+        properties.Append("encryption_cipher_text: \n");
+        properties.Append("encryption_applied: 0\n");
+        properties.Append("is_shared: 0\n");
+        properties.Append("share_id: \n");
+        properties.Append("master_key_id: \n");
+        properties.Append("user_data: \n");
+        properties.Append("deleted_time: 0\n");
       }
 
-      builder.Append("type_: ");
-      builder.Append(item.Record.Type.ToString(CultureInfo.InvariantCulture));
-      builder.Append('\n');
+      properties.Append("type_: ");
+      properties.Append(
+        item.Record.Type.ToString(
+          CultureInfo.InvariantCulture
+        )
+      );
 
-      return builder.ToString();
+      blocks.Add(
+        properties.ToString()
+      );
+
+      // Joplin serializes title, optional note body and the property block by joining
+      // them with exactly one empty line. There must be no trailing line break after
+      // the final property. BaseItem.unserialize() scans from the end and would treat
+      // such a trailing empty line as the body/property separator before reading any
+      // metadata, causing "Missing required property: type_".
+      return string.Join(
+        "\n\n",
+        blocks.ToArray()
+      );
     }
 
     /// <summary>
@@ -1126,6 +1306,35 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return root;
       }
 
+      // A raw root item in the state store represents an accepted Joplin item that has
+      // not yet been materialized successfully. It must take precedence over the dynamic
+      // projection so Joplin can immediately read back exactly what it uploaded.
+      JoplinSyncStateEntry stateEntry = _SyncStateStore.GetEntry(path);
+
+      if (stateEntry != null) {
+        JoplinWebDavEntry stateBackedEntry = new JoplinWebDavEntry();
+        stateBackedEntry.Path = stateEntry.Path;
+        stateBackedEntry.DisplayName = this.GetWebDavDisplayName(stateEntry.Path);
+        stateBackedEntry.IsCollection = stateEntry.IsCollection;
+        stateBackedEntry.Length = stateEntry.Length;
+        stateBackedEntry.LastModifiedUtc = stateEntry.LastModifiedUtc;
+        stateBackedEntry.SourceKind = JoplinWebDavSourceKind.StateStore;
+
+        if (stateEntry.IsCollection) {
+          stateBackedEntry.ETag = this.ComputeHash(
+            stateEntry.Path
+            + ":"
+            + stateEntry.LastModifiedUtc.Ticks.ToString(CultureInfo.InvariantCulture)
+          );
+        }
+        else {
+          byte[] stateBytes = _SyncStateStore.ReadFile(path);
+          stateBackedEntry.ETag = this.ComputeHash(stateBytes);
+        }
+
+        return stateBackedEntry;
+      }
+
       if (this.IsRootItemFile(path)) {
         string itemId = Path.GetFileNameWithoutExtension(path);
         JoplinProjectedItem item = projection.FindItemById(itemId);
@@ -1146,33 +1355,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
       }
 
-      JoplinSyncStateEntry stateEntry = _SyncStateStore.GetEntry(path);
 
-      if (stateEntry == null) {
-        return null;
-      }
-
-      JoplinWebDavEntry entry = new JoplinWebDavEntry();
-      entry.Path = stateEntry.Path;
-      entry.DisplayName = this.GetWebDavDisplayName(stateEntry.Path);
-      entry.IsCollection = stateEntry.IsCollection;
-      entry.Length = stateEntry.Length;
-      entry.LastModifiedUtc = stateEntry.LastModifiedUtc;
-      entry.SourceKind = JoplinWebDavSourceKind.StateStore;
-
-      if (stateEntry.IsCollection) {
-        entry.ETag = this.ComputeHash(
-          stateEntry.Path
-          + ":"
-          + stateEntry.LastModifiedUtc.Ticks.ToString(CultureInfo.InvariantCulture)
-        );
-      }
-      else {
-        byte[] bytes = _SyncStateStore.ReadFile(path);
-        entry.ETag = this.ComputeHash(bytes);
-      }
-
-      return entry;
+      return null;
     }
 
     /// <summary>
@@ -2113,6 +2297,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
           _Body = value;
         }
       }
+    }
+
+    /// <summary>
+    /// Describes the result of translating an accepted Joplin sync item into the
+    /// provider-neutral knowledge repository.
+    /// </summary>
+    private enum MaterializationResult {
+      Success = 0,
+      PendingDependency = 1,
+      Failed = 2
     }
 
     /// <summary>
