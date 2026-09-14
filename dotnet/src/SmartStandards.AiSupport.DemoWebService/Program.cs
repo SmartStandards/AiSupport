@@ -84,6 +84,12 @@ namespace AI.SmartStandards.DemoWebService {
 
       app.UseAmbientFieldAdapterMiddleware();
 
+
+      /*
+       * "WebDAV" (NICHT Joplin Server)
+       http://localhost:55202/api/knowledge/joplin
+       
+       */
       app.UseJoplinKnowledgeRepositoryWebDav();
 
       //required for the www-root

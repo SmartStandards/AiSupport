@@ -2,7 +2,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using System;
@@ -109,15 +109,21 @@ namespace AI.SmartStandards.KnowledgeAccess {
           syncStateStore
         );
 
+      ControllerActionDescriptor actionDescriptor =
+        new ControllerActionDescriptor();
+
       ActionContext actionContext = new ActionContext(
         context,
         new RouteData(),
-        new ActionDescriptor()
+        actionDescriptor
       );
 
-      handler.ControllerContext = new ControllerContext(
-        actionContext
-      );
+      ControllerContext controllerContext =
+        new ControllerContext(
+          actionContext
+        );
+
+      handler.ControllerContext = controllerContext;
 
       string relativePath = this.GetRelativePath(
         remainingPath
