@@ -1699,8 +1699,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Converts physical Markdown file references to canonical knowledge-resource references.
-    /// Only relative links that resolve to existing non-Markdown files inside the repository
-    /// are converted.
+    ///
+    /// The resolver deliberately accepts both normal relative Markdown paths and unnecessarily
+    /// qualified editor-generated paths such as absolute local file-system paths or relative
+    /// paths containing redundant dot/dot-dot navigation. Every accepted path is canonicalized
+    /// to the physical file below the configured repository root before its opaque ResourceId
+    /// is created.
+    ///
+    /// Reading never modifies the Markdown file. If the document is written later for an
+    /// unrelated mutation, the normal write mapping serializes the canonical resource back as
+    /// the shortest normal relative path from the Markdown document to the resource.
     /// </summary>
     private string ConvertPhysicalMarkdownToKnowledgeMarkdown(
       string documentPath,
@@ -1716,19 +1724,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
           physicalMarkdown
         );
 
-      string documentDirectory = Path.GetDirectoryName(
-        documentPath
-      );
-
-      if (string.IsNullOrEmpty(documentDirectory)) {
-        return physicalMarkdown;
-      }
-
       return _MarkdownInlineLinkRegex.Replace(
         normalizedPhysicalMarkdown,
         (Match match) => {
-          string rawTarget = match.Groups["target"].Value;
-          string target = rawTarget;
+          string target = match.Groups["target"].Value;
 
           if (target.StartsWith("<", StringComparison.Ordinal) &&
               target.EndsWith(">", StringComparison.Ordinal) &&
@@ -1739,49 +1738,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
             );
           }
 
-          if (!this.IsPhysicalResourceReferenceCandidate(target)) {
-            return match.Value;
-          }
+          string resourcePath;
 
-          string decodedTarget;
-
-          try {
-            decodedTarget = Uri.UnescapeDataString(
-              target
-            );
-          }
-          catch (UriFormatException ex) {
-            DevLogger.LogError(ex);
-            return match.Value;
-          }
-
-          string resourcePath = Path.GetFullPath(
-            Path.Combine(
-              documentDirectory,
-              decodedTarget.Replace(
-                '/',
-                Path.DirectorySeparatorChar
-              )
-            )
-          );
-
-          try {
-            this.EnsurePathInsideRepository(
-              resourcePath
-            );
-          }
-          catch (InvalidOperationException) {
-            return match.Value;
-          }
-
-          if (!File.Exists(resourcePath)) {
-            return match.Value;
-          }
-
-          if (string.Equals(
-                Path.GetExtension(resourcePath),
-                _MarkdownExtension,
-                StringComparison.OrdinalIgnoreCase
+          if (!this.TryResolvePhysicalResourceReference(
+                documentPath,
+                target,
+                out resourcePath
               )) {
             return match.Value;
           }
@@ -1856,9 +1818,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Returns whether one Markdown destination can represent a local physical resource.
+    /// Resolves one physical Markdown target to an existing resource below the configured
+    /// repository root.
+    ///
+    /// The method intentionally accepts absolute local paths produced by editors, file URIs,
+    /// and non-canonical relative paths. The returned path is always fully normalized. Remote
+    /// URIs, document anchors, Markdown documents and paths outside this repository are rejected.
     /// </summary>
-    private bool IsPhysicalResourceReferenceCandidate(string target) {
+    private bool TryResolvePhysicalResourceReference(
+      string documentPath,
+      string target,
+      out string resourcePath
+    ) {
+      resourcePath = string.Empty;
+
       if (string.IsNullOrWhiteSpace(target)) {
         return false;
       }
@@ -1866,24 +1839,99 @@ namespace AI.SmartStandards.KnowledgeAccess {
       if (target.StartsWith(
             _KnowledgeResourceReferencePrefix,
             StringComparison.Ordinal
+          ) ||
+          target.StartsWith(
+            "#",
+            StringComparison.Ordinal
           )) {
         return false;
       }
 
-      if (target.StartsWith("#", StringComparison.Ordinal) ||
-          target.StartsWith("/", StringComparison.Ordinal) ||
-          target.StartsWith("\\", StringComparison.Ordinal)) {
+      string decodedTarget;
+
+      try {
+        decodedTarget = Uri.UnescapeDataString(
+          target
+        );
+      }
+      catch (UriFormatException ex) {
+        DevLogger.LogError(ex);
         return false;
       }
 
+      string physicalPath;
+
       if (Uri.TryCreate(
-            target,
+            decodedTarget,
             UriKind.Absolute,
             out Uri absoluteUri
           )) {
+        if (!absoluteUri.IsFile) {
+          return false;
+        }
+
+        physicalPath = absoluteUri.LocalPath;
+      }
+      else if (Path.IsPathRooted(decodedTarget)) {
+        physicalPath = decodedTarget;
+      }
+      else {
+        string documentDirectory = Path.GetDirectoryName(
+          documentPath
+        );
+
+        if (string.IsNullOrEmpty(documentDirectory)) {
+          return false;
+        }
+
+        physicalPath = Path.Combine(
+          documentDirectory,
+          decodedTarget.Replace(
+            '/',
+            Path.DirectorySeparatorChar
+          )
+        );
+      }
+
+      try {
+        physicalPath = Path.GetFullPath(
+          physicalPath
+        );
+
+        this.EnsurePathInsideRepository(
+          physicalPath
+        );
+      }
+      catch (Exception ex) when (
+        ex is ArgumentException ||
+        ex is NotSupportedException ||
+        ex is PathTooLongException ||
+        ex is InvalidOperationException
+      ) {
+        if (ex is InvalidOperationException) {
+          // A path outside the repository is a normal negative resolution result and
+          // therefore deliberately not logged.
+        }
+        else {
+          DevLogger.LogError(ex);
+        }
+
         return false;
       }
 
+      if (!File.Exists(physicalPath)) {
+        return false;
+      }
+
+      if (string.Equals(
+            Path.GetExtension(physicalPath),
+            _MarkdownExtension,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        return false;
+      }
+
+      resourcePath = physicalPath;
       return true;
     }
 

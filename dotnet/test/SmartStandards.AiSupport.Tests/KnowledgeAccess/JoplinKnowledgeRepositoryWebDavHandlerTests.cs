@@ -1189,8 +1189,8 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           _ResourceId + ".md",
           context.CreateJoplinResourceItem(
             _ResourceId,
-            string.Empty,
-            string.Empty,
+            _ResourceId + ".png",
+            _ResourceId + ".png",
             "image/png",
             "png"
           )
@@ -1217,6 +1217,11 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           repository,
           folderA,
           "Image Note"
+        );
+
+        Assert.IsFalse(
+          string.IsNullOrEmpty(noteArea),
+          "The Joplin note must be materialized before its resource mapping can be inspected."
         );
 
         KnowledgeResourceInfo[] originalResources =
@@ -1313,9 +1318,29 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           )
         );
 
+        string[] ownedResourceFiles = Directory.GetFiles(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Folder B"
+          ),
+          "Image Note.Res*.png",
+          SearchOption.TopDirectoryOnly
+        );
+
+        Assert.AreEqual(
+          1,
+          ownedResourceFiles.Length
+        );
+
+        string encodedOwnedResourceFileName = Uri.EscapeDataString(
+          Path.GetFileName(
+            ownedResourceFiles[0]
+          )
+        );
+
         Assert.IsTrue(
           physicalMarkdown.Contains(
-            "Image Note.Res",
+            encodedOwnedResourceFileName,
             StringComparison.Ordinal
           )
         );

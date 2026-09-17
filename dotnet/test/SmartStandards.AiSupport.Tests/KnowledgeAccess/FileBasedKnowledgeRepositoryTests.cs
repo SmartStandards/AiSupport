@@ -771,5 +771,302 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         );
       }
     }
+
+    /// <summary>
+    /// Verifies that an editor-generated absolute image path inside the repository resolves
+    /// to the same opaque ResourceId as the normal relative path would, without mutating the
+    /// Markdown file during the read.
+    /// </summary>
+    [TestMethod]
+    public void GetAggregatedContent_AbsoluteImagePathInsideRepository_NormalizesWithoutMutatingFile() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        string markdownPath = Path.Combine(
+          context.KnowledgeDirectory,
+          "Article.md"
+        );
+
+        string imagePath = Path.Combine(
+          context.KnowledgeDirectory,
+          "diagram.png"
+        );
+
+        File.WriteAllBytes(
+          imagePath,
+          new byte[] { 81, 82, 83 }
+        );
+
+        string absoluteMarkdownTarget = imagePath.Replace(
+          Path.DirectorySeparatorChar,
+          '/'
+        );
+
+        string originalMarkdown =
+          "![Architecture]("
+          + absoluteMarkdownTarget
+          + ")";
+
+        File.WriteAllText(
+          markdownPath,
+          originalMarkdown
+        );
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        string articleArea = context.GetChildArea(
+          repository,
+          "/",
+          "Article"
+        );
+
+        string content = repository.GetAggregatedContent(
+          articleArea
+        );
+
+        Assert.IsTrue(
+          content.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.AreEqual(
+          originalMarkdown,
+          File.ReadAllText(markdownPath)
+        );
+
+        KnowledgeResourceInfo[] resources =
+          repository.GetResources(
+            articleArea
+          );
+
+        Assert.AreEqual(
+          1,
+          resources.Length
+        );
+
+        Assert.AreEqual(
+          "diagram.png",
+          resources[0].FileName
+        );
+      }
+    }
+
+    /// <summary>
+    /// Verifies that an unnecessarily routed relative path is normalized to the canonical
+    /// repository resource identity and is simplified automatically on the next normal write.
+    /// </summary>
+    [TestMethod]
+    public void TryAppendContent_RedundantRelativeResourcePath_IsSimplifiedOnNextWrite() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        string docsDirectory = Path.Combine(
+          context.KnowledgeDirectory,
+          "Docs"
+        );
+
+        Directory.CreateDirectory(
+          docsDirectory
+        );
+
+        string markdownPath = Path.Combine(
+          docsDirectory,
+          "Article.md"
+        );
+
+        string imagePath = Path.Combine(
+          docsDirectory,
+          "diagram.png"
+        );
+
+        File.WriteAllBytes(
+          imagePath,
+          new byte[] { 91, 92, 93 }
+        );
+
+        File.WriteAllText(
+          markdownPath,
+          "![Architecture](../Docs/diagram.png)"
+        );
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        string docsArea = context.GetChildArea(
+          repository,
+          "/",
+          "Docs"
+        );
+
+        string articleArea = context.GetChildArea(
+          repository,
+          docsArea,
+          "Article"
+        );
+
+        string knowledgeContent = repository.GetAggregatedContent(
+          articleArea
+        );
+
+        Assert.IsTrue(
+          knowledgeContent.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.AreEqual(
+          "![Architecture](../Docs/diagram.png)",
+          File.ReadAllText(markdownPath)
+        );
+
+        Assert.IsTrue(
+          repository.TryAppendContent(
+            articleArea,
+            "Additional text"
+          )
+        );
+
+        string rewrittenMarkdown = File.ReadAllText(
+          markdownPath
+        );
+
+        Assert.IsTrue(
+          rewrittenMarkdown.Contains(
+            "![Architecture](diagram.png)",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.IsFalse(
+          rewrittenMarkdown.Contains(
+            "../Docs/diagram.png",
+            StringComparison.Ordinal
+          )
+        );
+      }
+    }
+
+    /// <summary>
+    /// Verifies that an absolute path to a resource in another repository folder is exposed
+    /// with a repository-root-based identity and is rewritten as a normal relative Markdown
+    /// path when the document is next persisted.
+    /// </summary>
+    [TestMethod]
+    public void TryAppendContent_AbsoluteResourceInDifferentRepositoryFolder_RewritesToRelativePath() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        string docsDirectory = Path.Combine(
+          context.KnowledgeDirectory,
+          "Docs"
+        );
+
+        string assetsDirectory = Path.Combine(
+          context.KnowledgeDirectory,
+          "Assets"
+        );
+
+        Directory.CreateDirectory(
+          docsDirectory
+        );
+
+        Directory.CreateDirectory(
+          assetsDirectory
+        );
+
+        string markdownPath = Path.Combine(
+          docsDirectory,
+          "Article.md"
+        );
+
+        string imagePath = Path.Combine(
+          assetsDirectory,
+          "diagram.png"
+        );
+
+        File.WriteAllBytes(
+          imagePath,
+          new byte[] { 101, 102, 103 }
+        );
+
+        string absoluteMarkdownTarget = imagePath.Replace(
+          Path.DirectorySeparatorChar,
+          '/'
+        );
+
+        File.WriteAllText(
+          markdownPath,
+          "![Architecture]("
+          + absoluteMarkdownTarget
+          + ")"
+        );
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        string docsArea = context.GetChildArea(
+          repository,
+          "/",
+          "Docs"
+        );
+
+        string articleArea = context.GetChildArea(
+          repository,
+          docsArea,
+          "Article"
+        );
+
+        KnowledgeResourceInfo[] resources =
+          repository.GetResources(
+            articleArea
+          );
+
+        Assert.AreEqual(
+          1,
+          resources.Length
+        );
+
+        string originalResourceId =
+          resources[0].ResourceId;
+
+        Assert.IsTrue(
+          repository.TryAppendContent(
+            articleArea,
+            "Additional text"
+          )
+        );
+
+        string rewrittenMarkdown = File.ReadAllText(
+          markdownPath
+        );
+
+        Assert.IsTrue(
+          rewrittenMarkdown.Contains(
+            "![Architecture](../Assets/diagram.png)",
+            StringComparison.Ordinal
+          )
+        );
+
+        KnowledgeResourceInfo[] rewrittenResources =
+          repository.GetResources(
+            articleArea
+          );
+
+        Assert.AreEqual(
+          1,
+          rewrittenResources.Length
+        );
+
+        Assert.AreEqual(
+          originalResourceId,
+          rewrittenResources[0].ResourceId
+        );
+      }
+    }
+
   }
 }
