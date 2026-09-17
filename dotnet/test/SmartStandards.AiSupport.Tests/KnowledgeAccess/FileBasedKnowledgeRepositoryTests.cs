@@ -1,15 +1,12 @@
 ﻿using AI.SmartStandards.KnowledgeAccess;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
 using System.IO;
-using System.Linq;
-using System.Text;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace AI.SmartStandards.KnowledgeAccess.Tests {
 
   /// <summary>
-  /// Verifies provider-neutral semantics and safety invariants of
-  /// <see cref="FileBasedKnowledgeRepository"/>.
+  /// Verifies provider-neutral semantics and FileBased resource mapping invariants.
   /// </summary>
   [TestClass]
   public sealed class FileBasedKnowledgeRepositoryTests {
@@ -75,20 +72,19 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           )
         );
 
+        KnowledgeResourceIdChange[] resourceIdChanges;
+
         Assert.IsTrue(
           repository.TryMoveContent(
             documentArea,
-            targetArea
+            targetArea,
+            out resourceIdChanges
           )
         );
 
         Assert.AreEqual(
-          string.Empty,
-          context.GetChildArea(
-            repository,
-            sourceArea,
-            "Document"
-          )
+          0,
+          resourceIdChanges.Length
         );
 
         string movedArea = context.GetChildArea(
@@ -101,142 +97,103 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           string.IsNullOrEmpty(movedArea)
         );
 
-        Assert.Contains(
-          "Persistent content",
-          repository.GetAggregatedContent(movedArea),
-          StringComparison.Ordinal
-        );
-
         string[] deletedArtifacts = Directory.GetFiles(
           context.KnowledgeDirectory,
           "*.DELETED*.md",
           SearchOption.AllDirectories
         );
 
-        CollectionAssert.AreEqual(
-          new string[0],
-          deletedArtifacts
+        Assert.AreEqual(
+          0,
+          deletedArtifacts.Length
         );
       }
     }
 
     /// <summary>
-    /// Verifies that moving one Markdown heading reparents the addressed content scope
-    /// without deleting either parent document.
+    /// Verifies that ordinary physical Markdown image references are exposed through the
+    /// repository as opaque knowledge-resource references without modifying the file.
     /// </summary>
     [TestMethod]
-    public void TryMoveContent_HeadingBetweenDocuments_ReparentsOnlyHeadingScope() {
+    public void GetAggregatedContent_PhysicalImageReference_ReturnsOpaqueKnowledgeResourceReference() {
       using (KnowledgeRepositoryTestContext context =
         new KnowledgeRepositoryTestContext()) {
+
+        string markdownPath = Path.Combine(
+          context.KnowledgeDirectory,
+          "Article.md"
+        );
+
+        string imagePath = Path.Combine(
+          context.KnowledgeDirectory,
+          "diagram.png"
+        );
+
+        File.WriteAllText(
+          markdownPath,
+          "![Architecture](diagram.png)"
+        );
+
+        File.WriteAllBytes(
+          imagePath,
+          new byte[] { 1, 2, 3, 4 }
+        );
 
         FileBasedKnowledgeRepository repository =
           context.CreateRepository();
 
-        Assert.IsTrue(
-          repository.TryAddSubArea(
-            "/",
-            "DocumentA",
-            KnowledgeAreaKind.Content
-          )
-        );
-
-        Assert.IsTrue(
-          repository.TryAddSubArea(
-            "/",
-            "DocumentB",
-            KnowledgeAreaKind.Content
-          )
-        );
-
-        string documentA = context.GetChildArea(
+        string articleArea = context.GetChildArea(
           repository,
           "/",
-          "DocumentA"
+          "Article"
         );
 
-        string documentB = context.GetChildArea(
-          repository,
-          "/",
-          "DocumentB"
-        );
-
-        Assert.IsTrue(
-          repository.TryAppendContent(
-            documentA,
-            "# Section\nSection body"
-          )
-        );
-
-        string section = context.GetChildArea(
-          repository,
-          documentA,
-          "Section"
-        );
-
-        Assert.IsFalse(
-          string.IsNullOrEmpty(section)
+        string content = repository.GetAggregatedContent(
+          articleArea
         );
 
         Assert.IsTrue(
-          repository.TryMoveContent(
-            section,
-            documentB
+          content.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
           )
         );
 
         Assert.IsFalse(
-          string.IsNullOrEmpty(
-            context.GetChildArea(
-              repository,
-              "/",
-              "DocumentA"
-            )
-          )
-        );
-
-        Assert.IsFalse(
-          string.IsNullOrEmpty(
-            context.GetChildArea(
-              repository,
-              "/",
-              "DocumentB"
-            )
+          content.Contains(
+            "diagram.png",
+            StringComparison.Ordinal
           )
         );
 
         Assert.AreEqual(
-          string.Empty,
-          context.GetChildArea(
-            repository,
-            documentA,
-            "Section"
-          )
+          "![Architecture](diagram.png)",
+          File.ReadAllText(markdownPath)
         );
 
-        string movedSection = context.GetChildArea(
-          repository,
-          documentB,
-          "Section"
+        KnowledgeResourceInfo[] resources =
+          repository.GetResources(
+            articleArea
+          );
+
+        Assert.AreEqual(
+          1,
+          resources.Length
         );
 
-        Assert.IsFalse(
-          string.IsNullOrEmpty(movedSection)
-        );
-
-        Assert.Contains(
-          "Section body",
-          repository.GetAggregatedContent(movedSection),
-          StringComparison.Ordinal
+        Assert.AreEqual(
+          "diagram.png",
+          resources[0].FileName
         );
       }
     }
 
     /// <summary>
-    /// Verifies that resource UIDs are positive repository-wide identities and are not
-    /// reused for consecutive resources.
+    /// Verifies that canonical knowledge-resource references are serialized back to normal
+    /// relative physical Markdown paths.
     /// </summary>
     [TestMethod]
-    public void TryAddResource_AllocatesDistinctPositiveResourceUids() {
+    public void TryAppendContent_KnowledgeResourceReference_WritesNormalPhysicalMarkdownPath() {
       using (KnowledgeRepositoryTestContext context =
         new KnowledgeRepositoryTestContext()) {
 
@@ -246,51 +203,119 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         Assert.IsTrue(
           repository.TryAddSubArea(
             "/",
-            "Document",
+            "Article",
             KnowledgeAreaKind.Content
           )
         );
 
-        string documentArea = context.GetChildArea(
+        string articleArea = context.GetChildArea(
           repository,
           "/",
-          "Document"
+          "Article"
         );
 
-        long firstResourceUid;
-        long secondResourceUid;
+        string resourceId;
 
         Assert.IsTrue(
           repository.TryAddResource(
-            documentArea,
-            ".png",
+            articleArea,
+            "diagram.png",
             "image/png",
-            new byte[] { 1, 2, 3 },
-            out firstResourceUid
+            new byte[] { 5, 6, 7 },
+            out resourceId
           )
         );
 
         Assert.IsTrue(
-          repository.TryAddResource(
-            documentArea,
-            ".png",
-            "image/png",
-            new byte[] { 4, 5, 6 },
-            out secondResourceUid
+          repository.TryAppendContent(
+            articleArea,
+            "![Architecture](knowledge-resource:"
+            + resourceId
+            + ")"
           )
         );
 
-        Assert.IsTrue(
-          firstResourceUid > 0
+        string markdownPath = Path.Combine(
+          context.KnowledgeDirectory,
+          "Article.md"
         );
 
-        Assert.IsTrue(
-          secondResourceUid > 0
+        string physicalContent = File.ReadAllText(
+          markdownPath
         );
 
-        Assert.AreNotEqual(
-          firstResourceUid,
-          secondResourceUid
+        Assert.AreEqual(
+          "![Architecture](diagram.png)",
+          physicalContent.Trim()
+        );
+
+        Assert.IsFalse(
+          physicalContent.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
+          )
+        );
+      }
+    }
+
+    /// <summary>
+    /// Verifies that resources created without a usable preferred filename receive the
+    /// provider-owned document fallback naming convention.
+    /// </summary>
+    [TestMethod]
+    public void TryAddResource_WithoutPreferredName_UsesOwnedSnowflakeFallbackFileName() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        Assert.IsTrue(
+          repository.TryAddSubArea(
+            "/",
+            "Article",
+            KnowledgeAreaKind.Content
+          )
+        );
+
+        string articleArea = context.GetChildArea(
+          repository,
+          "/",
+          "Article"
+        );
+
+        string resourceId;
+
+        Assert.IsTrue(
+          repository.TryAddResource(
+            articleArea,
+            string.Empty,
+            "image/png",
+            new byte[] { 8, 9, 10 },
+            out resourceId
+          )
+        );
+
+        Assert.IsFalse(
+          string.IsNullOrWhiteSpace(resourceId)
+        );
+
+        string[] files = Directory.GetFiles(
+          context.KnowledgeDirectory,
+          "Article.Res*.png",
+          SearchOption.TopDirectoryOnly
+        );
+
+        Assert.AreEqual(
+          1,
+          files.Length
+        );
+
+        CollectionAssert.AreEqual(
+          new byte[] { 8, 9, 10 },
+          repository.GetResourceContent(
+            resourceId
+          )
         );
       }
     }
@@ -320,53 +345,41 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           "Document"
         );
 
-        long resourceUid;
+        string resourceId;
 
         Assert.IsTrue(
           repository.TryAddResource(
             documentArea,
-            ".png",
+            "diagram.png",
             "image/png",
             new byte[] { 10, 20, 30 },
-            out resourceUid
+            out resourceId
           )
         );
-
-        string reference =
-          "![Image](knowledge-resource:"
-          + resourceUid.ToString()
-          + ")";
 
         Assert.IsTrue(
           repository.TryAppendContent(
             documentArea,
-            reference
+            "![Image](knowledge-resource:"
+            + resourceId
+            + ")"
           )
         );
 
         Assert.IsFalse(
           repository.TryDeleteResource(
-            documentArea,
-            resourceUid
-          )
-        );
-
-        CollectionAssert.AreEqual(
-          new byte[] { 10, 20, 30 },
-          repository.GetResourceContent(
-            documentArea,
-            resourceUid
+            resourceId
           )
         );
       }
     }
 
     /// <summary>
-    /// Verifies that moving a heading between documents keeps every referenced resource
-    /// resolvable with the same ResourceUid in the new resource scope.
+    /// Verifies that a document-owned generated resource moves with its document, keeps
+    /// the physical Markdown reference simple, and reports the resulting ResourceId change.
     /// </summary>
     [TestMethod]
-    public void TryMoveContent_HeadingWithResourceBetweenDocuments_PreservesResourceUid() {
+    public void TryMoveContent_DocumentWithOwnedResource_MovesResourceAndReportsResourceIdChange() {
       using (KnowledgeRepositoryTestContext context =
         new KnowledgeRepositoryTestContext()) {
 
@@ -376,278 +389,247 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         Assert.IsTrue(
           repository.TryAddSubArea(
             "/",
-            "DocumentA",
-            KnowledgeAreaKind.Content
+            "Source",
+            KnowledgeAreaKind.Structural
           )
         );
 
         Assert.IsTrue(
           repository.TryAddSubArea(
             "/",
-            "DocumentB",
+            "Target",
+            KnowledgeAreaKind.Structural
+          )
+        );
+
+        string sourceArea = context.GetChildArea(
+          repository,
+          "/",
+          "Source"
+        );
+
+        string targetArea = context.GetChildArea(
+          repository,
+          "/",
+          "Target"
+        );
+
+        Assert.IsTrue(
+          repository.TryAddSubArea(
+            sourceArea,
+            "Article",
             KnowledgeAreaKind.Content
           )
         );
 
-        string documentA = context.GetChildArea(
+        string articleArea = context.GetChildArea(
           repository,
-          "/",
-          "DocumentA"
+          sourceArea,
+          "Article"
         );
 
-        string documentB = context.GetChildArea(
-          repository,
-          "/",
-          "DocumentB"
-        );
-
-        byte[] resourceContent =
-          new byte[] { 11, 22, 33, 44 };
-
-        long resourceUid;
+        string originalResourceId;
 
         Assert.IsTrue(
           repository.TryAddResource(
-            documentA,
-            ".png",
+            articleArea,
+            string.Empty,
             "image/png",
-            resourceContent,
-            out resourceUid
+            new byte[] { 11, 12, 13 },
+            out originalResourceId
           )
         );
-
-        string markdown =
-          "# Section\n"
-          + "![Image](knowledge-resource:"
-          + resourceUid.ToString()
-          + ")";
 
         Assert.IsTrue(
           repository.TryAppendContent(
-            documentA,
-            markdown
+            articleArea,
+            "![Image](knowledge-resource:"
+            + originalResourceId
+            + ")"
           )
         );
 
-        string section = context.GetChildArea(
-          repository,
-          documentA,
-          "Section"
-        );
+        KnowledgeResourceIdChange[] resourceIdChanges;
 
         Assert.IsTrue(
           repository.TryMoveContent(
-            section,
-            documentB
+            articleArea,
+            targetArea,
+            out resourceIdChanges
           )
-        );
-
-        string movedSection = context.GetChildArea(
-          repository,
-          documentB,
-          "Section"
-        );
-
-        Assert.IsFalse(
-          string.IsNullOrEmpty(movedSection)
-        );
-
-        Assert.Contains(
-          "knowledge-resource:" + resourceUid.ToString(),
-          repository.GetAggregatedContent(movedSection),
-          StringComparison.Ordinal
-        );
-
-        CollectionAssert.AreEqual(
-          resourceContent,
-          repository.GetResourceContent(
-            movedSection,
-            resourceUid
-          )
-        );
-      }
-    }
-
-    /// <summary>
-    /// Verifies that replacing one multiply materialized ResourceUid updates every
-    /// resource scope consistently.
-    /// </summary>
-    [TestMethod]
-    public void TryReplaceResource_AfterCrossDocumentReference_UpdatesEveryMaterialization() {
-      using (KnowledgeRepositoryTestContext context =
-        new KnowledgeRepositoryTestContext()) {
-
-        FileBasedKnowledgeRepository repository =
-          context.CreateRepository();
-
-        Assert.IsTrue(
-          repository.TryAddSubArea(
-            "/",
-            "DocumentA",
-            KnowledgeAreaKind.Content
-          )
-        );
-
-        Assert.IsTrue(
-          repository.TryAddSubArea(
-            "/",
-            "DocumentB",
-            KnowledgeAreaKind.Content
-          )
-        );
-
-        string documentA = context.GetChildArea(
-          repository,
-          "/",
-          "DocumentA"
-        );
-
-        string documentB = context.GetChildArea(
-          repository,
-          "/",
-          "DocumentB"
-        );
-
-        long resourceUid;
-
-        Assert.IsTrue(
-          repository.TryAddResource(
-            documentA,
-            ".png",
-            "image/png",
-            new byte[] { 1, 1, 1 },
-            out resourceUid
-          )
-        );
-
-        string resourceReference =
-          "knowledge-resource:"
-          + resourceUid.ToString();
-
-        Assert.IsTrue(
-          repository.TryAppendContent(
-            documentA,
-            "Shared " + resourceReference + "\n\n# Section\nMoved " + resourceReference
-          )
-        );
-
-        string section = context.GetChildArea(
-          repository,
-          documentA,
-          "Section"
-        );
-
-        Assert.IsTrue(
-          repository.TryMoveContent(
-            section,
-            documentB
-          )
-        );
-
-        byte[] replacement =
-          new byte[] { 9, 8, 7, 6 };
-
-        Assert.IsTrue(
-          repository.TryReplaceResource(
-            documentA,
-            resourceUid,
-            ".png",
-            "image/png",
-            replacement
-          )
-        );
-
-        CollectionAssert.AreEqual(
-          replacement,
-          repository.GetResourceContent(
-            documentA,
-            resourceUid
-          )
-        );
-
-        CollectionAssert.AreEqual(
-          replacement,
-          repository.GetResourceContent(
-            documentB,
-            resourceUid
-          )
-        );
-      }
-    }
-
-    /// <summary>
-    /// Verifies that a soft-deleted document disappears from the logical area model while
-    /// the physical Markdown content remains recoverable.
-    /// </summary>
-    [TestMethod]
-    public void TryDelete_WithSoftDelete_RenamesDocumentAndOmitsLogicalArea() {
-      using (KnowledgeRepositoryTestContext context =
-        new KnowledgeRepositoryTestContext()) {
-
-        FileBasedKnowledgeRepository repository =
-          context.CreateSoftDeleteRepository();
-
-        Assert.IsTrue(
-          repository.TryAddSubArea(
-            "/",
-            "Document",
-            KnowledgeAreaKind.Content
-          )
-        );
-
-        string documentArea = context.GetChildArea(
-          repository,
-          "/",
-          "Document"
-        );
-
-        Assert.IsTrue(
-          repository.TryAppendContent(
-            documentArea,
-            "Recoverable content"
-          )
-        );
-
-        Assert.IsTrue(
-          repository.TryDelete(
-            documentArea
-          )
-        );
-
-        Assert.AreEqual(
-          string.Empty,
-          context.GetChildArea(
-            repository,
-            "/",
-            "Document"
-          )
-        );
-
-        string[] deletedFiles = Directory.GetFiles(
-          context.KnowledgeDirectory,
-          "Document.DELETED*.md",
-          SearchOption.AllDirectories
         );
 
         Assert.AreEqual(
           1,
-          deletedFiles.Length
+          resourceIdChanges.Length
         );
 
-        Assert.Contains(
-          "Recoverable content",
-          File.ReadAllText(deletedFiles[0]),
-          StringComparison.Ordinal
+        Assert.AreEqual(
+          originalResourceId,
+          resourceIdChanges[0].PreviousResourceId
+        );
+
+        Assert.AreNotEqual(
+          originalResourceId,
+          resourceIdChanges[0].CurrentResourceId
+        );
+
+        string movedMarkdownPath = Path.Combine(
+          context.KnowledgeDirectory,
+          "Target",
+          "Article.md"
+        );
+
+        string physicalContent = File.ReadAllText(
+          movedMarkdownPath
+        );
+
+        Assert.IsTrue(
+          physicalContent.Contains(
+            "Article.Res",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.IsFalse(
+          physicalContent.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
+          )
+        );
+
+        CollectionAssert.AreEqual(
+          new byte[] { 11, 12, 13 },
+          repository.GetResourceContent(
+            resourceIdChanges[0].CurrentResourceId
+          )
         );
       }
     }
 
     /// <summary>
-    /// Verifies that renaming a document also renames its physical resource companion
-    /// files while preserving the logical ResourceUid and resource content.
+    /// Verifies that a free resource remains at its native location when a referencing
+    /// document moves and that the physical Markdown path is repaired automatically.
     /// </summary>
     [TestMethod]
-    public void TryRename_DocumentWithResource_PreservesResourceUidAndRenamesCompanionFile() {
+    public void TryMoveContent_DocumentWithFreeResource_RepairsPhysicalRelativePathWithoutChangingResourceId() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        Directory.CreateDirectory(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Source"
+          )
+        );
+
+        Directory.CreateDirectory(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Target"
+          )
+        );
+
+        string sourceMarkdown = Path.Combine(
+          context.KnowledgeDirectory,
+          "Source",
+          "Article.md"
+        );
+
+        string sharedImage = Path.Combine(
+          context.KnowledgeDirectory,
+          "Source",
+          "CompanyLogo.png"
+        );
+
+        File.WriteAllText(
+          sourceMarkdown,
+          "![Logo](CompanyLogo.png)"
+        );
+
+        File.WriteAllBytes(
+          sharedImage,
+          new byte[] { 20, 21, 22 }
+        );
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        string sourceArea = context.GetChildArea(
+          repository,
+          "/",
+          "Source"
+        );
+
+        string targetArea = context.GetChildArea(
+          repository,
+          "/",
+          "Target"
+        );
+
+        string articleArea = context.GetChildArea(
+          repository,
+          sourceArea,
+          "Article"
+        );
+
+        KnowledgeResourceInfo originalResource =
+          repository.GetResources(articleArea)[0];
+
+        KnowledgeResourceIdChange[] resourceIdChanges;
+
+        Assert.IsTrue(
+          repository.TryMoveContent(
+            articleArea,
+            targetArea,
+            out resourceIdChanges
+          )
+        );
+
+        Assert.AreEqual(
+          0,
+          resourceIdChanges.Length
+        );
+
+        Assert.IsTrue(
+          File.Exists(sharedImage)
+        );
+
+        string movedMarkdown = File.ReadAllText(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Target",
+            "Article.md"
+          )
+        );
+
+        Assert.AreEqual(
+          "![Logo](../Source/CompanyLogo.png)",
+          movedMarkdown.Trim()
+        );
+
+        string movedArea = context.GetChildArea(
+          repository,
+          targetArea,
+          "Article"
+        );
+
+        KnowledgeResourceInfo movedResource =
+          repository.GetResources(movedArea)[0];
+
+        Assert.AreEqual(
+          originalResource.ResourceId,
+          movedResource.ResourceId
+        );
+      }
+    }
+
+    /// <summary>
+    /// Verifies that renaming a document also renames an owned resource and reports the
+    /// provider-native ResourceId transition.
+    /// </summary>
+    [TestMethod]
+    public void TryRename_DocumentWithOwnedResource_RenamesResourceAndReportsResourceIdChange() {
       using (KnowledgeRepositoryTestContext context =
         new KnowledgeRepositoryTestContext()) {
 
@@ -668,18 +650,15 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           "OriginalDocument"
         );
 
-        byte[] resourceContent =
-          new byte[] { 21, 22, 23, 24 };
-
-        long resourceUid;
+        string originalResourceId;
 
         Assert.IsTrue(
           repository.TryAddResource(
             originalArea,
-            ".png",
+            string.Empty,
             "image/png",
-            resourceContent,
-            out resourceUid
+            new byte[] { 31, 32, 33 },
+            out originalResourceId
           )
         );
 
@@ -687,81 +666,110 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           repository.TryAppendContent(
             originalArea,
             "![Image](knowledge-resource:"
-            + resourceUid.ToString()
+            + originalResourceId
             + ")"
           )
         );
 
-        string oldCompanionFile = Path.Combine(
-          context.KnowledgeDirectory,
-          "OriginalDocument.Res"
-          + resourceUid.ToString()
-          + ".png"
-        );
-
-        Assert.IsTrue(
-          File.Exists(oldCompanionFile)
-        );
+        KnowledgeResourceIdChange[] resourceIdChanges;
 
         Assert.IsTrue(
           repository.TryRename(
             originalArea,
-            "RenamedDocument"
+            "RenamedDocument",
+            out resourceIdChanges
           )
         );
 
         Assert.AreEqual(
-          string.Empty,
-          context.GetChildArea(
-            repository,
-            "/",
-            "OriginalDocument"
-          )
+          1,
+          resourceIdChanges.Length
         );
 
-        string renamedArea = context.GetChildArea(
-          repository,
-          "/",
-          "RenamedDocument"
+        Assert.AreEqual(
+          originalResourceId,
+          resourceIdChanges[0].PreviousResourceId
         );
 
-        Assert.IsFalse(
-          string.IsNullOrEmpty(renamedArea)
-        );
-
-        string newCompanionFile = Path.Combine(
+        string[] renamedResources = Directory.GetFiles(
           context.KnowledgeDirectory,
-          "RenamedDocument.Res"
-          + resourceUid.ToString()
-          + ".png"
+          "RenamedDocument.Res*.png",
+          SearchOption.TopDirectoryOnly
         );
 
-        Assert.IsFalse(
-          File.Exists(oldCompanionFile)
+        Assert.AreEqual(
+          1,
+          renamedResources.Length
         );
 
-        Assert.IsTrue(
-          File.Exists(newCompanionFile)
-        );
-
-        CollectionAssert.AreEqual(
-          resourceContent,
-          repository.GetResourceContent(
-            renamedArea,
-            resourceUid
+        string markdown = File.ReadAllText(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "RenamedDocument.md"
           )
         );
 
         Assert.IsTrue(
-          repository.GetAggregatedContent(
-            renamedArea
-          ).Contains(
-            "knowledge-resource:" + resourceUid.ToString(),
+          markdown.Contains(
+            "RenamedDocument.Res",
             StringComparison.Ordinal
           )
         );
       }
     }
 
+    /// <summary>
+    /// Verifies that the legacy numeric knowledge-resource representation remains readable
+    /// and is converted to the current opaque identifier at the repository boundary.
+    /// </summary>
+    [TestMethod]
+    public void GetAggregatedContent_LegacyNumericResourceReference_IsMappedToOpaqueResourceId() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        File.WriteAllText(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Legacy.md"
+          ),
+          "![Image](knowledge-resource:123456)"
+        );
+
+        File.WriteAllBytes(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Legacy.Res123456.png"
+          ),
+          new byte[] { 40, 41, 42 }
+        );
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        string legacyArea = context.GetChildArea(
+          repository,
+          "/",
+          "Legacy"
+        );
+
+        string content = repository.GetAggregatedContent(
+          legacyArea
+        );
+
+        Assert.IsTrue(
+          content.Contains(
+            "knowledge-resource:1.",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.IsFalse(
+          content.Contains(
+            "knowledge-resource:123456",
+            StringComparison.Ordinal
+          )
+        );
+      }
+    }
   }
 }

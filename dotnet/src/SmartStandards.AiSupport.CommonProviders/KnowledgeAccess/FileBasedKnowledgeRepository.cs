@@ -65,13 +65,23 @@ namespace AI.SmartStandards.KnowledgeAccess {
       RegexOptions.Compiled
     );
 
-    private static readonly Regex _ResourceCompanionFileRegex = new Regex(
-      @"^(?<document>.+)\.Res(?<uid>[0-9]+)(?<extension>\.[^\\/]+)$",
+    private static readonly Regex _OwnedResourceFileRegex = new Regex(
+      @"^(?<document>.+)\.Res(?<token>[0-9]+)(?<extension>\.[^\\/]+)$",
       RegexOptions.Compiled | RegexOptions.CultureInvariant
     );
 
     private static readonly Regex _KnowledgeResourceReferenceRegex = new Regex(
+      @"knowledge-resource:(?<id>[A-Za-z0-9._~-]+)",
+      RegexOptions.Compiled | RegexOptions.CultureInvariant
+    );
+
+    private static readonly Regex _LegacyNumericKnowledgeResourceReferenceRegex = new Regex(
       @"knowledge-resource:(?<uid>[0-9]+)",
+      RegexOptions.Compiled | RegexOptions.CultureInvariant
+    );
+
+    private static readonly Regex _MarkdownInlineLinkRegex = new Regex(
+      @"(?<prefix>!?\[[^\]]*\]\()(?<target><[^>\r\n]+>|[^)\s\r\n]+)(?<suffix>\))",
       RegexOptions.Compiled | RegexOptions.CultureInvariant
     );
 
@@ -81,9 +91,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private readonly bool _ReadOnly;
     private readonly bool _UseSoftDelete;
     private bool _Initialized;
-    private readonly object _ResourceUidSyncRoot = new object();
-    private long _LastResourceUidTimestamp;
-    private long _LastResourceUidSequence;
+    private readonly object _GeneratedResourceNameSyncRoot = new object();
+    private long _LastGeneratedResourceTimestamp;
+    private long _LastGeneratedResourceSequence;
 
     /// <summary>
     /// Creates a file-based knowledge repository rooted at the specified directory.
@@ -136,8 +146,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
       _ReadOnly = readOnly;
       _UseSoftDelete = useSoftDelete;
       _Initialized = false;
-      _LastResourceUidTimestamp = -1;
-      _LastResourceUidSequence = 0;
+      _LastGeneratedResourceTimestamp = -1;
+      _LastGeneratedResourceSequence = 0;
 
       this.InitializeRootDirectory(rootDirectory);
     }
@@ -173,8 +183,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
       _ReadOnly = readOnly;
       _UseSoftDelete = useSoftDelete;
       _Initialized = false;
-      _LastResourceUidTimestamp = -1;
-      _LastResourceUidSequence = 0;
+      _LastGeneratedResourceTimestamp = -1;
+      _LastGeneratedResourceSequence = 0;
     }
 
     /// <summary>
@@ -390,8 +400,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Returns all companion resources materialized for the Markdown document containing
-    /// the addressed area.
+    /// Returns all resources referenced by the Markdown document containing the addressed
+    /// area. Physical relative Markdown paths are translated to opaque repository resource
+    /// identifiers before they leave this provider.
     /// </summary>
     public KnowledgeResourceInfo[] GetResources(string area) {
       lock (_SyncRoot) {
@@ -406,91 +417,79 @@ namespace AI.SmartStandards.KnowledgeAccess {
           descriptor
         );
 
-        return this.GetDocumentResources(
-          documentPath
-        );
-      }
-    }
-
-    /// <summary>
-    /// Returns one logical resource. The document containing <paramref name="area"/> is
-    /// checked first; if necessary the repository is searched for another materialization
-    /// of the same repository-wide ResourceUid.
-    /// </summary>
-    public byte[] GetResourceContent(
-      string area,
-      long resourceUid
-    ) {
-      lock (_SyncRoot) {
-        this.PrepareForRead();
-
-        if (resourceUid <= 0) {
-          throw new ArgumentOutOfRangeException(nameof(resourceUid));
-        }
-
-        AreaDescriptor descriptor = this.ResolveArea(
-          area,
-          null
+        string physicalContent = File.ReadAllText(
+          documentPath,
+          Encoding.UTF8
         );
 
-        string documentPath = this.GetResourceDocumentPath(
-          descriptor
+        string knowledgeContent = this.ConvertPhysicalMarkdownToKnowledgeMarkdown(
+          documentPath,
+          physicalContent
         );
 
-        ResourcePhysicalFile[] resources = this.FindResourceFiles(
-          resourceUid
+        string[] resourceIds = this.GetReferencedResourceIds(
+          knowledgeContent
         );
 
-        if (resources.Length == 0) {
-          throw new InvalidOperationException(
-            "The requested knowledge resource does not exist: "
-            + resourceUid.ToString(CultureInfo.InvariantCulture)
+        List<KnowledgeResourceInfo> result = new List<KnowledgeResourceInfo>();
+
+        foreach (string resourceId in resourceIds) {
+          result.Add(
+            this.GetResourceInfo(
+              resourceId
+            )
           );
         }
 
-        ResourcePhysicalFile preferred = resources.FirstOrDefault(
-          (ResourcePhysicalFile candidate) => string.Equals(
-            candidate.DocumentPath,
-            documentPath,
-            StringComparison.OrdinalIgnoreCase
-          )
-        );
-
-        if (preferred == null) {
-          preferred = resources[0];
-        }
-
-        byte[] content = File.ReadAllBytes(
-          preferred.FilePath
-        );
-
-        this.ValidateResourceMaterializations(
-          resources,
-          content
-        );
-
-        return content;
+        return result.ToArray();
       }
     }
 
     /// <summary>
-    /// Creates one new document-scoped physical materialization for a repository-wide
-    /// ResourceUid generated with the provider's Snowflake44 generator.
+    /// Returns the complete binary content of one opaque FileBased resource identifier.
+    /// </summary>
+    public byte[] GetResourceContent(string resourceId) {
+      lock (_SyncRoot) {
+        this.PrepareForRead();
+
+        string resourcePath = this.ResolveResourcePath(
+          resourceId
+        );
+
+        if (!File.Exists(resourcePath)) {
+          throw new InvalidOperationException(
+            "The requested knowledge resource does not exist."
+          );
+        }
+
+        return File.ReadAllBytes(
+          resourcePath
+        );
+      }
+    }
+
+    /// <summary>
+    /// Creates one new physical resource beside the Markdown document containing the
+    /// addressed area.
+    ///
+    /// A safe preferred file name is preserved when possible. If no usable file name is
+    /// available, the provider creates the owned-resource fallback
+    /// &lt;Document&gt;.Res&lt;Snowflake44&gt;.&lt;extension&gt;.
     /// </summary>
     public bool TryAddResource(
       string area,
-      string fileExtension,
+      string preferredFileName,
       string contentType,
       byte[] content,
-      out long resourceUid
+      out string resourceId
     ) {
-      resourceUid = 0;
+      resourceId = string.Empty;
 
       if (content == null) {
         return false;
       }
 
-      long allocatedResourceUid = 0;
+      string allocatedResourceId = string.Empty;
 
       bool succeeded = this.ExecuteMutation(
         "Add knowledge resource below '" + area + "'",
@@ -504,18 +503,55 @@ namespace AI.SmartStandards.KnowledgeAccess {
             descriptor
           );
 
-          string normalizedExtension = this.NormalizeResourceExtension(
-            fileExtension,
+          string resourcePath = this.CreateNewResourcePath(
+            documentPath,
+            preferredFileName,
             contentType
           );
 
-          allocatedResourceUid = this.CreateResourceUid();
-
-          string resourcePath = this.GetResourceCompanionPath(
-            documentPath,
-            allocatedResourceUid,
-            normalizedExtension
+          this.WriteAllBytesAtomically(
+            resourcePath,
+            content
           );
+
+          allocatedResourceId = this.CreateResourceId(
+            resourcePath
+          );
+
+          return true;
+        }
+      );
+
+      if (succeeded) {
+        resourceId = allocatedResourceId;
+      }
+
+      return succeeded;
+    }
+
+    /// <summary>
+    /// Replaces the binary content of one opaque resource identifier without changing its
+    /// provider-native identity.
+    /// </summary>
+    public bool TryReplaceResource(
+      string resourceId,
+      string contentType,
+      byte[] content
+    ) {
+      if (string.IsNullOrWhiteSpace(resourceId) || content == null) {
+        return false;
+      }
+
+      return this.ExecuteMutation(
+        "Replace knowledge resource",
+        (MutationContext context) => {
+          string resourcePath = this.ResolveResourcePath(
+            resourceId
+          );
+
+          if (!File.Exists(resourcePath)) {
+            return false;
+          }
 
           this.WriteAllBytesAtomically(
             resourcePath,
@@ -525,145 +561,38 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return true;
         }
       );
-
-      if (succeeded) {
-        resourceUid = allocatedResourceUid;
-      }
-
-      return succeeded;
     }
 
     /// <summary>
-    /// Replaces every physical materialization of one repository-wide logical resource.
+    /// Deletes one physical resource only when no exposed knowledge content references its
+    /// opaque repository identifier anymore.
     /// </summary>
-    public bool TryReplaceResource(
-      string area,
-      long resourceUid,
-      string fileExtension,
-      string contentType,
-      byte[] content
-    ) {
-      if (resourceUid <= 0 || content == null) {
+    public bool TryDeleteResource(string resourceId) {
+      if (string.IsNullOrWhiteSpace(resourceId)) {
         return false;
       }
 
       return this.ExecuteMutation(
-        "Replace knowledge resource '"
-        + resourceUid.ToString(CultureInfo.InvariantCulture)
-        + "'",
+        "Delete knowledge resource",
         (MutationContext context) => {
-          AreaDescriptor descriptor = this.ResolveArea(
-            area,
-            context
+          string resourcePath = this.ResolveResourcePath(
+            resourceId
           );
 
-          this.GetResourceDocumentPath(
-            descriptor
-          );
-
-          ResourcePhysicalFile[] existing = this.FindResourceFiles(
-            resourceUid
-          );
-
-          if (existing.Length == 0) {
+          if (!File.Exists(resourcePath)) {
             return false;
           }
 
-          string normalizedExtension = this.NormalizeResourceExtension(
-            fileExtension,
-            contentType
-          );
-
-          foreach (ResourcePhysicalFile resource in existing) {
-            string targetPath = this.GetResourceCompanionPath(
-              resource.DocumentPath,
-              resourceUid,
-              normalizedExtension
-            );
-
-            if (!string.Equals(
-                  resource.FilePath,
-                  targetPath,
-                  StringComparison.OrdinalIgnoreCase
-                ) && File.Exists(targetPath)) {
-              return false;
-            }
-          }
-
-          foreach (ResourcePhysicalFile resource in existing) {
-            string targetPath = this.GetResourceCompanionPath(
-              resource.DocumentPath,
-              resourceUid,
-              normalizedExtension
-            );
-
-            this.WriteAllBytesAtomically(
-              targetPath,
-              content
-            );
-
-            if (!string.Equals(
-                  resource.FilePath,
-                  targetPath,
-                  StringComparison.OrdinalIgnoreCase
-                )) {
-              this.DeleteFileWithRetry(
-                resource.FilePath
-              );
-            }
-          }
-
-          return true;
-        }
-      );
-    }
-
-    /// <summary>
-    /// Deletes one repository-wide logical resource only when no exposed textual content
-    /// references it anymore.
-    /// </summary>
-    public bool TryDeleteResource(
-      string area,
-      long resourceUid
-    ) {
-      if (resourceUid <= 0) {
-        return false;
-      }
-
-      return this.ExecuteMutation(
-        "Delete knowledge resource '"
-        + resourceUid.ToString(CultureInfo.InvariantCulture)
-        + "'",
-        (MutationContext context) => {
-          AreaDescriptor descriptor = this.ResolveArea(
-            area,
-            context
-          );
-
-          this.GetResourceDocumentPath(
-            descriptor
-          );
-
           if (this.IsResourceReferencedAnywhere(
-                resourceUid,
+                resourceId,
                 context
               )) {
             return false;
           }
 
-          ResourcePhysicalFile[] existing = this.FindResourceFiles(
-            resourceUid
+          this.DeleteResourceFile(
+            resourcePath
           );
-
-          if (existing.Length == 0) {
-            return false;
-          }
-
-          foreach (ResourcePhysicalFile resource in existing) {
-            this.DeleteResourceFile(
-              resource.FilePath
-            );
-          }
 
           return true;
         }
@@ -784,11 +713,32 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// This provider-specific physical behavior is intentionally hidden behind the
     /// logical rename operation.
     /// </summary>
-    public bool TryRename(string area, string newName) {
-      return this.ExecuteMutation(
+    public bool TryRename(
+      string area,
+      string newName,
+      out KnowledgeResourceIdChange[] resourceIdChanges
+    ) {
+      List<KnowledgeResourceIdChange> changes =
+        new List<KnowledgeResourceIdChange>();
+
+      bool succeeded = this.ExecuteMutation(
         "Rename knowledge area '" + area + "' to '" + newName + "'",
-        (MutationContext context) => this.TryRenameCore(area, newName, context)
+        (MutationContext context) => this.TryRenameCore(
+          area,
+          newName,
+          context,
+          changes
+        )
       );
+
+      if (succeeded) {
+        resourceIdChanges = changes.ToArray();
+      }
+      else {
+        resourceIdChanges = Array.Empty<KnowledgeResourceIdChange>();
+      }
+
+      return succeeded;
     }
 
     /// <summary>
@@ -907,9 +857,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     public bool TryMoveContent(
       string contentAreaToMove,
-      string newParentArea
+      string newParentArea,
+      out KnowledgeResourceIdChange[] resourceIdChanges
     ) {
-      return this.ExecuteMutation(
+      List<KnowledgeResourceIdChange> changes =
+        new List<KnowledgeResourceIdChange>();
+
+      bool succeeded = this.ExecuteMutation(
         "Move knowledge area '"
         + contentAreaToMove
         + "' below '"
@@ -918,9 +872,19 @@ namespace AI.SmartStandards.KnowledgeAccess {
         (MutationContext context) => this.TryMoveContentCore(
           contentAreaToMove,
           newParentArea,
-          context
+          context,
+          changes
         )
       );
+
+      if (succeeded) {
+        resourceIdChanges = changes.ToArray();
+      }
+      else {
+        resourceIdChanges = Array.Empty<KnowledgeResourceIdChange>();
+      }
+
+      return succeeded;
     }
 
     /// <summary>
@@ -1322,71 +1286,125 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Returns all companion resource files physically associated with one Markdown document.
+    /// Returns metadata for one opaque FileBased resource identifier.
     /// </summary>
-    private KnowledgeResourceInfo[] GetDocumentResources(
-      string documentPath
+    private KnowledgeResourceInfo GetResourceInfo(string resourceId) {
+      string resourcePath = this.ResolveResourcePath(
+        resourceId
+      );
+
+      if (!File.Exists(resourcePath)) {
+        throw new InvalidOperationException(
+          "The requested knowledge resource does not exist."
+        );
+      }
+
+      FileInfo fileInfo = new FileInfo(
+        resourcePath
+      );
+
+      KnowledgeResourceInfo info = new KnowledgeResourceInfo();
+      info.ResourceId = resourceId;
+      info.FileName = Path.GetFileName(resourcePath);
+      info.ContentType = this.GetContentTypeFromExtension(
+        Path.GetExtension(resourcePath)
+      );
+      info.Length = fileInfo.Length;
+      return info;
+    }
+
+    /// <summary>
+    /// Creates one safe new physical resource path beside the addressed Markdown document.
+    /// </summary>
+    private string CreateNewResourcePath(
+      string documentPath,
+      string preferredFileName,
+      string contentType
     ) {
       string directory = Path.GetDirectoryName(
         documentPath
       );
 
       if (string.IsNullOrEmpty(directory)) {
-        return Array.Empty<KnowledgeResourceInfo>();
+        throw new InvalidOperationException(
+          "The Markdown document has no physical parent directory."
+        );
       }
+
+      string candidateFileName = this.NormalizePreferredResourceFileName(
+        preferredFileName
+      );
+
+      if (!string.IsNullOrEmpty(candidateFileName)) {
+        string preferredPath = this.GetSafePhysicalChildPath(
+          directory,
+          Path.GetFileNameWithoutExtension(candidateFileName),
+          Path.GetExtension(candidateFileName)
+        );
+
+        if (!File.Exists(preferredPath) &&
+            !Directory.Exists(preferredPath)) {
+          return preferredPath;
+        }
+      }
+
+      string extension = this.NormalizeResourceExtension(
+        Path.GetExtension(candidateFileName),
+        contentType
+      );
 
       string documentName = Path.GetFileNameWithoutExtension(
         documentPath
       );
 
-      string[] files = Directory.GetFiles(
-        directory,
-        documentName + _ResourceMarker + "*",
-        SearchOption.TopDirectoryOnly
-      );
+      while (true) {
+        long token = this.CreateGeneratedResourceToken();
 
-      List<KnowledgeResourceInfo> result = new List<KnowledgeResourceInfo>();
+        string generatedFileName = documentName
+          + _ResourceMarker
+          + token.ToString(CultureInfo.InvariantCulture)
+          + extension;
 
-      foreach (string file in files.OrderBy((string value) => value, StringComparer.Ordinal)) {
-        ResourcePhysicalFile parsed;
-
-        if (!this.TryParseResourceCompanionFile(
-              file,
-              out parsed
-            )) {
-          continue;
-        }
-
-        if (!string.Equals(
-              parsed.DocumentPath,
-              documentPath,
-              StringComparison.OrdinalIgnoreCase
-            )) {
-          continue;
-        }
-
-        FileInfo fileInfo = new FileInfo(
-          file
+        string generatedPath = this.GetSafePhysicalChildPath(
+          directory,
+          Path.GetFileNameWithoutExtension(generatedFileName),
+          Path.GetExtension(generatedFileName)
         );
 
-        KnowledgeResourceInfo info = new KnowledgeResourceInfo();
-        info.ResourceUid = parsed.ResourceUid;
-        info.FileExtension = parsed.FileExtension;
-        info.ContentType = this.GetContentTypeFromExtension(
-          parsed.FileExtension
-        );
-        info.Length = fileInfo.Length;
-        result.Add(info);
+        if (!File.Exists(generatedPath) &&
+            !Directory.Exists(generatedPath)) {
+          return generatedPath;
+        }
       }
-
-      return result.ToArray();
     }
 
     /// <summary>
-    /// Creates a positive repository-wide Snowflake44 resource UID.
+    /// Normalizes a preferred external resource file name without interpreting it as an
+    /// identity. Directory components are intentionally removed.
     /// </summary>
-    private long CreateResourceUid() {
-      lock (_ResourceUidSyncRoot) {
+    private string NormalizePreferredResourceFileName(string preferredFileName) {
+      if (string.IsNullOrWhiteSpace(preferredFileName)) {
+        return string.Empty;
+      }
+
+      string fileName = Path.GetFileName(
+        preferredFileName.Trim()
+      );
+
+      if (string.IsNullOrWhiteSpace(fileName) ||
+          fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) {
+        return string.Empty;
+      }
+
+      return fileName;
+    }
+
+    /// <summary>
+    /// Creates a positive Snowflake44 token used only for provider-generated physical
+    /// fallback file names.
+    /// </summary>
+    private long CreateGeneratedResourceToken() {
+      lock (_GeneratedResourceNameSyncRoot) {
         while (true) {
           long currentTimestamp = Convert.ToInt64(
             Math.Floor(
@@ -1394,8 +1412,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             )
           );
 
-          if (currentTimestamp < _LastResourceUidTimestamp) {
-            currentTimestamp = _LastResourceUidTimestamp;
+          if (currentTimestamp < _LastGeneratedResourceTimestamp) {
+            currentTimestamp = _LastGeneratedResourceTimestamp;
           }
 
           if (currentTimestamp > _Snowflake44TimestampMask) {
@@ -1404,17 +1422,17 @@ namespace AI.SmartStandards.KnowledgeAccess {
             );
           }
 
-          if (currentTimestamp == _LastResourceUidTimestamp) {
-            _LastResourceUidSequence++;
+          if (currentTimestamp == _LastGeneratedResourceTimestamp) {
+            _LastGeneratedResourceSequence++;
 
-            if (_LastResourceUidSequence > _Snowflake44SequenceMask) {
+            if (_LastGeneratedResourceSequence > _Snowflake44SequenceMask) {
               Thread.Sleep(1);
               continue;
             }
           }
           else {
-            _LastResourceUidTimestamp = currentTimestamp;
-            _LastResourceUidSequence = 0;
+            _LastGeneratedResourceTimestamp = currentTimestamp;
+            _LastGeneratedResourceSequence = 0;
           }
 
           long nodeId = this.GetSnowflake44NodeId();
@@ -1422,13 +1440,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
           long value =
             (currentTimestamp << (_Snowflake44NodeBits + _Snowflake44SequenceBits)) |
             ((nodeId & _Snowflake44NodeMask) << _Snowflake44SequenceBits) |
-            (_LastResourceUidSequence & _Snowflake44SequenceMask);
+            (_LastGeneratedResourceSequence & _Snowflake44SequenceMask);
 
-          if (value <= 0) {
-            continue;
-          }
-
-          if (!this.ResourceUidExists(value)) {
+          if (value > 0) {
             return value;
           }
         }
@@ -1437,10 +1451,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Derives the Snowflake44 node component from machine, process and repository identity.
-    ///
-    /// Including the process identity prevents independent repository instances in parallel
-    /// host processes from sharing the same node component accidentally. Repository-wide
-    /// collision detection remains the final defensive guard before a UID is returned.
     /// </summary>
     private long GetSnowflake44NodeId() {
       string identity = Environment.MachineName
@@ -1460,13 +1470,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
       );
 
       return value & _Snowflake44NodeMask;
-    }
-
-    /// <summary>
-    /// Returns whether the repository already contains a physical materialization of one UID.
-    /// </summary>
-    private bool ResourceUidExists(long resourceUid) {
-      return this.FindResourceFiles(resourceUid).Length > 0;
     }
 
     /// <summary>
@@ -1506,280 +1509,478 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Builds the physical companion resource file path for one document.
+    /// Creates the opaque public resource identifier for one physical FileBased resource.
+    ///
+    /// The native identity is the normalized repository-relative path. The public value is
+    /// versioned Base64Url so consumers are discouraged from deriving path semantics.
     /// </summary>
-    private string GetResourceCompanionPath(
+    private string CreateResourceId(string resourcePath) {
+      string fullResourcePath = Path.GetFullPath(
+        resourcePath
+      );
+
+      this.EnsurePathInsideRepository(
+        fullResourcePath
+      );
+
+      string relativePath = Path.GetRelativePath(
+        _RootDirectory,
+        fullResourcePath
+      ).Replace(
+        Path.DirectorySeparatorChar,
+        '/'
+      ).Replace(
+        Path.AltDirectorySeparatorChar,
+        '/'
+      );
+
+      byte[] bytes = Encoding.UTF8.GetBytes(
+        relativePath
+      );
+
+      string encoded = Convert.ToBase64String(
+        bytes
+      ).TrimEnd('=')
+        .Replace('+', '-')
+        .Replace('/', '_');
+
+      return "1." + encoded;
+    }
+
+    /// <summary>
+    /// Resolves one opaque FileBased resource identifier back to its physical resource path.
+    /// </summary>
+    private string ResolveResourcePath(string resourceId) {
+      if (string.IsNullOrWhiteSpace(resourceId) ||
+          !resourceId.StartsWith("1.", StringComparison.Ordinal)) {
+        throw new InvalidOperationException(
+          "The FileBased resource identifier is invalid or uses an unsupported encoding version."
+        );
+      }
+
+      string encoded = resourceId.Substring(2)
+        .Replace('-', '+')
+        .Replace('_', '/');
+
+      int remainder = encoded.Length % 4;
+
+      if (remainder == 2) {
+        encoded += "==";
+      }
+      else if (remainder == 3) {
+        encoded += "=";
+      }
+      else if (remainder == 1) {
+        throw new InvalidOperationException(
+          "The FileBased resource identifier is malformed."
+        );
+      }
+
+      byte[] bytes;
+
+      try {
+        bytes = Convert.FromBase64String(
+          encoded
+        );
+      }
+      catch (FormatException ex) {
+        DevLogger.LogError(ex);
+        throw new InvalidOperationException(
+          "The FileBased resource identifier is malformed.",
+          ex
+        );
+      }
+
+      string relativePath = Encoding.UTF8.GetString(
+        bytes
+      );
+
+      string physicalPath = Path.GetFullPath(
+        Path.Combine(
+          _RootDirectory,
+          relativePath.Replace(
+            '/',
+            Path.DirectorySeparatorChar
+          )
+        )
+      );
+
+      this.EnsurePathInsideRepository(
+        physicalPath
+      );
+
+      return physicalPath;
+    }
+
+    /// <summary>
+    /// Ensures that a resolved resource path cannot escape the configured repository root.
+    /// </summary>
+    private void EnsurePathInsideRepository(string physicalPath) {
+      string root = Path.GetFullPath(
+        _RootDirectory
+      ).TrimEnd(
+        Path.DirectorySeparatorChar,
+        Path.AltDirectorySeparatorChar
+      );
+
+      string candidate = Path.GetFullPath(
+        physicalPath
+      );
+
+      if (string.Equals(
+            candidate,
+            root,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        throw new InvalidOperationException(
+          "A knowledge resource must be represented by a file below the repository root."
+        );
+      }
+
+      string prefix = root + Path.DirectorySeparatorChar;
+
+      if (!candidate.StartsWith(
+            prefix,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        throw new InvalidOperationException(
+          "The resource identifier resolves outside the configured repository root."
+        );
+      }
+    }
+
+    /// <summary>
+    /// Converts the legacy numeric knowledge-resource representation previously persisted by
+    /// FileBased into the current opaque identifier representation without mutating the file.
+    ///
+    /// This compatibility path allows existing repositories to be read safely. The next
+    /// successful write of the document naturally serializes a normal relative Markdown path.
+    /// </summary>
+    private string ConvertLegacyPhysicalKnowledgeResourceReferences(
       string documentPath,
-      long resourceUid,
-      string fileExtension
+      string physicalMarkdown
     ) {
       string directory = Path.GetDirectoryName(
         documentPath
       );
 
       if (string.IsNullOrEmpty(directory)) {
-        throw new InvalidOperationException(
-          "The Markdown document has no physical parent directory."
-        );
+        return physicalMarkdown;
       }
 
       string documentName = Path.GetFileNameWithoutExtension(
         documentPath
       );
 
-      string fileName = documentName
-        + _ResourceMarker
-        + resourceUid.ToString(CultureInfo.InvariantCulture)
-        + fileExtension;
+      return _LegacyNumericKnowledgeResourceReferenceRegex.Replace(
+        physicalMarkdown,
+        (Match match) => {
+          string uid = match.Groups["uid"].Value;
 
-      return this.GetSafePhysicalChildPath(
-        directory,
-        Path.GetFileNameWithoutExtension(fileName),
-        Path.GetExtension(fileName)
+          string[] candidates = Directory.GetFiles(
+            directory,
+            documentName + _ResourceMarker + uid + ".*",
+            SearchOption.TopDirectoryOnly
+          );
+
+          if (candidates.Length != 1) {
+            return match.Value;
+          }
+
+          string resourceId = this.CreateResourceId(
+            candidates[0]
+          );
+
+          return _KnowledgeResourceReferencePrefix
+            + resourceId;
+        }
       );
     }
 
     /// <summary>
-    /// Returns every physical materialization of one repository-wide resource UID.
+    /// Converts physical Markdown file references to canonical knowledge-resource references.
+    /// Only relative links that resolve to existing non-Markdown files inside the repository
+    /// are converted.
     /// </summary>
-    private ResourcePhysicalFile[] FindResourceFiles(
-      long resourceUid
+    private string ConvertPhysicalMarkdownToKnowledgeMarkdown(
+      string documentPath,
+      string physicalMarkdown
     ) {
-      string uidToken = _ResourceMarker
-        + resourceUid.ToString(CultureInfo.InvariantCulture);
-
-      string[] files = this.GetFilesRecursivelyWithoutReparsePoints(
-        _RootDirectory,
-        "*" + uidToken + ".*"
-      );
-
-      List<ResourcePhysicalFile> result = new List<ResourcePhysicalFile>();
-
-      foreach (string file in files) {
-        if (this.IsReparsePoint(file)) {
-          continue;
-        }
-
-        ResourcePhysicalFile parsed;
-
-        if (!this.TryParseResourceCompanionFile(
-              file,
-              out parsed
-            )) {
-          continue;
-        }
-
-        if (parsed.ResourceUid == resourceUid) {
-          result.Add(parsed);
-        }
+      if (string.IsNullOrEmpty(physicalMarkdown)) {
+        return physicalMarkdown;
       }
 
-      return result.ToArray();
+      string normalizedPhysicalMarkdown =
+        this.ConvertLegacyPhysicalKnowledgeResourceReferences(
+          documentPath,
+          physicalMarkdown
+        );
+
+      string documentDirectory = Path.GetDirectoryName(
+        documentPath
+      );
+
+      if (string.IsNullOrEmpty(documentDirectory)) {
+        return physicalMarkdown;
+      }
+
+      return _MarkdownInlineLinkRegex.Replace(
+        normalizedPhysicalMarkdown,
+        (Match match) => {
+          string rawTarget = match.Groups["target"].Value;
+          string target = rawTarget;
+
+          if (target.StartsWith("<", StringComparison.Ordinal) &&
+              target.EndsWith(">", StringComparison.Ordinal) &&
+              target.Length >= 2) {
+            target = target.Substring(
+              1,
+              target.Length - 2
+            );
+          }
+
+          if (!this.IsPhysicalResourceReferenceCandidate(target)) {
+            return match.Value;
+          }
+
+          string decodedTarget;
+
+          try {
+            decodedTarget = Uri.UnescapeDataString(
+              target
+            );
+          }
+          catch (UriFormatException ex) {
+            DevLogger.LogError(ex);
+            return match.Value;
+          }
+
+          string resourcePath = Path.GetFullPath(
+            Path.Combine(
+              documentDirectory,
+              decodedTarget.Replace(
+                '/',
+                Path.DirectorySeparatorChar
+              )
+            )
+          );
+
+          try {
+            this.EnsurePathInsideRepository(
+              resourcePath
+            );
+          }
+          catch (InvalidOperationException) {
+            return match.Value;
+          }
+
+          if (!File.Exists(resourcePath)) {
+            return match.Value;
+          }
+
+          if (string.Equals(
+                Path.GetExtension(resourcePath),
+                _MarkdownExtension,
+                StringComparison.OrdinalIgnoreCase
+              )) {
+            return match.Value;
+          }
+
+          string resourceId = this.CreateResourceId(
+            resourcePath
+          );
+
+          return match.Groups["prefix"].Value
+            + _KnowledgeResourceReferencePrefix
+            + resourceId
+            + match.Groups["suffix"].Value;
+        }
+      );
     }
 
     /// <summary>
-    /// Parses the provider-specific physical resource companion naming convention.
+    /// Converts canonical knowledge-resource references into normal relative Markdown file
+    /// paths suitable for direct use by ordinary Markdown editors.
     /// </summary>
-    private bool TryParseResourceCompanionFile(
-      string filePath,
-      out ResourcePhysicalFile resource
+    private string ConvertKnowledgeMarkdownToPhysicalMarkdown(
+      string documentPath,
+      string knowledgeMarkdown
     ) {
-      resource = null;
+      if (string.IsNullOrEmpty(knowledgeMarkdown)) {
+        return knowledgeMarkdown;
+      }
 
-      string fileName = Path.GetFileName(
-        filePath
+      string documentDirectory = Path.GetDirectoryName(
+        documentPath
       );
 
-      if (fileName.Contains(
-            ".DELETED",
-            StringComparison.OrdinalIgnoreCase
+      if (string.IsNullOrEmpty(documentDirectory)) {
+        return knowledgeMarkdown;
+      }
+
+      return _KnowledgeResourceReferenceRegex.Replace(
+        knowledgeMarkdown,
+        (Match match) => {
+          string resourceId = match.Groups["id"].Value;
+          string resourcePath;
+
+          try {
+            resourcePath = this.ResolveResourcePath(
+              resourceId
+            );
+          }
+          catch (InvalidOperationException) {
+            return match.Value;
+          }
+
+          if (!File.Exists(resourcePath)) {
+            return match.Value;
+          }
+
+          string relativePath = Path.GetRelativePath(
+            documentDirectory,
+            resourcePath
+          ).Replace(
+            Path.DirectorySeparatorChar,
+            '/'
+          ).Replace(
+            Path.AltDirectorySeparatorChar,
+            '/'
+          );
+
+          return this.EncodeMarkdownRelativePath(
+            relativePath
+          );
+        }
+      );
+    }
+
+    /// <summary>
+    /// Returns whether one Markdown destination can represent a local physical resource.
+    /// </summary>
+    private bool IsPhysicalResourceReferenceCandidate(string target) {
+      if (string.IsNullOrWhiteSpace(target)) {
+        return false;
+      }
+
+      if (target.StartsWith(
+            _KnowledgeResourceReferencePrefix,
+            StringComparison.Ordinal
           )) {
         return false;
       }
 
-      Match match = _ResourceCompanionFileRegex.Match(
-        fileName
-      );
-
-      if (!match.Success) {
+      if (target.StartsWith("#", StringComparison.Ordinal) ||
+          target.StartsWith("/", StringComparison.Ordinal) ||
+          target.StartsWith("\\", StringComparison.Ordinal)) {
         return false;
       }
 
-      long resourceUid;
-
-      if (!long.TryParse(
-            match.Groups["uid"].Value,
-            NumberStyles.None,
-            CultureInfo.InvariantCulture,
-            out resourceUid
-          ) || resourceUid <= 0) {
+      if (Uri.TryCreate(
+            target,
+            UriKind.Absolute,
+            out Uri absoluteUri
+          )) {
         return false;
       }
 
-      string directory = Path.GetDirectoryName(
-        filePath
-      );
-
-      if (string.IsNullOrEmpty(directory)) {
-        return false;
-      }
-
-      string documentPath = Path.Combine(
-        directory,
-        match.Groups["document"].Value + _MarkdownExtension
-      );
-
-      ResourcePhysicalFile parsed = new ResourcePhysicalFile();
-      parsed.FilePath = filePath;
-      parsed.DocumentPath = documentPath;
-      parsed.ResourceUid = resourceUid;
-      parsed.FileExtension = match.Groups["extension"].Value.ToLowerInvariant();
-      resource = parsed;
       return true;
     }
 
     /// <summary>
-    /// Returns whether one file is a provider resource companion rather than a knowledge area.
+    /// Encodes one repository-local relative path for safe use as an inline Markdown link.
     /// </summary>
-    private bool IsResourceCompanionFile(string filePath) {
-      ResourcePhysicalFile resource;
-      return this.TryParseResourceCompanionFile(
-        filePath,
-        out resource
-      );
-    }
-
-    /// <summary>
-    /// Validates that all physical occurrences of one UID represent the same logical bytes.
-    /// </summary>
-    private void ValidateResourceMaterializations(
-      ResourcePhysicalFile[] resources,
-      byte[] expectedContent
-    ) {
-      using SHA256 sha256 = SHA256.Create();
-      byte[] expectedHash = sha256.ComputeHash(
-        expectedContent
+    private string EncodeMarkdownRelativePath(string relativePath) {
+      string[] segments = relativePath.Split(
+        '/'
       );
 
-      foreach (ResourcePhysicalFile resource in resources) {
-        byte[] content = File.ReadAllBytes(
-          resource.FilePath
-        );
-
-        byte[] hash = sha256.ComputeHash(
-          content
-        );
-
-        if (!hash.SequenceEqual(expectedHash)) {
-          throw new InvalidOperationException(
-            "Resource UID "
-            + resource.ResourceUid.ToString(CultureInfo.InvariantCulture)
-            + " is represented by conflicting binary content."
-          );
+      for (int index = 0; index < segments.Length; index++) {
+        if (segments[index] == "." ||
+            segments[index] == "..") {
+          continue;
         }
+
+        segments[index] = Uri.EscapeDataString(
+          segments[index]
+        );
       }
+
+      return string.Join(
+        "/",
+        segments
+      );
     }
 
     /// <summary>
-    /// Extracts all canonical knowledge-resource UIDs referenced by one textual block.
+    /// Extracts all canonical opaque resource identifiers referenced by one textual block.
     /// </summary>
-    private long[] GetReferencedResourceUids(string content) {
+    private string[] GetReferencedResourceIds(string content) {
       if (string.IsNullOrEmpty(content)) {
-        return Array.Empty<long>();
+        return Array.Empty<string>();
       }
 
-      List<long> result = new List<long>();
+      List<string> result = new List<string>();
+      HashSet<string> known = new HashSet<string>(
+        StringComparer.Ordinal
+      );
 
       MatchCollection matches = _KnowledgeResourceReferenceRegex.Matches(
         content
       );
 
       foreach (Match match in matches) {
-        long resourceUid;
+        string resourceId = match.Groups["id"].Value;
 
-        if (!long.TryParse(
-              match.Groups["uid"].Value,
-              NumberStyles.None,
-              CultureInfo.InvariantCulture,
-              out resourceUid
-            )) {
+        if (string.IsNullOrEmpty(resourceId) ||
+            known.Contains(resourceId)) {
           continue;
         }
 
-        if (!result.Contains(resourceUid)) {
-          result.Add(resourceUid);
-        }
+        known.Add(resourceId);
+        result.Add(resourceId);
       }
 
       return result.ToArray();
     }
 
     /// <summary>
-    /// Ensures that referenced repository-wide resources are physically available beside
-    /// one document. Existing materializations are copied without changing their UID.
+    /// Verifies that every canonical resource reference resolves to an existing physical file.
     /// </summary>
-    private bool EnsureResourcesMaterializedForDocument(
-      string documentPath,
-      long[] resourceUids
-    ) {
-      foreach (long resourceUid in resourceUids) {
-        ResourcePhysicalFile[] existing = this.FindResourceFiles(
-          resourceUid
-        );
+    private bool AreReferencedResourcesAvailable(string content) {
+      string[] resourceIds = this.GetReferencedResourceIds(
+        content
+      );
 
-        if (existing.Length == 0) {
+      foreach (string resourceId in resourceIds) {
+        string resourcePath;
+
+        try {
+          resourcePath = this.ResolveResourcePath(
+            resourceId
+          );
+        }
+        catch (InvalidOperationException) {
           return false;
         }
 
-        ResourcePhysicalFile local = existing.FirstOrDefault(
-          (ResourcePhysicalFile candidate) => string.Equals(
-            candidate.DocumentPath,
-            documentPath,
-            StringComparison.OrdinalIgnoreCase
-          )
-        );
-
-        if (local != null) {
-          continue;
-        }
-
-        byte[] sourceContent = File.ReadAllBytes(
-          existing[0].FilePath
-        );
-
-        this.ValidateResourceMaterializations(
-          existing,
-          sourceContent
-        );
-
-        string targetPath = this.GetResourceCompanionPath(
-          documentPath,
-          resourceUid,
-          existing[0].FileExtension
-        );
-
-        if (File.Exists(targetPath)) {
+        if (!File.Exists(resourcePath)) {
           return false;
         }
-
-        this.WriteAllBytesAtomically(
-          targetPath,
-          sourceContent
-        );
       }
 
       return true;
     }
 
     /// <summary>
-    /// Returns whether any currently exposed Markdown content references one ResourceUid.
+    /// Returns whether any currently exposed Markdown content references one ResourceId.
     /// </summary>
     private bool IsResourceReferencedAnywhere(
-      long resourceUid,
+      string resourceId,
       MutationContext context
     ) {
       string reference = _KnowledgeResourceReferencePrefix
-        + resourceUid.ToString(CultureInfo.InvariantCulture);
+        + resourceId;
 
       string[] markdownFiles = this.GetFilesRecursivelyWithoutReparsePoints(
         _RootDirectory,
@@ -1788,21 +1989,21 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       foreach (string markdownFile in markdownFiles) {
         if (this.IsReparsePoint(markdownFile) ||
-            this.IsSoftDeletedMarkdownFile(markdownFile) ||
-            this.IsResourceCompanionFile(markdownFile)) {
+            this.IsSoftDeletedMarkdownFile(markdownFile)) {
           continue;
         }
 
-        MarkdownDocumentModel document = context.GetDocument(
-          markdownFile
+        string physicalContent = File.ReadAllText(
+          markdownFile,
+          Encoding.UTF8
         );
 
-        string rendered = this.RenderContentSubtree(
-          document.Root,
-          document.NewLine
+        string knowledgeContent = this.ConvertPhysicalMarkdownToKnowledgeMarkdown(
+          markdownFile,
+          physicalContent
         );
 
-        if (rendered.Contains(
+        if (knowledgeContent.Contains(
               reference,
               StringComparison.Ordinal
             )) {
@@ -1814,14 +2015,212 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Moves a Markdown document and all of its companion resource materializations.
+    /// Returns whether the supplied resource uses the strict provider-generated ownership
+    /// convention of the supplied Markdown document.
     /// </summary>
-    private void MoveDocumentWithResources(
+    private bool IsOwnedResourceForDocument(
+      string resourcePath,
+      string documentPath
+    ) {
+      string resourceDirectory = Path.GetDirectoryName(
+        resourcePath
+      );
+
+      string documentDirectory = Path.GetDirectoryName(
+        documentPath
+      );
+
+      if (!string.Equals(
+            resourceDirectory,
+            documentDirectory,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        return false;
+      }
+
+      Match match = _OwnedResourceFileRegex.Match(
+        Path.GetFileName(resourcePath)
+      );
+
+      if (!match.Success) {
+        return false;
+      }
+
+      string documentName = Path.GetFileNameWithoutExtension(
+        documentPath
+      );
+
+      return string.Equals(
+        match.Groups["document"].Value,
+        documentName,
+        StringComparison.Ordinal
+      );
+    }
+
+    /// <summary>
+    /// Moves a document-owned resource and returns the resulting target path. A collision
+    /// is resolved with a fresh provider-generated fallback name.
+    /// </summary>
+    private string MoveOwnedResource(
+      string sourceResourcePath,
       string sourceDocumentPath,
       string targetDocumentPath
     ) {
-      KnowledgeResourceInfo[] resources = this.GetDocumentResources(
-        sourceDocumentPath
+      string targetDirectory = Path.GetDirectoryName(
+        targetDocumentPath
+      );
+
+      if (string.IsNullOrEmpty(targetDirectory)) {
+        throw new InvalidOperationException(
+          "The target Markdown document has no physical parent directory."
+        );
+      }
+
+      string targetDocumentName = Path.GetFileNameWithoutExtension(
+        targetDocumentPath
+      );
+
+      string extension = Path.GetExtension(
+        sourceResourcePath
+      );
+
+      Match sourceMatch = _OwnedResourceFileRegex.Match(
+        Path.GetFileName(sourceResourcePath)
+      );
+
+      string token = string.Empty;
+
+      if (sourceMatch.Success) {
+        token = sourceMatch.Groups["token"].Value;
+      }
+
+      string targetResourcePath;
+
+      if (!string.IsNullOrEmpty(token)) {
+        string fileName = targetDocumentName
+          + _ResourceMarker
+          + token
+          + extension;
+
+        targetResourcePath = this.GetSafePhysicalChildPath(
+          targetDirectory,
+          Path.GetFileNameWithoutExtension(fileName),
+          extension
+        );
+      }
+      else {
+        targetResourcePath = this.CreateNewResourcePath(
+          targetDocumentPath,
+          string.Empty,
+          this.GetContentTypeFromExtension(extension)
+        );
+      }
+
+      if (File.Exists(targetResourcePath) ||
+          Directory.Exists(targetResourcePath)) {
+        targetResourcePath = this.CreateNewResourcePath(
+          targetDocumentPath,
+          string.Empty,
+          this.GetContentTypeFromExtension(extension)
+        );
+      }
+
+      File.Move(
+        sourceResourcePath,
+        targetResourcePath
+      );
+
+      return targetResourcePath;
+    }
+
+    /// <summary>
+    /// Rewrites canonical resource references according to one set of completed resource
+    /// identifier changes.
+    /// </summary>
+    private string ApplyResourceIdChanges(
+      string content,
+      KnowledgeResourceIdChange[] resourceIdChanges
+    ) {
+      string result = content;
+
+      foreach (KnowledgeResourceIdChange change in resourceIdChanges) {
+        result = result.Replace(
+          _KnowledgeResourceReferencePrefix + change.PreviousResourceId,
+          _KnowledgeResourceReferencePrefix + change.CurrentResourceId,
+          StringComparison.Ordinal
+        );
+      }
+
+      return result;
+    }
+
+    /// <summary>
+    /// Moves or renames one Markdown document while preserving normal physical Markdown
+    /// references and reporting opaque resource identifier changes for owned resources.
+    /// </summary>
+    private void MoveDocumentWithResourceMapping(
+      string sourceDocumentPath,
+      string targetDocumentPath,
+      List<KnowledgeResourceIdChange> resourceIdChanges
+    ) {
+      string physicalContent = File.ReadAllText(
+        sourceDocumentPath,
+        Encoding.UTF8
+      );
+
+      string knowledgeContent = this.ConvertPhysicalMarkdownToKnowledgeMarkdown(
+        sourceDocumentPath,
+        physicalContent
+      );
+
+      string[] referencedResourceIds = this.GetReferencedResourceIds(
+        knowledgeContent
+      );
+
+      List<KnowledgeResourceIdChange> localChanges =
+        new List<KnowledgeResourceIdChange>();
+
+      foreach (string resourceId in referencedResourceIds) {
+        string resourcePath = this.ResolveResourcePath(
+          resourceId
+        );
+
+        if (!File.Exists(resourcePath)) {
+          throw new InvalidOperationException(
+            "A referenced knowledge resource no longer exists."
+          );
+        }
+
+        if (!this.IsOwnedResourceForDocument(
+              resourcePath,
+              sourceDocumentPath
+            )) {
+          continue;
+        }
+
+        string targetResourcePath = this.MoveOwnedResource(
+          resourcePath,
+          sourceDocumentPath,
+          targetDocumentPath
+        );
+
+        string currentResourceId = this.CreateResourceId(
+          targetResourcePath
+        );
+
+        KnowledgeResourceIdChange change =
+          new KnowledgeResourceIdChange();
+
+        change.PreviousResourceId = resourceId;
+        change.CurrentResourceId = currentResourceId;
+
+        localChanges.Add(change);
+        resourceIdChanges.Add(change);
+      }
+
+      string updatedKnowledgeContent = this.ApplyResourceIdChanges(
+        knowledgeContent,
+        localChanges.ToArray()
       );
 
       File.Move(
@@ -1829,28 +2228,137 @@ namespace AI.SmartStandards.KnowledgeAccess {
         targetDocumentPath
       );
 
-      foreach (KnowledgeResourceInfo resource in resources) {
-        string sourceResourcePath = this.GetResourceCompanionPath(
-          sourceDocumentPath,
-          resource.ResourceUid,
-          resource.FileExtension
+      string targetPhysicalContent = this.ConvertKnowledgeMarkdownToPhysicalMarkdown(
+        targetDocumentPath,
+        updatedKnowledgeContent
+      );
+
+      this.WriteAllTextAtomically(
+        targetDocumentPath,
+        targetPhysicalContent
+      );
+    }
+
+    /// <summary>
+    /// Moves one complete physical directory while preserving repository resource semantics.
+    ///
+    /// Resource files inside the moved directory receive new opaque ResourceIds because their
+    /// repository-relative native paths change. Markdown files are first read into canonical
+    /// knowledge form and then re-rendered at their new physical location so references to
+    /// resources outside the moved directory remain valid.
+    /// </summary>
+    private void MoveDirectoryWithResourceMapping(
+      string sourceDirectory,
+      string targetDirectory,
+      List<KnowledgeResourceIdChange> resourceIdChanges
+    ) {
+      string[] markdownFiles = this.GetFilesRecursivelyWithoutReparsePoints(
+        sourceDirectory,
+        "*" + _MarkdownExtension
+      );
+
+      Dictionary<string, string> canonicalDocuments =
+        new Dictionary<string, string>(
+          StringComparer.OrdinalIgnoreCase
         );
 
-        string targetResourcePath = this.GetResourceCompanionPath(
+      foreach (string markdownFile in markdownFiles) {
+        if (this.IsReparsePoint(markdownFile) ||
+            this.IsSoftDeletedMarkdownFile(markdownFile) ||
+            this.IsResourceCompanionFile(markdownFile)) {
+          continue;
+        }
+
+        string relativeDocumentPath = Path.GetRelativePath(
+          sourceDirectory,
+          markdownFile
+        );
+
+        string physicalContent = File.ReadAllText(
+          markdownFile,
+          Encoding.UTF8
+        );
+
+        canonicalDocuments[relativeDocumentPath] =
+          this.ConvertPhysicalMarkdownToKnowledgeMarkdown(
+            markdownFile,
+            physicalContent
+          );
+      }
+
+      string[] files = this.GetFilesRecursivelyWithoutReparsePoints(
+        sourceDirectory,
+        "*"
+      );
+
+      List<KnowledgeResourceIdChange> localChanges =
+        new List<KnowledgeResourceIdChange>();
+
+      foreach (string sourceFile in files) {
+        if (this.IsReparsePoint(sourceFile) ||
+            string.Equals(
+              Path.GetExtension(sourceFile),
+              _MarkdownExtension,
+              StringComparison.OrdinalIgnoreCase
+            )) {
+          continue;
+        }
+
+        string relativePath = Path.GetRelativePath(
+          sourceDirectory,
+          sourceFile
+        );
+
+        string targetFile = Path.Combine(
+          targetDirectory,
+          relativePath
+        );
+
+        KnowledgeResourceIdChange change =
+          new KnowledgeResourceIdChange();
+
+        change.PreviousResourceId = this.CreateResourceId(
+          sourceFile
+        );
+
+        change.CurrentResourceId = this.CreateResourceId(
+          targetFile
+        );
+
+        localChanges.Add(change);
+        resourceIdChanges.Add(change);
+      }
+
+      Directory.Move(
+        sourceDirectory,
+        targetDirectory
+      );
+
+      foreach (KeyValuePair<string, string> document in canonicalDocuments) {
+        string targetDocumentPath = Path.Combine(
+          targetDirectory,
+          document.Key
+        );
+
+        string updatedKnowledgeContent = this.ApplyResourceIdChanges(
+          document.Value,
+          localChanges.ToArray()
+        );
+
+        string physicalContent = this.ConvertKnowledgeMarkdownToPhysicalMarkdown(
           targetDocumentPath,
-          resource.ResourceUid,
-          resource.FileExtension
+          updatedKnowledgeContent
         );
 
-        File.Move(
-          sourceResourcePath,
-          targetResourcePath
+        this.WriteAllTextAtomically(
+          targetDocumentPath,
+          physicalContent
         );
       }
     }
 
     /// <summary>
-    /// Deletes one resource companion according to the repository soft-delete policy.
+    /// Deletes one resource file according to the repository soft-delete policy.
     /// </summary>
     private void DeleteResourceFile(string resourcePath) {
       if (!_UseSoftDelete) {
@@ -1877,24 +2385,48 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Deletes or soft-deletes all resources physically associated with one document.
+    /// Deletes document-owned resources physically associated with one document.
+    /// Free/shared resources are deliberately preserved.
     /// </summary>
     private void DeleteDocumentResources(string documentPath) {
-      KnowledgeResourceInfo[] resources = this.GetDocumentResources(
+      string directory = Path.GetDirectoryName(
         documentPath
       );
 
-      foreach (KnowledgeResourceInfo resource in resources) {
-        string resourcePath = this.GetResourceCompanionPath(
-          documentPath,
-          resource.ResourceUid,
-          resource.FileExtension
-        );
-
-        this.DeleteResourceFile(
-          resourcePath
-        );
+      if (string.IsNullOrEmpty(directory)) {
+        return;
       }
+
+      string documentName = Path.GetFileNameWithoutExtension(
+        documentPath
+      );
+
+      string[] files = Directory.GetFiles(
+        directory,
+        documentName + _ResourceMarker + "*",
+        SearchOption.TopDirectoryOnly
+      );
+
+      foreach (string file in files) {
+        if (this.IsOwnedResourceForDocument(
+              file,
+              documentPath
+            )) {
+          this.DeleteResourceFile(
+            file
+          );
+        }
+      }
+    }
+
+    /// <summary>
+    /// Returns whether one file matches the strict provider-generated owned-resource naming
+    /// convention and therefore must never be exposed as a Markdown knowledge document.
+    /// </summary>
+    private bool IsResourceCompanionFile(string filePath) {
+      return _OwnedResourceFileRegex.IsMatch(
+        Path.GetFileName(filePath)
+      );
     }
 
     /// <summary>
@@ -2024,7 +2556,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return true;
     }
 
-    private bool TryRenameCore(string area, string newName, MutationContext context) {
+    private bool TryRenameCore(
+      string area,
+      string newName,
+      MutationContext context,
+      List<KnowledgeResourceIdChange> resourceIdChanges
+    ) {
       if (string.IsNullOrWhiteSpace(newName)) {
         return false;
       }
@@ -2065,8 +2602,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        context.ForgetDocumentsBelow(descriptor.PhysicalPath);
-        Directory.Move(descriptor.PhysicalPath, targetPath);
+        context.ForgetDocumentsBelow(
+          descriptor.PhysicalPath
+        );
+
+        this.MoveDirectoryWithResourceMapping(
+          descriptor.PhysicalPath,
+          targetPath,
+          resourceIdChanges
+        );
+
         return true;
       }
 
@@ -2101,11 +2646,14 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        context.ForgetDocument(descriptor.PhysicalPath);
+        context.ForgetDocument(
+          descriptor.PhysicalPath
+        );
 
-        this.MoveDocumentWithResources(
+        this.MoveDocumentWithResourceMapping(
           descriptor.PhysicalPath,
-          targetPath
+          targetPath,
+          resourceIdChanges
         );
 
         return true;
@@ -2259,13 +2807,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       if (target.Kind == AreaKind.Document ||
           target.Kind == AreaKind.Heading) {
-        long[] referencedResourceUids = this.GetReferencedResourceUids(
-          content
-        );
-
-        if (!this.EnsureResourcesMaterializedForDocument(
-              target.Document.FilePath,
-              referencedResourceUids
+        if (!this.AreReferencedResourcesAvailable(
+              content
             )) {
           return false;
         }
@@ -2367,7 +2910,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private bool TryMoveContentCore(
       string contentAreaToMove,
       string newParentArea,
-      MutationContext context
+      MutationContext context,
+      List<KnowledgeResourceIdChange> resourceIdChanges
     ) {
       string normalizedContentAreaToMove = this.NormalizeAreaPath(
         contentAreaToMove
@@ -2435,7 +2979,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return this.MoveDirectoryArea(
           contentToMove,
           newParent,
-          context
+          context,
+          resourceIdChanges
         );
       }
 
@@ -2443,7 +2988,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return this.MoveDocumentArea(
           contentToMove,
           newParent,
-          context
+          context,
+          resourceIdChanges
         );
       }
 
@@ -2463,7 +3009,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private bool MoveDirectoryArea(
       AreaDescriptor contentToMove,
       AreaDescriptor newParent,
-      MutationContext context
+      MutationContext context,
+      List<KnowledgeResourceIdChange> resourceIdChanges
     ) {
       if (newParent.Kind != AreaKind.Root &&
           newParent.Kind != AreaKind.Directory) {
@@ -2488,9 +3035,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
         contentToMove.PhysicalPath
       );
 
-      Directory.Move(
+      this.MoveDirectoryWithResourceMapping(
         contentToMove.PhysicalPath,
-        targetPath
+        targetPath,
+        resourceIdChanges
       );
 
       return true;
@@ -2502,7 +3050,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private bool MoveDocumentArea(
       AreaDescriptor contentToMove,
       AreaDescriptor newParent,
-      MutationContext context
+      MutationContext context,
+      List<KnowledgeResourceIdChange> resourceIdChanges
     ) {
       if (newParent.Kind != AreaKind.Root &&
           newParent.Kind != AreaKind.Directory) {
@@ -2527,9 +3076,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
         contentToMove.PhysicalPath
       );
 
-      this.MoveDocumentWithResources(
+      this.MoveDocumentWithResourceMapping(
         contentToMove.PhysicalPath,
-        targetPath
+        targetPath,
+        resourceIdChanges
       );
 
       return true;
@@ -2581,26 +3131,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       if (duplicate) {
         return false;
-      }
-
-      if (!string.Equals(
-            contentToMove.Document.FilePath,
-            newParent.Document.FilePath,
-            StringComparison.OrdinalIgnoreCase
-          )) {
-        long[] referencedResourceUids = this.GetReferencedResourceUids(
-          this.RenderContentSubtree(
-            sourceNode,
-            contentToMove.Document.NewLine
-          )
-        );
-
-        if (!this.EnsureResourcesMaterializedForDocument(
-              newParent.Document.FilePath,
-              referencedResourceUids
-            )) {
-          return false;
-        }
       }
 
       int headingLevelDelta = requiredHeadingLevel - sourceNode.HeadingLevel;
@@ -3275,8 +3805,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return context.GetDocument(documentPath);
       }
 
-      string content = File.ReadAllText(documentPath, Encoding.UTF8);
-      return this.ParseMarkdownDocument(documentPath, content);
+      string physicalContent = File.ReadAllText(
+        documentPath,
+        Encoding.UTF8
+      );
+
+      string knowledgeContent = this.ConvertPhysicalMarkdownToKnowledgeMarkdown(
+        documentPath,
+        physicalContent
+      );
+
+      return this.ParseMarkdownDocument(
+        documentPath,
+        knowledgeContent
+      );
     }
 
     private MarkdownDocumentModel ParseMarkdownDocument(
@@ -4014,53 +4556,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Describes one provider-specific physical companion file for a logical resource UID.
-    /// </summary>
-    private sealed class ResourcePhysicalFile {
-
-      private string _FilePath;
-      private string _DocumentPath;
-      private long _ResourceUid;
-      private string _FileExtension;
-
-      public string FilePath {
-        get {
-          return _FilePath;
-        }
-        set {
-          _FilePath = value;
-        }
-      }
-
-      public string DocumentPath {
-        get {
-          return _DocumentPath;
-        }
-        set {
-          _DocumentPath = value;
-        }
-      }
-
-      public long ResourceUid {
-        get {
-          return _ResourceUid;
-        }
-        set {
-          _ResourceUid = value;
-        }
-      }
-
-      public string FileExtension {
-        get {
-          return _FileExtension;
-        }
-        set {
-          _FileExtension = value;
-        }
-      }
-    }
-
-    /// <summary>
     /// Describes one resolved logical area.
     /// </summary>
     protected sealed class AreaDescriptor {
@@ -4501,8 +4996,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return document;
         }
 
-        string content = File.ReadAllText(fullPath, Encoding.UTF8);
-        document = _Owner.ParseMarkdownDocument(fullPath, content);
+        string physicalContent = File.ReadAllText(
+          fullPath,
+          Encoding.UTF8
+        );
+
+        string knowledgeContent = _Owner.ConvertPhysicalMarkdownToKnowledgeMarkdown(
+          fullPath,
+          physicalContent
+        );
+
+        document = _Owner.ParseMarkdownDocument(
+          fullPath,
+          knowledgeContent
+        );
         _Documents.Add(fullPath, document);
         return document;
       }
@@ -4542,8 +5049,19 @@ namespace AI.SmartStandards.KnowledgeAccess {
             continue;
           }
 
-          string content = _Owner.RenderDocument(document);
-          _Owner.WriteAllTextAtomically(document.FilePath, content);
+          string knowledgeContent = _Owner.RenderDocument(
+            document
+          );
+
+          string physicalContent = _Owner.ConvertKnowledgeMarkdownToPhysicalMarkdown(
+            document.FilePath,
+            knowledgeContent
+          );
+
+          _Owner.WriteAllTextAtomically(
+            document.FilePath,
+            physicalContent
+          );
         }
       }
     }

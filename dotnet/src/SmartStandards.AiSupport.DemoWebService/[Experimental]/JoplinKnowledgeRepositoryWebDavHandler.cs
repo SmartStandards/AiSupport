@@ -62,7 +62,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     );
 
     private static readonly Regex _KnowledgeResourceReferenceRegex = new Regex(
-      @"knowledge-resource:(?<uid>[0-9]+)",
+      @"knowledge-resource:(?<id>[A-Za-z0-9._~-]+)",
       RegexOptions.Compiled | RegexOptions.CultureInvariant
     );
 
@@ -659,8 +659,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             99999,
             "Joplin resource DELETE suppressed projection without deleting knowledge resource: joplinId="
             + resourceRecord.JoplinId
-            + " resourceUid="
-            + resourceRecord.ResourceUid.ToString(CultureInfo.InvariantCulture)
+            + " resourceId="
+            + resourceRecord.ResourceId
             + "."
           );
 
@@ -940,7 +940,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Applies an uploaded Joplin resource blob/metadata pair to an already mapped
-    /// Knowledge ResourceUid. Unmapped resources remain pending until a note reference
+    /// Knowledge ResourceId. Unmapped resources remain pending until a note reference
     /// supplies a concrete knowledge resource scope.
     /// </summary>
     private ResourceApplyResult TryApplyUploadedJoplinResource(
@@ -1014,9 +1014,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       if (providerResourceChanged) {
         bool replaced = _KnowledgeRepository.TryReplaceResource(
-          record.AreaHint,
-          record.ResourceUid,
-          fileExtension,
+          record.ResourceId,
           metadataItem.Mime,
           resourceContent
         );
@@ -1040,6 +1038,84 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       return ResourceApplyResult.Applied;
+    }
+
+    /// <summary>
+    /// Applies repository resource identifier changes to the persistent Joplin mapping
+    /// while preserving the stable Joplin resource identity.
+    /// </summary>
+    private void ApplyKnowledgeResourceIdChanges(
+      JoplinProjectionState state,
+      KnowledgeResourceIdChange[] resourceIdChanges
+    ) {
+      if (resourceIdChanges == null ||
+          resourceIdChanges.Length == 0) {
+        return;
+      }
+
+      foreach (KnowledgeResourceIdChange change in resourceIdChanges) {
+        JoplinResourceProjectionRecord[] records = state.Resources
+          .Where((JoplinResourceProjectionRecord candidate) =>
+            string.Equals(
+              candidate.ResourceId,
+              change.PreviousResourceId,
+              StringComparison.Ordinal
+            ))
+          .ToArray();
+
+        foreach (JoplinResourceProjectionRecord record in records) {
+          record.ResourceId = change.CurrentResourceId;
+          record.ModifiedUtc = DateTime.UtcNow;
+        }
+      }
+    }
+
+    /// <summary>
+    /// Returns the best descriptive physical file name supplied by one Joplin resource item.
+    /// The value is only a provider hint and never becomes the repository resource identity.
+    /// </summary>
+    private string GetPreferredJoplinResourceFileName(
+      JoplinSerializedItem resourceItem
+    ) {
+      string fileName = resourceItem.FileName;
+
+      if (string.IsNullOrWhiteSpace(fileName)) {
+        fileName = resourceItem.Title;
+      }
+
+      if (string.IsNullOrWhiteSpace(fileName)) {
+        return string.Empty;
+      }
+
+      string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(
+        fileName
+      );
+
+      if (!string.IsNullOrWhiteSpace(resourceItem.Id) &&
+          string.Equals(
+            fileNameWithoutExtension,
+            resourceItem.Id,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        // Joplin commonly synthesizes a hash-like filename for pasted screenshots.
+        // Treating that value as a meaningful human filename would accidentally turn
+        // an otherwise document-owned resource into a free/shared FileBased resource.
+        return string.Empty;
+      }
+
+      string extension = Path.GetExtension(
+        fileName
+      );
+
+      if (!string.IsNullOrWhiteSpace(extension)) {
+        return fileName;
+      }
+
+      string resolvedExtension = this.ResolveJoplinResourceExtension(
+        resourceItem
+      );
+
+      return fileName + resolvedExtension;
     }
 
     /// <summary>
@@ -1153,7 +1229,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Translates Joplin resource references in one note body to stable provider-neutral
-    /// <c>knowledge-resource:&lt;ResourceUid&gt;</c> references.
+    /// <c>knowledge-resource:&lt;ResourceId&gt;</c> references.
     ///
     /// Joplin note links use the same <c>:/&lt;id&gt;</c> syntax and are therefore explicitly
     /// left untouched. Only IDs whose referenced sync item is a Joplin resource are mapped
@@ -1179,8 +1255,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return true;
       }
 
-      Dictionary<string, long> mappings =
-        new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+      Dictionary<string, string> mappings =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
       foreach (Match match in matches) {
         string joplinId = match.Groups["id"].Value.ToLowerInvariant();
@@ -1202,9 +1278,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
             return false;
           }
 
+          if (string.IsNullOrWhiteSpace(record.ResourceId)) {
+            return false;
+          }
+
           record.IsSuppressed = false;
           record.AreaHint = area;
-          mappings[joplinId] = record.ResourceUid;
+          mappings[joplinId] = record.ResourceId;
           continue;
         }
 
@@ -1254,18 +1334,18 @@ namespace AI.SmartStandards.KnowledgeAccess {
           blobPath
         );
 
-        string fileExtension = this.ResolveJoplinResourceExtension(
+        string preferredFileName = this.GetPreferredJoplinResourceFileName(
           referencedItem
         );
 
-        long resourceUid;
+        string resourceId;
 
         bool added = _KnowledgeRepository.TryAddResource(
           area,
-          fileExtension,
+          preferredFileName,
           referencedItem.Mime,
           resourceContent,
-          out resourceUid
+          out resourceId
         );
 
         if (!added) {
@@ -1274,7 +1354,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         record = new JoplinResourceProjectionRecord();
         record.JoplinId = joplinId;
-        record.ResourceUid = resourceUid;
+        record.ResourceId = resourceId;
         record.AreaHint = area;
 
         if (referencedItem.CreatedUtc == DateTime.MinValue) {
@@ -1291,7 +1371,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
           record.ModifiedUtc = referencedItem.ModifiedUtc;
         }
 
-        record.FileExtension = fileExtension;
+        record.FileExtension = this.ResolveJoplinResourceExtension(
+          referencedItem
+        );
         record.ContentType = referencedItem.Mime;
         record.Title = referencedItem.Title;
         record.FileName = referencedItem.FileName;
@@ -1299,7 +1381,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         record.IsSuppressed = false;
         state.Resources.Add(record);
 
-        mappings[joplinId] = resourceUid;
+        mappings[joplinId] = resourceId;
       }
 
       translatedBody = _JoplinResourceReferenceRegex.Replace(
@@ -1311,10 +1393,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             return match.Value;
           }
 
-          long resourceUid = mappings[joplinId];
-
           return _KnowledgeResourceReferencePrefix
-            + resourceUid.ToString(CultureInfo.InvariantCulture);
+            + mappings[joplinId];
         }
       );
 
@@ -1335,6 +1415,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       if (body == null) {
         body = string.Empty;
       }
+
       MatchCollection matches = _KnowledgeResourceReferenceRegex.Matches(
         body
       );
@@ -1353,47 +1434,45 @@ namespace AI.SmartStandards.KnowledgeAccess {
         area
       );
 
-      Dictionary<long, string> mappings = new Dictionary<long, string>();
+      Dictionary<string, string> mappings =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 
       foreach (Match match in matches) {
-        long resourceUid;
+        string resourceId = match.Groups["id"].Value;
 
-        if (!long.TryParse(
-              match.Groups["uid"].Value,
-              NumberStyles.None,
-              CultureInfo.InvariantCulture,
-              out resourceUid
-            )) {
-          continue;
-        }
-
-        if (mappings.ContainsKey(resourceUid)) {
+        if (mappings.ContainsKey(resourceId)) {
           continue;
         }
 
         KnowledgeResourceInfo resource = resources.FirstOrDefault(
-          (KnowledgeResourceInfo candidate) => candidate.ResourceUid == resourceUid
+          (KnowledgeResourceInfo candidate) =>
+            string.Equals(
+              candidate.ResourceId,
+              resourceId,
+              StringComparison.Ordinal
+            )
         );
 
         if (resource == null) {
           throw new InvalidOperationException(
-            "Knowledge content references resource UID "
-            + resourceUid.ToString(CultureInfo.InvariantCulture)
-            + " but the provider does not expose that resource in the current scope."
+            "Knowledge content references a resource identifier that the provider does not expose in the current scope."
           );
         }
 
         JoplinResourceProjectionRecord record = state.Resources
           .FirstOrDefault((JoplinResourceProjectionRecord candidate) =>
-            candidate.ResourceUid == resourceUid);
+            string.Equals(
+              candidate.ResourceId,
+              resourceId,
+              StringComparison.Ordinal
+            ));
 
         if (record == null) {
           record = new JoplinResourceProjectionRecord();
           record.JoplinId = this.CreateDeterministicItemId(
-            "resource:"
-            + resourceUid.ToString(CultureInfo.InvariantCulture)
+            "resource:" + resourceId
           );
-          record.ResourceUid = resourceUid;
+          record.ResourceId = resourceId;
           record.Title = string.Empty;
           record.FileName = string.Empty;
           record.CreatedUtc = DateTime.UtcNow;
@@ -1403,16 +1482,27 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
 
         record.AreaHint = area;
-        record.FileExtension = resource.FileExtension;
+
+        if (string.IsNullOrWhiteSpace(record.FileExtension)) {
+          record.FileExtension = Path.GetExtension(
+            resource.FileName
+          );
+        }
+
+        if (string.IsNullOrWhiteSpace(record.FileName)) {
+          record.FileName = resource.FileName;
+        }
+
         record.ContentType = resource.ContentType;
         record.IsSuppressed = false;
 
         byte[] content = _KnowledgeRepository.GetResourceContent(
-          area,
-          resourceUid
+          resourceId
         );
 
-        string contentHash = this.ComputeHash(content);
+        string contentHash = this.ComputeHash(
+          content
+        );
 
         if (!string.Equals(
               record.LastContentHash,
@@ -1441,24 +1531,19 @@ namespace AI.SmartStandards.KnowledgeAccess {
           content
         );
 
-        mappings[resourceUid] = record.JoplinId;
+        mappings[resourceId] = record.JoplinId;
       }
 
       return _KnowledgeResourceReferenceRegex.Replace(
         body,
         (Match match) => {
-          long resourceUid;
+          string resourceId = match.Groups["id"].Value;
 
-          if (!long.TryParse(
-                match.Groups["uid"].Value,
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out resourceUid
-              ) || !mappings.ContainsKey(resourceUid)) {
+          if (!mappings.ContainsKey(resourceId)) {
             return match.Value;
           }
 
-          return ":/" + mappings[resourceUid];
+          return ":/" + mappings[resourceId];
         }
       );
     }
@@ -1472,14 +1557,19 @@ namespace AI.SmartStandards.KnowledgeAccess {
       KnowledgeResourceInfo resource,
       long length
     ) {
-      string extension = resource.FileExtension;
+      string extension = Path.GetExtension(
+        resource.FileName
+      );
 
       if (extension == null) {
         extension = string.Empty;
       }
-      string fallbackFileName = "Resource-"
-        + resource.ResourceUid.ToString(CultureInfo.InvariantCulture)
-        + extension;
+
+      string fallbackFileName = resource.FileName;
+
+      if (string.IsNullOrWhiteSpace(fallbackFileName)) {
+        fallbackFileName = "Resource" + extension;
+      }
 
       string fileName = record.FileName;
 
@@ -1926,10 +2016,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
         oldArea
       );
 
+      KnowledgeResourceIdChange[] resourceIdChanges;
+
       bool moved = _KnowledgeRepository.TryMoveContent(
         oldArea,
-        newParentArea
+        newParentArea,
+        out resourceIdChanges
       );
+
+      if (moved) {
+        this.ApplyKnowledgeResourceIdChanges(
+          projection.State,
+          resourceIdChanges
+        );
+      }
 
       if (!moved) {
         DevLogger.LogTrace(
@@ -2026,10 +2126,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
         string oldArea = record.Area;
         string parentArea = this.GetParentArea(oldArea);
 
+        KnowledgeResourceIdChange[] resourceIdChanges;
+
         bool renamed = _KnowledgeRepository.TryRename(
           oldArea,
-          item.Title
+          item.Title,
+          out resourceIdChanges
         );
+
+        if (renamed) {
+          this.ApplyKnowledgeResourceIdChanges(
+            projection.State,
+            resourceIdChanges
+          );
+        }
 
         if (!renamed) {
           return MaterializationResult.Failed;
@@ -3506,7 +3616,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       /// <summary>
-      /// Gets or sets stable Joplin resource-to-Knowledge ResourceUid mappings.
+      /// Gets or sets stable Joplin resource-to-Knowledge ResourceId mappings.
       /// </summary>
       public List<JoplinResourceProjectionRecord> Resources {
         get {
@@ -3635,12 +3745,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Stores the stable mapping between one Joplin resource item and one provider-neutral
-    /// repository-wide Knowledge ResourceUid.
+    /// provider-neutral Knowledge ResourceId.
     /// </summary>
     private sealed class JoplinResourceProjectionRecord {
 
       private string _JoplinId;
-      private long _ResourceUid;
+      private string _ResourceId;
       private string _AreaHint;
       private DateTime _CreatedUtc;
       private DateTime _ModifiedUtc;
@@ -3660,12 +3770,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
       }
 
-      public long ResourceUid {
+      public string ResourceId {
         get {
-          return _ResourceUid;
+          return _ResourceId;
         }
         set {
-          _ResourceUid = value;
+          _ResourceId = value;
         }
       }
 

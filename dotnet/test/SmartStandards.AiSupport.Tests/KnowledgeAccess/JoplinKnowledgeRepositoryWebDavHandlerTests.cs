@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using System;
+using System.IO;
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -405,7 +406,7 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           resources[0];
 
         Assert.Contains(
-          "knowledge-resource:" + resource.ResourceUid.ToString(),
+          "knowledge-resource:" + resource.ResourceId,
           repository.GetAggregatedContent(noteArea),
           StringComparison.Ordinal
         );
@@ -413,8 +414,7 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         CollectionAssert.AreEqual(
           imageBytes,
           repository.GetResourceContent(
-            noteArea,
-            resource.ResourceUid
+            resource.ResourceId
           )
         );
       }
@@ -494,7 +494,7 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
 
     /// <summary>
     /// Verifies that replacing an already mapped Joplin resource updates the same
-    /// Knowledge ResourceUid instead of allocating a second logical resource.
+    /// Knowledge ResourceId instead of allocating a second logical resource.
     /// </summary>
     [TestMethod]
     public void Put_ExistingJoplinResourceBlob_ReplacesMappedKnowledgeResource() {
@@ -558,8 +558,8 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         KnowledgeResourceInfo originalResource =
           originalResources[0];
 
-        long originalUid =
-          originalResource.ResourceUid;
+        string originalResourceId =
+          originalResource.ResourceId;
 
         byte[] replacementBytes =
           new byte[] { 9, 8, 7, 6 };
@@ -589,15 +589,14 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           updatedResources[0];
 
         Assert.AreEqual(
-          originalUid,
-          updatedResource.ResourceUid
+          originalResourceId,
+          updatedResource.ResourceId
         );
 
         CollectionAssert.AreEqual(
           replacementBytes,
           repository.GetResourceContent(
-            noteArea,
-            originalUid
+            originalResourceId
           )
         );
       }
@@ -682,8 +681,7 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         CollectionAssert.AreEqual(
           imageBytes,
           repository.GetResourceContent(
-            noteArea,
-            resource.ResourceUid
+            resource.ResourceId
           )
         );
       }
@@ -797,10 +795,10 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
 
     /// <summary>
     /// Verifies that renaming a Joplin note containing a mapped resource preserves the
-    /// logical ResourceUid and keeps the resource resolvable from the renamed area.
+    /// logical ResourceId and keeps the resource resolvable from the renamed area.
     /// </summary>
     [TestMethod]
-    public void Put_ExistingNoteWithChangedTitle_PreservesMappedResourceUid() {
+    public void Put_ExistingNoteWithChangedTitle_PreservesMappedResourceId() {
       using (KnowledgeRepositoryTestContext context =
         new KnowledgeRepositoryTestContext()) {
 
@@ -858,8 +856,8 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
           originalResources.Length
         );
 
-        long originalResourceUid =
-          originalResources[0].ResourceUid;
+        string originalResourceId =
+          originalResources[0].ResourceId;
 
         IActionResult renameResult = context.PutText(
           handler,
@@ -907,15 +905,14 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         );
 
         Assert.AreEqual(
-          originalResourceUid,
-          renamedResources[0].ResourceUid
+          originalResourceId,
+          renamedResources[0].ResourceId
         );
 
         CollectionAssert.AreEqual(
           imageBytes,
           repository.GetResourceContent(
-            renamedArea,
-            originalResourceUid
+            originalResourceId
           )
         );
       }
@@ -1138,6 +1135,189 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         Assert.AreEqual(
           firstIndex,
           lastIndex
+        );
+      }
+    }
+
+
+    /// <summary>
+    /// Verifies that moving a Joplin note with a provider-generated owned resource updates
+    /// only the Knowledge ResourceId mapping while preserving the stable Joplin resource ID.
+    /// </summary>
+    [TestMethod]
+    public void Put_MoveNoteWithOwnedResource_UpdatesKnowledgeMappingAndPreservesJoplinResourceId() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        JoplinKnowledgeRepositoryWebDavHandler handler =
+          context.CreateJoplinHandler(repository);
+
+        context.PutText(
+          handler,
+          _FolderAId + ".md",
+          context.CreateJoplinFolderItem(
+            _FolderAId,
+            "Folder A",
+            string.Empty
+          )
+        );
+
+        context.PutText(
+          handler,
+          _FolderBId + ".md",
+          context.CreateJoplinFolderItem(
+            _FolderBId,
+            "Folder B",
+            string.Empty
+          )
+        );
+
+        byte[] imageBytes =
+          new byte[] { 71, 72, 73, 74 };
+
+        context.PutBytes(
+          handler,
+          ".resource/" + _ResourceId,
+          imageBytes
+        );
+
+        context.PutText(
+          handler,
+          _ResourceId + ".md",
+          context.CreateJoplinResourceItem(
+            _ResourceId,
+            string.Empty,
+            string.Empty,
+            "image/png",
+            "png"
+          )
+        );
+
+        context.PutText(
+          handler,
+          _NoteAId + ".md",
+          context.CreateJoplinNoteItem(
+            _NoteAId,
+            "Image Note",
+            _FolderAId,
+            "![Image](:/" + _ResourceId + ")"
+          )
+        );
+
+        string folderA = context.GetChildArea(
+          repository,
+          "/",
+          "Folder A"
+        );
+
+        string noteArea = context.GetChildArea(
+          repository,
+          folderA,
+          "Image Note"
+        );
+
+        KnowledgeResourceInfo[] originalResources =
+          repository.GetResources(
+            noteArea
+          );
+
+        Assert.AreEqual(
+          1,
+          originalResources.Length
+        );
+
+        string originalResourceId =
+          originalResources[0].ResourceId;
+
+        IActionResult moveResult = context.PutText(
+          handler,
+          _NoteAId + ".md",
+          context.CreateJoplinNoteItem(
+            _NoteAId,
+            "Image Note",
+            _FolderBId,
+            "![Image](:/" + _ResourceId + ")"
+          )
+        );
+
+        Assert.AreEqual(
+          StatusCodes.Status204NoContent,
+          context.GetStatusCode(moveResult)
+        );
+
+        string folderB = context.GetChildArea(
+          repository,
+          "/",
+          "Folder B"
+        );
+
+        string movedArea = context.GetChildArea(
+          repository,
+          folderB,
+          "Image Note"
+        );
+
+        KnowledgeResourceInfo[] movedResources =
+          repository.GetResources(
+            movedArea
+          );
+
+        Assert.AreEqual(
+          1,
+          movedResources.Length
+        );
+
+        Assert.AreNotEqual(
+          originalResourceId,
+          movedResources[0].ResourceId
+        );
+
+        IActionResult getResult = context.Get(
+          handler,
+          _NoteAId + ".md"
+        );
+
+        FileContentResult fileResult =
+          getResult as FileContentResult;
+
+        Assert.IsNotNull(
+          fileResult
+        );
+
+        string joplinContent = Encoding.UTF8.GetString(
+          fileResult.FileContents
+        );
+
+        Assert.IsTrue(
+          joplinContent.Contains(
+            ":/" + _ResourceId,
+            StringComparison.Ordinal
+          )
+        );
+
+        string physicalMarkdown = File.ReadAllText(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Folder B",
+            "Image Note.md"
+          )
+        );
+
+        Assert.IsFalse(
+          physicalMarkdown.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.IsTrue(
+          physicalMarkdown.Contains(
+            "Image Note.Res",
+            StringComparison.Ordinal
+          )
         );
       }
     }

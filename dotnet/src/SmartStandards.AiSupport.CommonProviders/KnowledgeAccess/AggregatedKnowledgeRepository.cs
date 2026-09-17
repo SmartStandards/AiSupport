@@ -1,4 +1,6 @@
-﻿using System;
+﻿using Logging.SmartStandards;
+using Logging.SmartStandards.CopyForAI.SmartStandards;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -410,17 +412,24 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Returns the union of resources exposed by all resource-capable contributors.
-    /// Duplicate UIDs are collapsed only when their metadata and binary content are compatible.
+    /// Returns resources exposed by all resource-capable contributors.
+    ///
+    /// Child-provider resource identifiers are wrapped in an opaque aggregator-owned
+    /// identifier so callers never need to infer contributor identity or child-provider
+    /// semantics from the value.
     /// </summary>
     public KnowledgeResourceInfo[] GetResources(string area) {
       lock (_SyncRoot) {
-        AggregatedNode node = this.RequireNode(area);
-        Dictionary<long, KnowledgeResourceInfo> resources =
-          new Dictionary<long, KnowledgeResourceInfo>();
+        AggregatedNode node = this.RequireNode(
+          area
+        );
+
+        List<KnowledgeResourceInfo> resources =
+          new List<KnowledgeResourceInfo>();
 
         foreach (AreaContribution contribution in node.Contributions) {
-          IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+          IKnowledgeRepository repository =
+            contribution.MountedRepository.Repository;
 
           if (!this.RepositorySupportsResources(
                 repository,
@@ -429,176 +438,101 @@ namespace AI.SmartStandards.KnowledgeAccess {
             continue;
           }
 
-          KnowledgeResourceInfo[] providerResources = repository.GetResources(
-            contribution.LocalArea
-          );
+          KnowledgeResourceInfo[] providerResources =
+            repository.GetResources(
+              contribution.LocalArea
+            );
 
           foreach (KnowledgeResourceInfo providerResource in providerResources) {
-            KnowledgeResourceInfo existing;
-
-            if (!resources.TryGetValue(
-                  providerResource.ResourceUid,
-                  out existing
-                )) {
-              resources.Add(
-                providerResource.ResourceUid,
-                this.CloneResourceInfo(providerResource)
+            KnowledgeResourceInfo aggregateResource =
+              this.CloneResourceInfo(
+                providerResource
               );
-              continue;
-            }
 
-            if (existing.Length != providerResource.Length ||
-                !string.Equals(
-                  existing.FileExtension,
-                  providerResource.FileExtension,
-                  StringComparison.OrdinalIgnoreCase
-                ) ||
-                !string.Equals(
-                  existing.ContentType,
-                  providerResource.ContentType,
-                  StringComparison.OrdinalIgnoreCase
-                )) {
-              throw new InvalidOperationException(
-                "Overlay repositories expose conflicting metadata for resource UID "
-                + providerResource.ResourceUid.ToString(CultureInfo.InvariantCulture)
-                + "."
-              );
-            }
+            aggregateResource.ResourceId = this.CreateAggregatedResourceId(
+              contribution.MountedRepository.RegistrationOrder,
+              providerResource.ResourceId
+            );
+
+            resources.Add(
+              aggregateResource
+            );
           }
         }
 
-        return resources.Values
-          .OrderBy((KnowledgeResourceInfo resource) => resource.ResourceUid)
+        return resources
+          .OrderBy(
+            (KnowledgeResourceInfo resource) => resource.ResourceId,
+            StringComparer.Ordinal
+          )
           .ToArray();
       }
     }
 
     /// <summary>
-    /// Returns one logical resource from all contributors that expose the UID and verifies
-    /// that overlapping providers do not disagree about its binary identity.
+    /// Resolves one aggregator-owned opaque resource identifier to the corresponding child
+    /// provider and returns its binary content.
     /// </summary>
-    public byte[] GetResourceContent(
-      string area,
-      long resourceUid
-    ) {
+    public byte[] GetResourceContent(string resourceId) {
       lock (_SyncRoot) {
-        AggregatedNode node = this.RequireNode(area);
-        byte[] resolvedContent = null;
-        byte[] resolvedHash = null;
+        int registrationOrder;
+        string childResourceId;
 
-        using SHA256 sha256 = SHA256.Create();
-
-        foreach (AreaContribution contribution in node.Contributions) {
-          IKnowledgeRepository repository = contribution.MountedRepository.Repository;
-
-          if (!this.RepositorySupportsResources(
-                repository,
-                contribution.LocalArea
-              )) {
-            continue;
-          }
-
-          KnowledgeResourceInfo match = repository.GetResources(
-            contribution.LocalArea
-          ).FirstOrDefault((KnowledgeResourceInfo resource) =>
-            resource.ResourceUid == resourceUid);
-
-          if (match == null) {
-            continue;
-          }
-
-          byte[] candidate = repository.GetResourceContent(
-            contribution.LocalArea,
-            resourceUid
-          );
-
-          byte[] candidateHash = sha256.ComputeHash(
-            candidate
-          );
-
-          if (resolvedContent == null) {
-            resolvedContent = candidate;
-            resolvedHash = candidateHash;
-            continue;
-          }
-
-          if (!resolvedHash.SequenceEqual(candidateHash)) {
-            throw new InvalidOperationException(
-              "Overlay repositories expose conflicting binary content for resource UID "
-              + resourceUid.ToString(CultureInfo.InvariantCulture)
-              + "."
-            );
-          }
-        }
-
-        if (resolvedContent == null) {
+        if (!this.TryParseAggregatedResourceId(
+              resourceId,
+              out registrationOrder,
+              out childResourceId
+            )) {
           throw new InvalidOperationException(
-            "The aggregated resource does not exist: "
-            + resourceUid.ToString(CultureInfo.InvariantCulture)
+            "The aggregated resource identifier is invalid."
           );
         }
 
-        return resolvedContent;
-      }
-    }
+        MountedRepository mountedRepository =
+          _Repositories.FirstOrDefault(
+            (MountedRepository candidate) =>
+              candidate.RegistrationOrder == registrationOrder
+          );
 
-    /// <summary>
-    /// Adds a resource only when exactly one concrete contributor unambiguously owns the area.
-    /// </summary>
-    public bool TryAddResource(
-      string area,
-      string fileExtension,
-      string contentType,
-      byte[] content,
-      out long resourceUid
-    ) {
-      lock (_SyncRoot) {
-        resourceUid = 0;
-        AggregatedNode node = this.RequireNode(area);
-
-        if (node.Contributions.Count != 1) {
-          return false;
+        if (mountedRepository == null) {
+          throw new InvalidOperationException(
+            "The aggregated resource provider is no longer registered."
+          );
         }
 
-        AreaContribution contribution = node.Contributions[0];
-        IKnowledgeRepository repository = contribution.MountedRepository.Repository;
-
-        if (!this.RepositorySupportsResources(
-                repository,
-                contribution.LocalArea
-              )) {
-          return false;
-        }
-
-        return repository.TryAddResource(
-          contribution.LocalArea,
-          fileExtension,
-          contentType,
-          content,
-          out resourceUid
+        return mountedRepository.Repository.GetResourceContent(
+          childResourceId
         );
       }
     }
 
     /// <summary>
-    /// Replaces a resource only when the addressed area resolves to one concrete provider.
+    /// Adds a resource only when exactly one concrete contributor unambiguously owns the
+    /// addressed area.
     /// </summary>
-    public bool TryReplaceResource(
+    public bool TryAddResource(
       string area,
-      long resourceUid,
-      string fileExtension,
+      string preferredFileName,
       string contentType,
-      byte[] content
+      byte[] content,
+      out string resourceId
     ) {
       lock (_SyncRoot) {
-        AggregatedNode node = this.RequireNode(area);
+        resourceId = string.Empty;
+
+        AggregatedNode node = this.RequireNode(
+          area
+        );
 
         if (node.Contributions.Count != 1) {
           return false;
         }
 
-        AreaContribution contribution = node.Contributions[0];
-        IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+        AreaContribution contribution =
+          node.Contributions[0];
+
+        IKnowledgeRepository repository =
+          contribution.MountedRepository.Repository;
 
         if (!this.RepositorySupportsResources(
                 repository,
@@ -607,10 +541,62 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return repository.TryReplaceResource(
+        string childResourceId;
+
+        bool added = repository.TryAddResource(
           contribution.LocalArea,
-          resourceUid,
-          fileExtension,
+          preferredFileName,
+          contentType,
+          content,
+          out childResourceId
+        );
+
+        if (!added) {
+          return false;
+        }
+
+        resourceId = this.CreateAggregatedResourceId(
+          contribution.MountedRepository.RegistrationOrder,
+          childResourceId
+        );
+
+        return true;
+      }
+    }
+
+    /// <summary>
+    /// Replaces one resource through the child provider encoded by the aggregator-owned
+    /// opaque resource identifier.
+    /// </summary>
+    public bool TryReplaceResource(
+      string resourceId,
+      string contentType,
+      byte[] content
+    ) {
+      lock (_SyncRoot) {
+        int registrationOrder;
+        string childResourceId;
+
+        if (!this.TryParseAggregatedResourceId(
+              resourceId,
+              out registrationOrder,
+              out childResourceId
+            )) {
+          return false;
+        }
+
+        MountedRepository mountedRepository =
+          _Repositories.FirstOrDefault(
+            (MountedRepository candidate) =>
+              candidate.RegistrationOrder == registrationOrder
+          );
+
+        if (mountedRepository == null) {
+          return false;
+        }
+
+        return mountedRepository.Repository.TryReplaceResource(
+          childResourceId,
           contentType,
           content
         );
@@ -618,32 +604,34 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Deletes a resource only when the addressed area resolves to one concrete provider.
+    /// Deletes one resource through the child provider encoded by the aggregator-owned
+    /// opaque resource identifier.
     /// </summary>
-    public bool TryDeleteResource(
-      string area,
-      long resourceUid
-    ) {
+    public bool TryDeleteResource(string resourceId) {
       lock (_SyncRoot) {
-        AggregatedNode node = this.RequireNode(area);
+        int registrationOrder;
+        string childResourceId;
 
-        if (node.Contributions.Count != 1) {
+        if (!this.TryParseAggregatedResourceId(
+              resourceId,
+              out registrationOrder,
+              out childResourceId
+            )) {
           return false;
         }
 
-        AreaContribution contribution = node.Contributions[0];
-        IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+        MountedRepository mountedRepository =
+          _Repositories.FirstOrDefault(
+            (MountedRepository candidate) =>
+              candidate.RegistrationOrder == registrationOrder
+          );
 
-        if (!this.RepositorySupportsResources(
-                repository,
-                contribution.LocalArea
-              )) {
+        if (mountedRepository == null) {
           return false;
         }
 
-        return repository.TryDeleteResource(
-          contribution.LocalArea,
-          resourceUid
+        return mountedRepository.Repository.TryDeleteResource(
+          childResourceId
         );
       }
     }
@@ -779,8 +767,14 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// 
     /// Synthetic and multiply overlaid areas are not renameable through this aggregator.
     /// </summary>
-    public bool TryRename(string area, string newName) {
+    public bool TryRename(
+      string area,
+      string newName,
+      out KnowledgeResourceIdChange[] resourceIdChanges
+    ) {
       lock (_SyncRoot) {
+        resourceIdChanges = Array.Empty<KnowledgeResourceIdChange>();
+
         AreaContribution contribution;
 
         if (!this.TryGetUniqueContributionForCapability(
@@ -791,12 +785,28 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contribution.MountedRepository.Repository.TryRename(
-          contribution.LocalArea,
-          newName
+        KnowledgeResourceIdChange[] childChanges;
+
+        bool renamed =
+          contribution.MountedRepository.Repository.TryRename(
+            contribution.LocalArea,
+            newName,
+            out childChanges
+          );
+
+        if (!renamed) {
+          return false;
+        }
+
+        resourceIdChanges = this.WrapResourceIdChanges(
+          contribution.MountedRepository.RegistrationOrder,
+          childChanges
         );
+
+        return true;
       }
     }
+
 
     /// <summary>
     /// Adds a direct sub-area only when the global parent resolves to exactly one concrete
@@ -943,9 +953,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     public bool TryMoveContent(
       string contentAreaToMove,
-      string newParentArea
+      string newParentArea,
+      out KnowledgeResourceIdChange[] resourceIdChanges
     ) {
       lock (_SyncRoot) {
+        resourceIdChanges = Array.Empty<KnowledgeResourceIdChange>();
+
         AggregatedNode contentNode = this.RequireNode(
           contentAreaToMove
         );
@@ -959,8 +972,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        AreaContribution contentContribution = contentNode.Contributions[0];
-        AreaContribution newParentContribution = newParentNode.Contributions[0];
+        AreaContribution contentContribution =
+          contentNode.Contributions[0];
+
+        AreaContribution newParentContribution =
+          newParentNode.Contributions[0];
 
         if (!object.ReferenceEquals(
               contentContribution.MountedRepository,
@@ -969,12 +985,28 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contentContribution.MountedRepository.Repository.TryMoveContent(
-          contentContribution.LocalArea,
-          newParentContribution.LocalArea
+        KnowledgeResourceIdChange[] childChanges;
+
+        bool moved =
+          contentContribution.MountedRepository.Repository.TryMoveContent(
+            contentContribution.LocalArea,
+            newParentContribution.LocalArea,
+            out childChanges
+          );
+
+        if (!moved) {
+          return false;
+        }
+
+        resourceIdChanges = this.WrapResourceIdChanges(
+          contentContribution.MountedRepository.RegistrationOrder,
+          childChanges
         );
+
+        return true;
       }
     }
+
 
     /// <summary>
     /// Creates a detached resource metadata copy for the aggregated read model.
@@ -983,11 +1015,138 @@ namespace AI.SmartStandards.KnowledgeAccess {
       KnowledgeResourceInfo source
     ) {
       KnowledgeResourceInfo clone = new KnowledgeResourceInfo();
-      clone.ResourceUid = source.ResourceUid;
-      clone.FileExtension = source.FileExtension;
+      clone.ResourceId = source.ResourceId;
+      clone.FileName = source.FileName;
       clone.ContentType = source.ContentType;
       clone.Length = source.Length;
       return clone;
+    }
+
+    /// <summary>
+    /// Creates one opaque aggregator-owned resource identifier.
+    /// </summary>
+    private string CreateAggregatedResourceId(
+      int registrationOrder,
+      string childResourceId
+    ) {
+      string nativeIdentity =
+        registrationOrder.ToString(CultureInfo.InvariantCulture)
+        + "|"
+        + childResourceId;
+
+      string encoded = Convert.ToBase64String(
+        Encoding.UTF8.GetBytes(nativeIdentity)
+      ).TrimEnd('=')
+        .Replace('+', '-')
+        .Replace('/', '_');
+
+      return "1." + encoded;
+    }
+
+    /// <summary>
+    /// Resolves one aggregator-owned resource identifier.
+    /// </summary>
+    private bool TryParseAggregatedResourceId(
+      string resourceId,
+      out int registrationOrder,
+      out string childResourceId
+    ) {
+      registrationOrder = 0;
+      childResourceId = string.Empty;
+
+      if (string.IsNullOrWhiteSpace(resourceId) ||
+          !resourceId.StartsWith("1.", StringComparison.Ordinal)) {
+        return false;
+      }
+
+      string encoded = resourceId.Substring(2)
+        .Replace('-', '+')
+        .Replace('_', '/');
+
+      int remainder = encoded.Length % 4;
+
+      if (remainder == 2) {
+        encoded += "==";
+      }
+      else if (remainder == 3) {
+        encoded += "=";
+      }
+      else if (remainder == 1) {
+        return false;
+      }
+
+      string nativeIdentity;
+
+      try {
+        nativeIdentity = Encoding.UTF8.GetString(
+          Convert.FromBase64String(encoded)
+        );
+      }
+      catch (FormatException ex) {
+        DevLogger.LogError(ex);
+        return false;
+      }
+
+      int separatorIndex = nativeIdentity.IndexOf(
+        '|'
+      );
+
+      if (separatorIndex <= 0 ||
+          separatorIndex >= nativeIdentity.Length - 1) {
+        return false;
+      }
+
+      if (!int.TryParse(
+            nativeIdentity.Substring(0, separatorIndex),
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out registrationOrder
+          )) {
+        return false;
+      }
+
+      childResourceId = nativeIdentity.Substring(
+        separatorIndex + 1
+      );
+
+      return !string.IsNullOrEmpty(
+        childResourceId
+      );
+    }
+
+    /// <summary>
+    /// Wraps child-provider resource identifier changes in aggregate-level opaque IDs.
+    /// </summary>
+    private KnowledgeResourceIdChange[] WrapResourceIdChanges(
+      int registrationOrder,
+      KnowledgeResourceIdChange[] childChanges
+    ) {
+      if (childChanges == null ||
+          childChanges.Length == 0) {
+        return Array.Empty<KnowledgeResourceIdChange>();
+      }
+
+      KnowledgeResourceIdChange[] result =
+        new KnowledgeResourceIdChange[childChanges.Length];
+
+      for (int index = 0; index < childChanges.Length; index++) {
+        KnowledgeResourceIdChange change =
+          new KnowledgeResourceIdChange();
+
+        change.PreviousResourceId = this.CreateAggregatedResourceId(
+          registrationOrder,
+          childChanges[index].PreviousResourceId
+        );
+
+        change.CurrentResourceId = this.CreateAggregatedResourceId(
+          registrationOrder,
+          childChanges[index].CurrentResourceId
+        );
+
+        result[index] = change;
+      }
+
+      return result;
     }
 
     /// <summary>
