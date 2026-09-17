@@ -254,7 +254,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// The absolute logical start area. "/" represents the repository root.
     /// </param>
     /// <returns>The matching logical area paths in deterministic hierarchical order.</returns>
-    public string[] GetAreas(bool recurse, string startArea = "/") {
+    public virtual string[] GetAreas(bool recurse, string startArea = "/") {
       lock (_SyncRoot) {
         this.PrepareForRead();
 
@@ -271,7 +271,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Returns the direct provider-neutral logical display name of one area.
     /// Consumers never need to decode this provider's path-segment syntax.
     /// </summary>
-    public string GetAreaName(
+    public virtual string GetAreaName(
       string area
     ) {
       lock (_SyncRoot) {
@@ -303,7 +303,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <param name="keyword">The keyword to search for.</param>
     /// <param name="startArea">The absolute logical search scope.</param>
     /// <returns>Matching absolute logical area paths in deterministic order.</returns>
-    public string[] GetAreasByKeyword(string keyword, string startArea = "/") {
+    public virtual string[] GetAreasByKeyword(string keyword, string startArea = "/") {
       if (string.IsNullOrWhiteSpace(keyword)) {
         return Array.Empty<string>();
       }
@@ -361,7 +361,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// In read-only mode every mutation capability is false regardless of physical
     /// file-system permissions.
     /// </summary>
-    public void GetAreaCapabilities(
+    public virtual void GetAreaCapabilities(
       string area,
       out ContentLevel contentLevel,
       out bool supportsSubAreas,
@@ -404,7 +404,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// area. Physical relative Markdown paths are translated to opaque repository resource
     /// identifiers before they leave this provider.
     /// </summary>
-    public KnowledgeResourceInfo[] GetResources(string area) {
+    public virtual KnowledgeResourceInfo[] GetResources(string area) {
       lock (_SyncRoot) {
         this.PrepareForRead();
 
@@ -448,7 +448,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Returns the complete binary content of one opaque FileBased resource identifier.
     /// </summary>
-    public byte[] GetResourceContent(string resourceId) {
+    public virtual byte[] GetResourceContent(string resourceId) {
       lock (_SyncRoot) {
         this.PrepareForRead();
 
@@ -476,7 +476,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// available, the provider creates the owned-resource fallback
     /// &lt;Document&gt;.Res&lt;Snowflake44&gt;.&lt;extension&gt;.
     /// </summary>
-    public bool TryAddResource(
+    public virtual bool TryAddResource(
       string area,
       string preferredFileName,
       string contentType,
@@ -533,7 +533,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Replaces the binary content of one opaque resource identifier without changing its
     /// provider-native identity.
     /// </summary>
-    public bool TryReplaceResource(
+    public virtual bool TryReplaceResource(
       string resourceId,
       string contentType,
       byte[] content
@@ -567,7 +567,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Deletes one physical resource only when no exposed knowledge content references its
     /// opaque repository identifier anymore.
     /// </summary>
-    public bool TryDeleteResource(string resourceId) {
+    public virtual bool TryDeleteResource(string resourceId) {
       if (string.IsNullOrWhiteSpace(resourceId)) {
         return false;
       }
@@ -606,7 +606,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// false. Markdown document and heading containers return true only when their own
     /// direct content block contains non-whitespace text.
     /// </summary>
-    public bool HasDirectContent(string area) {
+    public virtual bool HasDirectContent(string area) {
       lock (_SyncRoot) {
         this.PrepareForRead();
 
@@ -629,7 +629,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// A Markdown document returns its preamble before the first heading. A Markdown
     /// heading returns the text belonging to that heading before its first child heading.
     /// </summary>
-    public string GetDirectContent(string area) {
+    public virtual string GetDirectContent(string area) {
       lock (_SyncRoot) {
         this.PrepareForRead();
 
@@ -650,7 +650,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// section. Subdirectories are not recursively aggregated; they remain independent
     /// bracketed navigation areas that must be entered explicitly.
     /// </summary>
-    public string GetAggregatedContent(string area) {
+    public virtual string GetAggregatedContent(string area) {
       lock (_SyncRoot) {
         this.PrepareForRead();
 
@@ -690,7 +690,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// 
     /// Deleting the logical root is not allowed.
     /// </summary>
-    public bool TryDelete(string area) {
+    public virtual bool TryDelete(string area) {
       return this.ExecuteMutation(
         "Delete knowledge area '" + area + "'",
         (MutationContext context) => this.TryDeleteCore(area, context)
@@ -713,7 +713,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// This provider-specific physical behavior is intentionally hidden behind the
     /// logical rename operation.
     /// </summary>
-    public bool TryRename(
+    public virtual bool TryRename(
       string area,
       string newName,
       out KnowledgeResourceIdChange[] resourceIdChanges
@@ -746,7 +746,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// creation intent. The caller never encodes filesystem representation choices into
     /// the logical name.
     /// </summary>
-    public bool TryAddSubArea(
+    public virtual bool TryAddSubArea(
       string area,
       string name,
       KnowledgeAreaKind kind
@@ -781,7 +781,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Existing siblings are never reordered. Existing content is never replaced or
     /// removed by append.
     /// </summary>
-    public bool TryAppendContent(string area, string content) {
+    public virtual bool TryAppendContent(string area, string content) {
       return this.ExecuteMutation(
         "Append content to knowledge area '" + area + "'",
         (MutationContext context) => this.TryAppendContentCore(area, content, context)
@@ -802,7 +802,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// directory are removed. Subdirectories are independent navigation scopes and are
     /// preserved. Non-Markdown files remain untouched.
     /// </summary>
-    public bool TryTruncate(string area) {
+    public virtual bool TryTruncate(string area) {
       return this.ExecuteMutation(
         "Truncate knowledge area '" + area + "'",
         (MutationContext context) => this.TryTruncateCore(area, context)
@@ -816,7 +816,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// the supplied content through sparse hierarchical append, but both phases are
     /// executed within one mutation transaction.
     /// </summary>
-    public bool TryReplace(string area, string newContent) {
+    public virtual bool TryReplace(string area, string newContent) {
       return this.ExecuteMutation(
         "Replace content of knowledge area '" + area + "'",
         (MutationContext context) => {
@@ -855,7 +855,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Markdown representation available. Documents and directories are physically
     /// moved, while Markdown heading scopes are reparented within or across documents.
     /// </summary>
-    public bool TryMoveContent(
+    public virtual bool TryMoveContent(
       string contentAreaToMove,
       string newParentArea,
       out KnowledgeResourceIdChange[] resourceIdChanges

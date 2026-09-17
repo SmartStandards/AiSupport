@@ -13,6 +13,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\FileBasedPromtingSessionStore.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedCodeArtifactMap.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\AggregatedKnowledgeRepository.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\KnowledgeRepositoryCacheWrapper.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\GitBasedKnowledgeRepository.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedKnowledgeRepository.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedPromtLibrary.cs" />
