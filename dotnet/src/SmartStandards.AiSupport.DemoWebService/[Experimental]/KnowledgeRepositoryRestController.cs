@@ -5,6 +5,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace AI.SmartStandards.KnowledgeAccess {
 
@@ -28,11 +29,18 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// and content movement are intentionally not exposed by this controller.
   /// </summary>
   [ApiController]
-  [Route("api/knowledge")]
-  [EndpointGroupName("REST-KnowledgeRepository")]
+  [Route("api/knowledge/raw")]
+  [EndpointGroupName("KnowledgeRepository-RAW")]
   public class KnowledgeRepositoryController : ControllerBase {
 
     private const string _MarkdownContentType = "text/markdown; charset=utf-8";
+    private const string _ResourceRouteSegment = "resources";
+    private const string _KnowledgeResourceReferencePrefix = "knowledge-resource:";
+
+    private static readonly Regex _KnowledgeResourceReferenceRegex = new Regex(
+      @"knowledge-resource:(?<id>[A-Za-z0-9._~-]+)",
+      RegexOptions.Compiled | RegexOptions.CultureInvariant
+    );
 
     private readonly IKnowledgeRepository _KnowledgeRepository;
 
@@ -80,6 +88,46 @@ namespace AI.SmartStandards.KnowledgeAccess {
     [HttpGet("{**area}")]
     public IActionResult GetArea(string area) {
       return this.GetAreaInternal(this.ToRepositoryArea(area));
+    }
+
+    /// <summary>
+    /// Returns one opaque knowledge resource as raw HTTP content.
+    ///
+    /// Resource identifiers remain fully opaque. The controller forwards the identifier
+    /// directly to <see cref="IKnowledgeRepository.GetResourceContent(string)"/> and never
+    /// attempts to decode provider-specific identity information.
+    /// </summary>
+    /// <param name="resourceId">The opaque repository resource identifier.</param>
+    /// <returns>The binary resource content or HTTP 404 when the resource does not exist.</returns>
+    [HttpGet("resources/{resourceId}")]
+    public IActionResult GetResource(string resourceId) {
+      if (string.IsNullOrWhiteSpace(resourceId)) {
+        return this.NotFound();
+      }
+
+      byte[] content;
+
+      try {
+        content = _KnowledgeRepository.GetResourceContent(
+          resourceId
+        );
+      }
+      catch (InvalidOperationException) {
+        return this.NotFound(
+          "Knowledge resource not found."
+        );
+      }
+
+      string contentType = this.DetectContentType(
+        content
+      );
+
+      this.Response.Headers["Content-Disposition"] = "inline";
+
+      return this.File(
+        content,
+        contentType
+      );
     }
 
     /// <summary>
@@ -187,6 +235,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       string content = _KnowledgeRepository.GetAggregatedContent(
         repositoryArea
+      );
+
+      content = this.ResolveKnowledgeResourceReferences(
+        content
       );
 
       return this.Content(
@@ -399,6 +451,10 @@ namespace AI.SmartStandards.KnowledgeAccess {
         repositoryArea
       );
 
+      content = this.ResolveKnowledgeResourceReferences(
+        content
+      );
+
       if (!string.IsNullOrWhiteSpace(content)) {
         if (builder.Length > 0) {
           builder.Append(Environment.NewLine);
@@ -412,6 +468,140 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       return builder.ToString();
+    }
+
+    /// <summary>
+    /// Replaces provider-neutral <c>knowledge-resource:</c> references with absolute HTTP
+    /// resource URLs exposed by this controller.
+    ///
+    /// The replacement is intentionally syntax-agnostic. A Markdown image target such as
+    /// <c>![Diagram](knowledge-resource:&lt;id&gt;)</c> therefore becomes an ordinary
+    /// absolute HTTP image URL while links to non-image resources work identically.
+    /// </summary>
+    private string ResolveKnowledgeResourceReferences(string content) {
+      if (string.IsNullOrEmpty(content)) {
+        return content;
+      }
+
+      return _KnowledgeResourceReferenceRegex.Replace(
+        content,
+        (Match match) => {
+          string resourceId =
+            match.Groups["id"].Value;
+
+          return this.BuildAbsoluteResourceUrl(
+            resourceId
+          );
+        }
+      );
+    }
+
+    /// <summary>
+    /// Builds a fully qualified resource URL for one opaque repository resource identifier.
+    /// The current request scheme is retained so HTTPS remains HTTPS behind a correctly
+    /// configured forwarded-header pipeline while local HTTP development continues to work.
+    /// </summary>
+    private string BuildAbsoluteResourceUrl(string resourceId) {
+      return this.Request.Scheme
+        + "://"
+        + this.Request.Host.Value
+        + this.Request.PathBase.Value
+        + "/api/knowledge/"
+        + _ResourceRouteSegment
+        + "/"
+        + Uri.EscapeDataString(
+          resourceId
+        );
+    }
+
+    /// <summary>
+    /// Detects a safe HTTP content type from common binary signatures.
+    ///
+    /// Knowledge resources may originate from arbitrary providers and the resource-content
+    /// API deliberately addresses them only by opaque identifier. Signature detection keeps
+    /// the raw endpoint provider-neutral while allowing browsers and AI consumers to handle
+    /// common images directly.
+    /// </summary>
+    private string DetectContentType(byte[] content) {
+      if (content == null ||
+          content.Length == 0) {
+        return "application/octet-stream";
+      }
+
+      if (content.Length >= 8 &&
+          content[0] == 0x89 &&
+          content[1] == 0x50 &&
+          content[2] == 0x4E &&
+          content[3] == 0x47 &&
+          content[4] == 0x0D &&
+          content[5] == 0x0A &&
+          content[6] == 0x1A &&
+          content[7] == 0x0A) {
+        return "image/png";
+      }
+
+      if (content.Length >= 3 &&
+          content[0] == 0xFF &&
+          content[1] == 0xD8 &&
+          content[2] == 0xFF) {
+        return "image/jpeg";
+      }
+
+      if (content.Length >= 6 &&
+          content[0] == 0x47 &&
+          content[1] == 0x49 &&
+          content[2] == 0x46 &&
+          content[3] == 0x38 &&
+          (content[4] == 0x37 || content[4] == 0x39) &&
+          content[5] == 0x61) {
+        return "image/gif";
+      }
+
+      if (content.Length >= 12 &&
+          content[0] == 0x52 &&
+          content[1] == 0x49 &&
+          content[2] == 0x46 &&
+          content[3] == 0x46 &&
+          content[8] == 0x57 &&
+          content[9] == 0x45 &&
+          content[10] == 0x42 &&
+          content[11] == 0x50) {
+        return "image/webp";
+      }
+
+      if (content.Length >= 4 &&
+          content[0] == 0x25 &&
+          content[1] == 0x50 &&
+          content[2] == 0x44 &&
+          content[3] == 0x46) {
+        return "application/pdf";
+      }
+
+      string textPrefix = Encoding.UTF8.GetString(
+        content,
+        0,
+        Math.Min(
+          content.Length,
+          512
+        )
+      ).TrimStart();
+
+      if (textPrefix.StartsWith(
+            "<svg",
+            StringComparison.OrdinalIgnoreCase
+          ) ||
+          textPrefix.StartsWith(
+            "<?xml",
+            StringComparison.OrdinalIgnoreCase
+          ) &&
+          textPrefix.IndexOf(
+            "<svg",
+            StringComparison.OrdinalIgnoreCase
+          ) >= 0) {
+        return "image/svg+xml";
+      }
+
+      return "application/octet-stream";
     }
 
     /// <summary>
