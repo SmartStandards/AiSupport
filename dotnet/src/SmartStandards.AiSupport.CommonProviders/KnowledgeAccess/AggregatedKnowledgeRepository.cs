@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace AI.SmartStandards.KnowledgeAccess {
@@ -286,7 +288,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
       out bool canBeDeleted,
       out bool canAddSubAreas,
       out bool canAppendContent,
-      out bool canTruncate
+      out bool canTruncate,
+      out bool supportsResources
     ) {
       lock (_SyncRoot) {
         string normalizedArea = this.NormalizeAreaPath(area);
@@ -301,6 +304,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
         contentLevel = this.ResolveCombinedContentLevel(node);
         supportsSubAreas = node.Children.Count > 0;
+        supportsResources = false;
 
         foreach (AreaContribution contribution in node.Contributions) {
           ContentLevel providerContentLevel;
@@ -310,6 +314,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
           bool providerCanAddSubAreas;
           bool providerCanAppendContent;
           bool providerCanTruncate;
+          bool providerSupportsResources;
 
           contribution.MountedRepository.Repository.GetAreaCapabilities(
             contribution.LocalArea,
@@ -319,11 +324,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
             out providerCanBeDeleted,
             out providerCanAddSubAreas,
             out providerCanAppendContent,
-            out providerCanTruncate
+            out providerCanTruncate,
+            out providerSupportsResources
           );
 
           if (providerSupportsSubAreas) {
             supportsSubAreas = true;
+          }
+
+          if (providerSupportsResources) {
+            supportsResources = true;
           }
         }
 
@@ -346,6 +356,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         bool uniqueCanAddSubAreas;
         bool uniqueCanAppendContent;
         bool uniqueCanTruncate;
+        bool uniqueSupportsResources;
 
         uniqueContribution.MountedRepository.Repository.GetAreaCapabilities(
           uniqueContribution.LocalArea,
@@ -355,7 +366,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
           out uniqueCanBeDeleted,
           out uniqueCanAddSubAreas,
           out uniqueCanAppendContent,
-          out uniqueCanTruncate
+          out uniqueCanTruncate,
+          out uniqueSupportsResources
         );
 
         canBeRenamed = uniqueCanBeRenamed;
@@ -363,6 +375,276 @@ namespace AI.SmartStandards.KnowledgeAccess {
         canAddSubAreas = uniqueCanAddSubAreas;
         canAppendContent = uniqueCanAppendContent;
         canTruncate = uniqueCanTruncate;
+      }
+    }
+
+    /// <summary>
+    /// Returns the resource capability reported by one mounted repository area.
+    /// </summary>
+    private bool RepositorySupportsResources(
+      IKnowledgeRepository repository,
+      string area
+    ) {
+      ContentLevel contentLevel;
+      bool supportsSubAreas;
+      bool canBeRenamed;
+      bool canBeDeleted;
+      bool canAddSubAreas;
+      bool canAppendContent;
+      bool canTruncate;
+      bool supportsResources;
+
+      repository.GetAreaCapabilities(
+        area,
+        out contentLevel,
+        out supportsSubAreas,
+        out canBeRenamed,
+        out canBeDeleted,
+        out canAddSubAreas,
+        out canAppendContent,
+        out canTruncate,
+        out supportsResources
+      );
+
+      return supportsResources;
+    }
+
+    /// <summary>
+    /// Returns the union of resources exposed by all resource-capable contributors.
+    /// Duplicate UIDs are collapsed only when their metadata and binary content are compatible.
+    /// </summary>
+    public KnowledgeResourceInfo[] GetResources(string area) {
+      lock (_SyncRoot) {
+        AggregatedNode node = this.RequireNode(area);
+        Dictionary<long, KnowledgeResourceInfo> resources =
+          new Dictionary<long, KnowledgeResourceInfo>();
+
+        foreach (AreaContribution contribution in node.Contributions) {
+          IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+
+          if (!this.RepositorySupportsResources(
+                repository,
+                contribution.LocalArea
+              )) {
+            continue;
+          }
+
+          KnowledgeResourceInfo[] providerResources = repository.GetResources(
+            contribution.LocalArea
+          );
+
+          foreach (KnowledgeResourceInfo providerResource in providerResources) {
+            KnowledgeResourceInfo existing;
+
+            if (!resources.TryGetValue(
+                  providerResource.ResourceUid,
+                  out existing
+                )) {
+              resources.Add(
+                providerResource.ResourceUid,
+                this.CloneResourceInfo(providerResource)
+              );
+              continue;
+            }
+
+            if (existing.Length != providerResource.Length ||
+                !string.Equals(
+                  existing.FileExtension,
+                  providerResource.FileExtension,
+                  StringComparison.OrdinalIgnoreCase
+                ) ||
+                !string.Equals(
+                  existing.ContentType,
+                  providerResource.ContentType,
+                  StringComparison.OrdinalIgnoreCase
+                )) {
+              throw new InvalidOperationException(
+                "Overlay repositories expose conflicting metadata for resource UID "
+                + providerResource.ResourceUid.ToString(CultureInfo.InvariantCulture)
+                + "."
+              );
+            }
+          }
+        }
+
+        return resources.Values
+          .OrderBy((KnowledgeResourceInfo resource) => resource.ResourceUid)
+          .ToArray();
+      }
+    }
+
+    /// <summary>
+    /// Returns one logical resource from all contributors that expose the UID and verifies
+    /// that overlapping providers do not disagree about its binary identity.
+    /// </summary>
+    public byte[] GetResourceContent(
+      string area,
+      long resourceUid
+    ) {
+      lock (_SyncRoot) {
+        AggregatedNode node = this.RequireNode(area);
+        byte[] resolvedContent = null;
+        byte[] resolvedHash = null;
+
+        using SHA256 sha256 = SHA256.Create();
+
+        foreach (AreaContribution contribution in node.Contributions) {
+          IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+
+          if (!this.RepositorySupportsResources(
+                repository,
+                contribution.LocalArea
+              )) {
+            continue;
+          }
+
+          KnowledgeResourceInfo match = repository.GetResources(
+            contribution.LocalArea
+          ).FirstOrDefault((KnowledgeResourceInfo resource) =>
+            resource.ResourceUid == resourceUid);
+
+          if (match == null) {
+            continue;
+          }
+
+          byte[] candidate = repository.GetResourceContent(
+            contribution.LocalArea,
+            resourceUid
+          );
+
+          byte[] candidateHash = sha256.ComputeHash(
+            candidate
+          );
+
+          if (resolvedContent == null) {
+            resolvedContent = candidate;
+            resolvedHash = candidateHash;
+            continue;
+          }
+
+          if (!resolvedHash.SequenceEqual(candidateHash)) {
+            throw new InvalidOperationException(
+              "Overlay repositories expose conflicting binary content for resource UID "
+              + resourceUid.ToString(CultureInfo.InvariantCulture)
+              + "."
+            );
+          }
+        }
+
+        if (resolvedContent == null) {
+          throw new InvalidOperationException(
+            "The aggregated resource does not exist: "
+            + resourceUid.ToString(CultureInfo.InvariantCulture)
+          );
+        }
+
+        return resolvedContent;
+      }
+    }
+
+    /// <summary>
+    /// Adds a resource only when exactly one concrete contributor unambiguously owns the area.
+    /// </summary>
+    public bool TryAddResource(
+      string area,
+      string fileExtension,
+      string contentType,
+      byte[] content,
+      out long resourceUid
+    ) {
+      lock (_SyncRoot) {
+        resourceUid = 0;
+        AggregatedNode node = this.RequireNode(area);
+
+        if (node.Contributions.Count != 1) {
+          return false;
+        }
+
+        AreaContribution contribution = node.Contributions[0];
+        IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+
+        if (!this.RepositorySupportsResources(
+                repository,
+                contribution.LocalArea
+              )) {
+          return false;
+        }
+
+        return repository.TryAddResource(
+          contribution.LocalArea,
+          fileExtension,
+          contentType,
+          content,
+          out resourceUid
+        );
+      }
+    }
+
+    /// <summary>
+    /// Replaces a resource only when the addressed area resolves to one concrete provider.
+    /// </summary>
+    public bool TryReplaceResource(
+      string area,
+      long resourceUid,
+      string fileExtension,
+      string contentType,
+      byte[] content
+    ) {
+      lock (_SyncRoot) {
+        AggregatedNode node = this.RequireNode(area);
+
+        if (node.Contributions.Count != 1) {
+          return false;
+        }
+
+        AreaContribution contribution = node.Contributions[0];
+        IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+
+        if (!this.RepositorySupportsResources(
+                repository,
+                contribution.LocalArea
+              )) {
+          return false;
+        }
+
+        return repository.TryReplaceResource(
+          contribution.LocalArea,
+          resourceUid,
+          fileExtension,
+          contentType,
+          content
+        );
+      }
+    }
+
+    /// <summary>
+    /// Deletes a resource only when the addressed area resolves to one concrete provider.
+    /// </summary>
+    public bool TryDeleteResource(
+      string area,
+      long resourceUid
+    ) {
+      lock (_SyncRoot) {
+        AggregatedNode node = this.RequireNode(area);
+
+        if (node.Contributions.Count != 1) {
+          return false;
+        }
+
+        AreaContribution contribution = node.Contributions[0];
+        IKnowledgeRepository repository = contribution.MountedRepository.Repository;
+
+        if (!this.RepositorySupportsResources(
+                repository,
+                contribution.LocalArea
+              )) {
+          return false;
+        }
+
+        return repository.TryDeleteResource(
+          contribution.LocalArea,
+          resourceUid
+        );
       }
     }
 
@@ -621,6 +903,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         bool canAddSubAreas;
         bool canAppendContent;
         bool canTruncate;
+        bool supportsResources;
 
         contribution.MountedRepository.Repository.GetAreaCapabilities(
           contribution.LocalArea,
@@ -630,7 +913,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
           out canBeDeleted,
           out canAddSubAreas,
           out canAppendContent,
-          out canTruncate
+          out canTruncate,
+          out supportsResources
         );
 
         if (!canAppendContent || !canTruncate) {
@@ -690,6 +974,20 @@ namespace AI.SmartStandards.KnowledgeAccess {
           newParentContribution.LocalArea
         );
       }
+    }
+
+    /// <summary>
+    /// Creates a detached resource metadata copy for the aggregated read model.
+    /// </summary>
+    private KnowledgeResourceInfo CloneResourceInfo(
+      KnowledgeResourceInfo source
+    ) {
+      KnowledgeResourceInfo clone = new KnowledgeResourceInfo();
+      clone.ResourceUid = source.ResourceUid;
+      clone.FileExtension = source.FileExtension;
+      clone.ContentType = source.ContentType;
+      clone.Length = source.Length;
+      return clone;
     }
 
     /// <summary>
@@ -803,6 +1101,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         bool canAddSubAreas;
         bool canAppendContent;
         bool canTruncate;
+        bool supportsResources;
 
         contribution.MountedRepository.Repository.GetAreaCapabilities(
           contribution.LocalArea,
@@ -812,7 +1111,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
           out canBeDeleted,
           out canAddSubAreas,
           out canAppendContent,
-          out canTruncate
+          out canTruncate,
+          out supportsResources
         );
 
         if (contentLevel == ContentLevel.ContentContainer) {
@@ -849,6 +1149,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
           bool canAddSubAreas;
           bool canAppendContent;
           bool canTruncate;
+          bool supportsResources;
 
           contribution.MountedRepository.Repository.GetAreaCapabilities(
             contribution.LocalArea,
@@ -858,7 +1159,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             out canBeDeleted,
             out canAddSubAreas,
             out canAppendContent,
-            out canTruncate
+            out canTruncate,
+            out supportsResources
           );
 
           if (contentLevel != ContentLevel.BeyondContent) {
@@ -946,6 +1248,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
         bool canAddSubAreas;
         bool canAppendContent;
         bool canTruncate;
+        bool supportsResources;
 
         contribution.MountedRepository.Repository.GetAreaCapabilities(
           contribution.LocalArea,
@@ -955,7 +1258,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
           out canBeDeleted,
           out canAddSubAreas,
           out canAppendContent,
-          out canTruncate
+          out canTruncate,
+          out supportsResources
         );
 
         if (contentLevel != ContentLevel.ContentAggregation) {
@@ -1012,6 +1316,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       bool canAddSubAreas;
       bool canAppendContent;
       bool canTruncate;
+      bool supportsResources;
 
       candidate.MountedRepository.Repository.GetAreaCapabilities(
         candidate.LocalArea,
@@ -1021,7 +1326,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
         out canBeDeleted,
         out canAddSubAreas,
         out canAppendContent,
-        out canTruncate
+        out canTruncate,
+        out supportsResources
       );
 
       bool capabilityAvailable = false;

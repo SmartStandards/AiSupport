@@ -151,7 +151,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             out bool canBeDeleted,
             out bool canAddSubAreas,
             out bool canAppendContent,
-            out bool canTruncate
+            out bool canTruncate,
+            out bool supportsResources
           )) {
         return this.NotFound(
           "Knowledge area not found: " + repositoryArea
@@ -208,7 +209,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             out bool canBeDeleted,
             out bool canAddSubAreas,
             out bool canAppendContent,
-            out bool canTruncate
+            out bool canTruncate,
+            out bool supportsResources
           )) {
         return this.NotFound(
           "Knowledge area not found: " + repositoryArea
@@ -277,7 +279,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
             out bool canBeDeleted,
             out bool canAddSubAreas,
             out bool canAppendContent,
-            out bool canTruncate
+            out bool canTruncate,
+            out bool supportsResources
           )) {
         return this.NotFound(
           "Knowledge area not found: " + repositoryArea
@@ -481,7 +484,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
       out bool canBeDeleted,
       out bool canAddSubAreas,
       out bool canAppendContent,
-      out bool canTruncate
+      out bool canTruncate,
+      out bool supportsResources
     ) {
       contentLevel = ContentLevel.BeyondContent;
       supportsSubAreas = false;
@@ -490,6 +494,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       canAddSubAreas = false;
       canAppendContent = false;
       canTruncate = false;
+      supportsResources = false;
 
       try {
         _KnowledgeRepository.GetAreaCapabilities(
@@ -500,7 +505,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
           out canBeDeleted,
           out canAddSubAreas,
           out canAppendContent,
-          out canTruncate
+          out canTruncate,
+          out supportsResources
         );
 
         return true;
@@ -510,5 +516,4 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
     }
   }
-
 }

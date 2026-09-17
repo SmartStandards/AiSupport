@@ -75,6 +75,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SmartStandards.AiSupport.CommonProviders.net10.0\SmartStandards.AiSupport.CommonProviders.net10.0.csproj" />
+    <ProjectReference Include="..\..\src\SmartStandards.AiSupport.DemoWebService\SmartStandards.AiSupport.DemoWebService.csproj" />
     <ProjectReference Include="..\..\src\SmartStandards.AiSupport.net10.0\SmartStandards.AiSupport.net10.0.csproj" />
   </ItemGroup>
 

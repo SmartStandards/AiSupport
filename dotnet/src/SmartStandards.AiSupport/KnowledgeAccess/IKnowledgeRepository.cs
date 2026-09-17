@@ -77,6 +77,77 @@ namespace AI.SmartStandards.KnowledgeAccess {
   }
 
   /// <summary>
+  /// Describes one binary resource that is logically available to textual knowledge content.
+  ///
+  /// Resources are deliberately not areas. They do not participate in area traversal,
+  /// parent/child relationships, textual aggregation or content-level semantics. Textual
+  /// content references a resource through the provider-neutral URI form
+  /// <c>knowledge-resource:&lt;ResourceUid&gt;</c>.
+  ///
+  /// <see cref="ResourceUid"/> is repository-wide, stable for the lifetime of the logical
+  /// resource, and MUST NOT be reused for different binary content. Implementations SHOULD
+  /// preferably generate new resource UIDs with the Snowflake44 algorithm while consumers
+  /// MUST treat the resulting Int64 value as an opaque logical identity.
+  /// </summary>
+  public sealed class KnowledgeResourceInfo {
+
+    private long _ResourceUid;
+    private string _FileExtension;
+    private string _ContentType;
+    private long _Length;
+
+    /// <summary>
+    /// Gets or sets the stable repository-wide logical resource identity.
+    /// </summary>
+    public long ResourceUid {
+      get {
+        return _ResourceUid;
+      }
+      set {
+        _ResourceUid = value;
+      }
+    }
+
+    /// <summary>
+    /// Gets or sets the normalized file extension including the leading dot, for example
+    /// <c>.png</c> or <c>.pdf</c>.
+    /// </summary>
+    public string FileExtension {
+      get {
+        return _FileExtension;
+      }
+      set {
+        _FileExtension = value;
+      }
+    }
+
+    /// <summary>
+    /// Gets or sets the MIME content type when known. Providers may return an empty string
+    /// when no reliable MIME type can be determined.
+    /// </summary>
+    public string ContentType {
+      get {
+        return _ContentType;
+      }
+      set {
+        _ContentType = value;
+      }
+    }
+
+    /// <summary>
+    /// Gets or sets the binary resource length in bytes.
+    /// </summary>
+    public long Length {
+      get {
+        return _Length;
+      }
+      set {
+        _Length = value;
+      }
+    }
+  }
+
+  /// <summary>
   /// Provides ordered hierarchical access to a logical knowledge repository.
   /// 
   /// A knowledge repository exposes knowledge through absolute logical area paths.
@@ -220,6 +291,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// sufficient subordinate structure so that all content can be routed into
     /// subordinate content areas.
     /// 
+    /// <paramref name="supportsResources"/> indicates whether textual content addressed
+    /// through the area may use canonical <c>knowledge-resource:&lt;ResourceUid&gt;</c>
+    /// references and the repository can resolve the associated binary resources. Resource
+    /// support does not make resources part of the area hierarchy.
+    /// 
     /// <paramref name="canTruncate"/> indicates whether
     /// <see cref="TryTruncate(string)"/> may clear the content tree below the area while
     /// preserving the addressed area itself. This may be true for
@@ -247,6 +323,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <param name="canAddSubAreas">Whether new direct child areas may be created.</param>
     /// <param name="canAppendContent">Whether hierarchical content append is generally supported.</param>
     /// <param name="canTruncate">Whether the area's complete subordinate content tree may be cleared.</param>
+    /// <param name="supportsResources">
+    /// Whether textual content addressed through this area can reference and resolve binary
+    /// resources through the repository resource contract. This capability is independent
+    /// from whether the area itself is structural or content-bearing.
+    /// </param>
     void GetAreaCapabilities(
       string area,
       out ContentLevel contentLevel,
@@ -255,8 +336,87 @@ namespace AI.SmartStandards.KnowledgeAccess {
       out bool canBeDeleted,
       out bool canAddSubAreas,
       out bool canAppendContent,
-      out bool canTruncate
+      out bool canTruncate,
+      out bool supportsResources
     );
+
+    /// <summary>
+    /// Returns all logical resources currently materialized for the resource scope containing
+    /// the specified area.
+    ///
+    /// Resource UIDs are repository-wide identities. A provider may physically materialize the
+    /// same logical resource in multiple resource scopes, but every occurrence of one UID MUST
+    /// represent identical binary content.
+    /// </summary>
+    /// <param name="area">The absolute logical area path used as resource context.</param>
+    /// <returns>The resources available to the addressed resource scope in stable provider order.</returns>
+    KnowledgeResourceInfo[] GetResources(string area);
+
+    /// <summary>
+    /// Returns the complete binary content of one logical resource.
+    ///
+    /// The supplied area provides resource-scope context only. The resource UID itself is
+    /// repository-wide and remains authoritative if the provider resolves the same resource
+    /// from another physical materialization.
+    /// </summary>
+    /// <param name="area">The absolute logical area path used as resource context.</param>
+    /// <param name="resourceUid">The stable repository-wide resource UID.</param>
+    /// <returns>The complete resource bytes.</returns>
+    byte[] GetResourceContent(string area, long resourceUid);
+
+    /// <summary>
+    /// Atomically creates a new logical binary resource for the resource scope containing the
+    /// supplied area.
+    ///
+    /// The provider allocates a new repository-wide stable <paramref name="resourceUid"/>.
+    /// Implementations SHOULD preferably use Snowflake44 for UID generation. The caller MUST
+    /// treat the returned value as opaque and persist references only in the canonical textual
+    /// form <c>knowledge-resource:&lt;ResourceUid&gt;</c>.
+    /// </summary>
+    /// <param name="area">The absolute logical area path used as resource context.</param>
+    /// <param name="fileExtension">The desired normalized file extension, preferably including the leading dot.</param>
+    /// <param name="contentType">The MIME content type when known, otherwise an empty string.</param>
+    /// <param name="content">The complete binary resource content.</param>
+    /// <param name="resourceUid">Receives the newly allocated repository-wide resource UID.</param>
+    /// <returns>true when the resource was created atomically; otherwise false.</returns>
+    bool TryAddResource(
+      string area,
+      string fileExtension,
+      string contentType,
+      byte[] content,
+      out long resourceUid
+    );
+
+    /// <summary>
+    /// Atomically replaces the binary content and resource metadata associated with an existing
+    /// logical resource UID. Because the UID denotes one repository-wide logical resource, every
+    /// physical materialization of that UID MUST remain byte-identical after a successful call.
+    /// </summary>
+    /// <param name="area">The absolute logical area path used as resource context.</param>
+    /// <param name="resourceUid">The stable repository-wide resource UID.</param>
+    /// <param name="fileExtension">The normalized file extension, preferably including the leading dot.</param>
+    /// <param name="contentType">The MIME content type when known, otherwise an empty string.</param>
+    /// <param name="content">The complete replacement binary content.</param>
+    /// <returns>true when every materialization was replaced atomically; otherwise false.</returns>
+    bool TryReplaceResource(
+      string area,
+      long resourceUid,
+      string fileExtension,
+      string contentType,
+      byte[] content
+    );
+
+    /// <summary>
+    /// Atomically deletes one logical resource when doing so cannot invalidate textual content.
+    ///
+    /// Providers MUST reject deletion while any exposed textual content still references
+    /// <c>knowledge-resource:&lt;ResourceUid&gt;</c>. This conservative rule prevents synchronization
+    /// clients or garbage-collection heuristics from destroying still-referenced wiki assets.
+    /// </summary>
+    /// <param name="area">The absolute logical area path used as resource context.</param>
+    /// <param name="resourceUid">The stable repository-wide resource UID.</param>
+    /// <returns>true when the unreferenced resource was deleted atomically; otherwise false.</returns>
+    bool TryDeleteResource(string area, long resourceUid);
 
     /// <summary>
     /// Determines whether the specified area currently owns non-empty direct textual
@@ -445,6 +605,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// depth. Physical levels may need rebasing. The logical parent-child relationships
     /// are authoritative.
     /// 
+    /// When the payload contains canonical <c>knowledge-resource:&lt;ResourceUid&gt;</c>
+    /// references and the provider reports resource support for the affected content scope,
+    /// every successfully committed reference MUST remain resolvable after the mutation. A
+    /// provider whose physical resource storage is scope-local is responsible for creating
+    /// any additional physical materialization required by the new content location without
+    /// changing the referenced ResourceUid.
+    /// 
     /// Providers SHOULD avoid unnecessary rewrites of unaffected existing content.
     /// This is especially important for version-controlled providers where small logical
     /// mutations should ideally create small physical diffs.
@@ -504,6 +671,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// not contain direct unstructured content for the aggregation area itself. It may
     /// contain subordinate structure that reconstructs the aggregation's content scope.
     /// 
+    /// Canonical <c>knowledge-resource:&lt;ResourceUid&gt;</c> references in the replacement
+    /// content are part of the textual contract. A resource-capable provider MUST preserve
+    /// their validity and MUST NOT silently rewrite a ResourceUid merely because the physical
+    /// resource scope or storage location changes.
+    /// 
     /// The addressed area itself is preserved.
     /// 
     /// Both truncate and append capabilities are required. The provider SHOULD validate
@@ -545,6 +717,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// - moving a document from one collection/folder scope to another,
     /// - moving an equivalent content scope in a database-, API-, Git- or virtual-backed
     ///   provider.
+    /// 
+    /// Resources referenced by the moved textual scope are part of the moved knowledge
+    /// semantics. Their repository-wide ResourceUid values MUST remain unchanged. If the
+    /// provider stores resources physically relative to a document or another local scope, it
+    /// MUST move or duplicate the required physical materializations so every resource
+    /// reference remains valid below <paramref name="newParentArea"/>. Existing references
+    /// outside the moved scope MUST remain valid as well.
     /// 
     /// The physical mechanism is entirely provider-specific. A provider may implement the
     /// operation through a filesystem move, a Markdown subtree rewrite, a database parent
