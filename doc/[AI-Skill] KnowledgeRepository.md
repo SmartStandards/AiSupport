@@ -1,1294 +1,2624 @@
-# AI Skill: Implementing `IKnowledgeRepository`
+# [AI Skill] Provider-Neutral Knowledge Repository
 
-## Abstract and Motivation
+## 1. Purpose and Status
 
-`IKnowledgeRepository` defines a provider-neutral abstraction for ordered, hierarchical knowledge stores.
+This document defines the desired architecture, semantics, implementation rules, and AI coding guidance for the `AI.SmartStandards.KnowledgeAccess` knowledge repository ecosystem.
 
-Its purpose is to expose knowledge through one stable logical model while deliberately hiding the physical technology used to store, organize, derive, or synthesize that knowledge.
+It is a **normative desired-state document**. It is not a migration log and must not preserve obsolete implementation details merely because they existed in an earlier revision. When existing code contradicts this document, the desired semantics described here take precedence unless a later explicit project decision supersedes them.
 
-A provider may internally use:
+The primary goal is to provide one small, provider-neutral knowledge abstraction that can represent hierarchical wiki/documentation content across very different physical storage technologies while keeping provider-specific knowledge inside the provider implementation.
 
-- Git repositories,
-- directory structures,
-- Markdown documents,
-- local files,
-- database entities,
-- cloud notebooks,
-- pages,
-- remote APIs,
-- generated projections,
-- or purely virtual aggregation nodes.
+Typical providers and adapters include:
 
-None of those physical concepts are part of the public contract.
+- file-system-backed Markdown repositories,
+- Git-backed Markdown repositories,
+- aggregated/overlay repositories,
+- database or remote repositories,
+- Joplin WebDAV projection,
+- REST or MCP access layers,
+- future providers that are currently unknown.
 
-The central abstraction is the **logical area**.
+The architecture intentionally does **not** model files, folders, Joplin notes, notebooks, Markdown headings, database records, or Git artifacts directly in the public abstraction. These are provider concerns.
 
-Areas form an ordered tree and are addressed by absolute logical paths. Every area describes how it participates in textual content through `ContentLevel`.
-
-The contract intentionally does not model physical "documents" as a universal concept. Instead, it distinguishes three semantic content levels:
-
-1. `BeyondContent`
-2. `ContentAggregation`
-3. `ContentContainer`
-
-This distinction permits implementations that range from simple Markdown files to sophisticated virtual knowledge views.
-
-A particularly important feature is that `ContentAggregation` nodes may be **virtual**. A provider can expose a read-only logical area that synthesizes content from multiple otherwise unrelated places.
-
-For example, a provider could expose:
-
-```text
-/Views/All Examples
-/Views/All Conclusions
-/Views/All Code Snippets
-```
-
-even when those areas do not physically exist.
-
-`/Views/All Code Snippets` could aggregate selected sections from dozens of source documents into one deterministic read-only content view.
-
-This is not required for basic providers, but the contract intentionally permits it.
-
-The design is also optimized for AI-agent access.
-
-Its primary mutation primitive, `TryAppendContent`, is a **non-destructive Sparse Hierarchical Merge**. A caller can provide one sparse structured payload that targets multiple already-existing branches and creates missing branches in one atomic operation.
-
-This reduces:
-
-- network round trips,
-- agent tool calls,
-- token usage,
-- redundant reads,
-- intermediate repository states,
-- and accidental destructive replacements.
+The desired result is that an arbitrary future implementation of `IKnowledgeRepository` can be introduced without requiring Joplin, REST, MCP, or other consumers to learn that provider's storage conventions.
 
 ---
 
-# 1. Core Mental Model
+## 2. Core Architectural Principles
 
-A knowledge repository is an ordered tree:
+### 2.1 Provider neutrality is the highest-level rule
+
+`IKnowledgeRepository` describes logical knowledge semantics.
+
+Consumers must not depend on:
+
+- physical file paths,
+- directory markers,
+- Markdown file names,
+- heading syntax,
+- Joplin item IDs,
+- Git repository layout,
+- database keys,
+- provider-specific naming conventions,
+- provider-specific resource layouts.
+
+A provider may internally use any of these concepts, but it must expose only the logical contract.
+
+The following dependency direction is mandatory:
+
+```text
+Consumer / Adapter
+        |
+        v
+IKnowledgeRepository
+        |
+        v
+Concrete provider
+        |
+        v
+Physical representation
+```
+
+A concrete provider must never contain knowledge about a specific adapter such as Joplin.
+
+A Joplin adapter must never contain knowledge about a specific provider such as `FileBasedKnowledgeRepository`.
+
+---
+
+### 2.2 One repository interface
+
+Knowledge hierarchy, textual content, and wiki resources belong to one problem domain and are exposed through one `IKnowledgeRepository` interface.
+
+Resources are **not** modeled as areas, but they remain part of the same repository abstraction.
+
+Do not introduce a parallel `IKnowledgeResourceRepository` merely to separate binary resources from textual content.
+
+Do not introduce optional provider-specific interfaces such as:
+
+```csharp
+IKnowledgeRepositoryAreaMoveSupport
+```
+
+when the operation has a coherent provider-neutral meaning.
+
+The repository contract should remain semantically strong enough that consumers can rely on one interface.
+
+---
+
+### 2.3 Do not proliferate overlapping operations
+
+One operation should have one universally coherent semantic meaning.
+
+A previous design considered separate move concepts for files, headings, or provider-native nodes. This is explicitly rejected.
+
+The canonical move operation is a logical reparenting operation:
+
+```csharp
+bool TryMoveContent(
+  string contentAreaToMove,
+  string newParentArea,
+  out KnowledgeResourceIdChange[] resourceIdChanges
+);
+```
+
+The concrete provider decides whether that means:
+
+- moving a Markdown heading subtree,
+- moving a Markdown file,
+- moving a database node,
+- changing a remote parent reference,
+- moving another provider-native structure.
+
+Consumers must not know which physical action occurred.
+
+---
+
+### 2.4 Human-editable native storage remains valuable
+
+A file-based provider is not merely a serialization format for `IKnowledgeRepository`.
+
+Its on-disk representation must remain useful independently from the repository API.
+
+In particular:
+
+- Markdown files should be normal standalone Markdown files.
+- Embedded images should use normal relative Markdown file references.
+- A user should be able to open and edit the Markdown files with ordinary Markdown tools.
+- A user should be able to add a local image manually without having to register it in hidden metadata.
+- No provider-private sidecar database or hidden mapping file should be required to understand the repository.
+
+The file system itself is the authoritative representation of a file-based repository.
+
+---
+
+## 3. Normative Language
+
+The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are used normatively.
+
+AI agents generating code for this architecture must treat these words as design requirements rather than stylistic suggestions.
+
+---
+
+# 4. Logical Area Model
+
+## 4.1 Absolute logical paths
+
+Areas are addressed by absolute logical paths.
+
+The repository root is:
 
 ```text
 /
-├── ProjectA
-│   ├── Architecture
-│   │   ├── Documentation
-│   │   │   ├── [Hosting]
-│   │   │   │   ├── ASP.NET Core
-│   │   │   │   └── In-Memory
-│   │   │   └── [Security]
-│   │   └── ...
-│   └── ...
-└── ProjectB
 ```
 
-The exposed path:
+All area paths begin with `/`.
 
-```text
-/ProjectA/Architecture/Documentation/[Hosting]/ASP.NET Core
+Area paths are logical addresses. They are not physical file-system paths.
+
+A consumer must never derive provider-specific information from the representation of an area path.
+
+When a human-readable area name is required, use:
+
+```csharp
+string GetAreaName(string area);
 ```
 
-is a logical address.
-
-The consumer does not need to know whether this maps to:
-
-- a Markdown heading,
-- a file,
-- a notebook page,
-- a database row,
-- a computed result,
-- or a virtual projection.
+Do not decode or split a logical path and assume that the final path segment is a provider-neutral display name.
 
 ---
 
-# 2. Content Levels
+## 4.2 `ContentLevel`
 
-## 2.1 `BeyondContent`
+The repository distinguishes three logical content levels.
 
-A `BeyondContent` area is purely structural.
+### `BeyondContent`
 
-It may participate in navigation and may have child areas.
+A structural/navigation area outside textual content access.
 
-It does not participate in textual content access.
+Typical examples may include:
 
-Typical examples:
+- a physical directory containing only subdirectories,
+- a navigation root,
+- a provider-defined structural node.
 
-- repository/source roots,
-- category nodes,
-- structural folders above the content model,
-- provider-defined organizational nodes.
-
-Typical semantics:
-
-```text
-HasDirectContent       not applicable
-GetDirectContent       not applicable
-GetAggregatedContent   not applicable
-TryAppendContent       not applicable
-TryTruncate            not applicable
-TryReplace             not applicable
-TryMoveContent         not applicable
-```
-
-Whether structural operations such as rename, delete or child creation are available depends on capabilities.
+It may contain sub-areas but has no textual content semantics of its own.
 
 ---
 
-## 2.2 `ContentAggregation`
+### `ContentAggregation`
 
-A `ContentAggregation` area is already part of the content-accessible hierarchy but **does not own direct textual content**.
+A content-accessible scope that never owns direct content.
 
-This is a strict semantic invariant:
+Required semantics:
+
+```text
+HasDirectContent(area) == false
+GetDirectContent(area) == string.Empty
+```
+
+Aggregated content may still be meaningful.
+
+A `ContentAggregation` area may be:
+
+- a physical notebook/folder-like scope,
+- a documentation collection,
+- a virtual read-only aggregation,
+- a cross-cutting provider-generated projection.
+
+It may expose mutation capabilities, but these are independent from its content level.
+
+---
+
+### `ContentContainer`
+
+A concrete content-bearing logical scope.
+
+It may:
+
+- own direct textual content,
+- contain sub-areas,
+- contribute to aggregated textual content.
+
+For a Markdown provider this may correspond to:
+
+- one Markdown document,
+- one heading inside a Markdown document.
+
+That mapping is provider-specific and must not leak into consumers.
+
+---
+
+# 5. Area Enumeration and Ordering
+
+## 5.1 `GetAreas`
+
+Canonical semantics:
+
+```csharp
+string[] GetAreas(
+  bool recurse,
+  string startArea = "/"
+);
+```
+
+When `recurse == false`:
+
+- return only direct children.
+
+When `recurse == true`:
+
+- return all descendants,
+- use depth-first pre-order traversal,
+- each parent appears before its descendants,
+- sibling order remains stable and meaningful.
+
+Providers must not arbitrarily sort areas unless that sorting is explicitly the provider's natural logical order.
+
+For Markdown headings, sibling order must match document order.
+
+Reads must never mutate, normalize, rewrite, or otherwise modify the underlying repository.
+
+---
+
+## 5.2 `GetAreasByKeyword`
+
+The contract includes:
+
+```csharp
+string[] GetAreasByKeyword(
+  string keyword,
+  string startArea = "/"
+);
+```
+
+This method must remain part of `IKnowledgeRepository`.
+
+Matching strategy may be provider-defined, but returned areas must be valid logical paths in the same repository.
+
+The operation is read-only.
+
+---
+
+# 6. Semantic Area Creation
+
+Provider-specific naming conventions must not be used to request different kinds of logical children.
+
+Use:
+
+```csharp
+public enum KnowledgeAreaKind {
+  Structural = 0,
+  Content = 1
+}
+```
+
+and:
+
+```csharp
+bool TryAddSubArea(
+  string area,
+  string name,
+  KnowledgeAreaKind kind
+);
+```
+
+The caller states logical intent only.
+
+The provider decides how to physically represent it.
+
+Examples:
+
+```text
+Structural
+```
+
+may become a directory, notebook, database grouping node, or virtual structure.
+
+```text
+Content
+```
+
+may become a Markdown file, note, database record, or another content-bearing unit.
+
+A Joplin adapter must never request a FileBased-specific syntax such as `[Folder]`.
+
+---
+
+# 7. Area Capabilities
+
+Capabilities are queried per concrete area:
+
+```csharp
+void GetAreaCapabilities(
+  string area,
+  out ContentLevel contentLevel,
+  out bool supportsSubAreas,
+  out bool canBeRenamed,
+  out bool canBeDeleted,
+  out bool canAddSubAreas,
+  out bool canAppendContent,
+  out bool canTruncate,
+  out bool supportsResources
+);
+```
+
+Important distinctions:
+
+- `supportsSubAreas` means children may logically exist.
+- `canAddSubAreas` means the caller may create new children.
+- These are not equivalent.
+
+`supportsResources` means content addressed through this area may use canonical repository resource references and the provider can resolve them.
+
+Resources still do not become areas.
+
+A virtual aggregation may legitimately be read-only while still exposing aggregated content.
+
+---
+
+# 8. Textual Content Semantics
+
+## 8.1 Direct content
+
+```csharp
+bool HasDirectContent(string area);
+string GetDirectContent(string area);
+```
+
+Direct content belongs only to the addressed area.
+
+Descendant content must not be included.
+
+For `ContentAggregation`:
 
 ```text
 HasDirectContent == false
 GetDirectContent == string.Empty
 ```
 
-A content aggregation acts as a scope over subordinate content.
+For a heading-backed Markdown area, the heading itself is structural representation. Direct content is the text after that heading and before the first subordinate heading.
 
-Typical physical examples:
+---
 
-- notebook,
-- book,
-- documentation collection,
-- section group,
-- content catalog.
+## 8.2 Aggregated content
 
-Typical virtual examples:
+```csharp
+string GetAggregatedContent(string area);
+```
 
-- all conclusions,
-- all examples,
-- all code snippets,
-- all exercises,
-- all sections tagged with a certain semantic role.
+For `ContentContainer`:
 
-A virtual aggregation may have no physical storage artifact at all.
+- includes own direct content,
+- includes descendant content in logical order.
 
-It may synthesize its children and aggregated content dynamically from multiple unrelated source branches.
+For `ContentAggregation`:
+
+- consists entirely of subordinate content.
+
+Aggregation may be physical or virtual.
+
+The provider must render a deterministic valid textual representation.
+
+---
+
+# 9. Mutation Semantics
+
+All mutations are atomic from the consumer's perspective.
+
+A mutation either:
+
+- completes fully,
+
+or:
+
+- leaves the repository in its previous externally observable state.
+
+This rule applies across text, hierarchy, and affected resources.
+
+---
+
+## 9.1 Delete
+
+```csharp
+bool TryDelete(string area);
+```
+
+Deletes the addressed area itself and its complete descendant tree.
+
+This differs fundamentally from truncation.
+
+Provider-specific physical deletion behavior is hidden.
+
+---
+
+## 9.2 Rename
+
+Renaming changes the logical name of an area while preserving:
+
+- content,
+- descendants,
+- sibling position.
+
+Because a provider-native resource identity may depend on location or name, rename may also change resource identifiers.
+
+The desired signature is therefore:
+
+```csharp
+bool TryRename(
+  string area,
+  string newName,
+  out KnowledgeResourceIdChange[] resourceIdChanges
+);
+```
+
+When no resource identifier changes:
+
+```csharp
+resourceIdChanges = Array.Empty<KnowledgeResourceIdChange>();
+```
+
+Consumers that persist mappings to repository resource IDs must process this array.
+
+---
+
+## 9.3 Append
+
+`TryAppendContent` is a sparse hierarchical merge, not a physical append-to-file operation.
+
+It may merge incoming structured content into several existing descendant branches.
+
+Existing content must not be deleted merely because it is absent from the incoming payload.
+
+---
+
+## 9.4 Truncate
+
+```csharp
+bool TryTruncate(string area);
+```
+
+Preserves the addressed area itself while clearing its content scope according to provider semantics.
+
+For a content aggregation this may remove direct subordinate content while preserving structural aspects that are outside the truncation semantics.
+
+---
+
+## 9.5 Replace
+
+`TryReplace` logically replaces the content represented through the addressed area.
+
+It is not a rename and not a move.
+
+Providers must preserve unrelated content and structures.
+
+---
+
+# 10. Canonical Move Semantics
+
+## 10.1 Meaning
+
+Canonical desired signature:
+
+```csharp
+bool TryMoveContent(
+  string contentAreaToMove,
+  string newParentArea,
+  out KnowledgeResourceIdChange[] resourceIdChanges
+);
+```
+
+Parameter names are intentionally asymmetric.
+
+`contentAreaToMove`:
+
+- the concrete logical scope whose parent changes.
+
+`newParentArea`:
+
+- the destination parent under which the moved scope is inserted.
+
+`newParentArea` is never:
+
+- replaced,
+- truncated,
+- interpreted as the moved content itself.
+
+---
+
+## 10.2 Basic invariants
+
+The moved scope preserves:
+
+- logical name,
+- direct content,
+- descendants,
+- relative descendant ordering.
+
+The previous parent remains and loses only the moved child.
 
 Example:
 
 ```text
-/Views
-└── All Code Snippets                 ContentAggregation
-    ├── ProjectA / Hosting / Example
-    ├── ProjectB / Parser / Example
-    └── ProjectC / Serialization / Example
+/[FolderA]/Document
+/[FolderB]
 ```
 
-The implementation may expose these children as projected logical areas or may expose only aggregated textual output, depending on provider design.
-
-The important contract rule is:
-
-> A `ContentAggregation` area provides content scope, but never direct content ownership.
-
-`GetAggregatedContent` is therefore meaningful.
-
-`TryAppendContent` may also be meaningful, but only when the incoming payload contains subordinate structure that can be routed into child areas.
-
-This is invalid:
-
-```text
-TryAppendContent(
-    "/Notebook",
-    "Free text"
-)
-```
-
-because the aggregation itself cannot own that text.
-
-This may be valid:
-
-```markdown
-# Chapter A
-
-Additional content.
-
-# Chapter B
-
-Additional content.
-```
-
-because the payload contains explicit subordinate structure.
-
-Mutation support is capability-driven.
-
-A provider may expose:
-
-- mutable aggregations,
-- partially mutable aggregations,
-- fully read-only aggregations,
-- purely virtual read-only aggregations.
-
----
-
-## 2.3 `ContentContainer`
-
-A `ContentContainer` is a concrete content-bearing area.
-
-It may own direct textual content.
-
-It may also contain subordinate areas.
-
-Typical mappings include:
-
-- Markdown document,
-- Markdown heading section,
-- OneNote page,
-- textual database entity,
-- provider-specific document unit.
-
-For this level:
-
-```text
-HasDirectContent
-GetDirectContent
-GetAggregatedContent
-TryAppendContent
-TryTruncate
-TryReplace
-TryMoveContent
-```
-
-are all semantically meaningful, subject to capabilities.
-
----
-
-# 3. Area Paths
-
-All area paths are absolute.
-
-Root:
-
-```text
-/
-```
-
-Example:
-
-```text
-/ProjectA/Architecture/[Hosting]/ASP.NET Core
-```
-
-Paths are logical addresses.
-
-A provider MUST NOT expose physical filesystem paths or remote provider IDs as the public area path.
-
-A provider must use one canonical path format.
-
-Direct siblings must have unambiguous logical path segments.
-
----
-
-# 4. Ordered Tree Semantics
-
-Area ordering is semantically significant.
-
-The repository is not an unordered graph.
-
-## 4.1 Direct enumeration
+Operation:
 
 ```csharp
-GetAreas(false, area)
+TryMoveContent(
+  "/[FolderA]/Document",
+  "/[FolderB]",
+  out resourceIdChanges
+);
 ```
 
-returns direct children only.
+Logical result:
 
-## 4.2 Recursive enumeration
+```text
+/[FolderA]
+/[FolderB]/Document
+```
+
+The old parent is not deleted.
+
+---
+
+## 10.3 Heading example
+
+Before:
+
+```text
+/Doc/A/B
+/Doc/C
+```
+
+Operation:
 
 ```csharp
-GetAreas(true, area)
+TryMoveContent(
+  "/Doc/A/B",
+  "/Doc/C",
+  out resourceIdChanges
+);
 ```
 
-uses pre-order traversal.
-
-For:
+After:
 
 ```text
-A
-├── B
-│   ├── C
-│   └── D
-├── E
-└── F
+/Doc/A
+/Doc/C/B
 ```
 
-the order is:
+`A` remains.
 
-```text
-A/B
-A/B/C
-A/B/D
-A/E
-A/F
-```
+`C` remains.
 
-## 4.3 Natural sibling order
-
-Sibling order must be stable and meaningful.
-
-For Markdown-backed content it must correspond to document section order.
-
-Existing sibling order must never be changed incidentally by append, rename or unrelated mutations.
-
-Virtual aggregation providers must also define stable deterministic ordering.
+Only `B` and its subtree move.
 
 ---
 
-# 5. Direct Content
+## 10.4 Move is not append-plus-truncate
 
-Every content-capable logical node can be modeled as:
-
-```text
-Area
-├── DirectContent
-└── Children[]
-```
-
-However:
+The old interpretation:
 
 ```text
-ContentAggregation.DirectContent
-```
-
-is always empty.
-
-Only `ContentContainer` may own direct content.
-
-Example Markdown:
-
-```markdown
-# Hosting
-
-General hosting text.
-
-## ASP.NET Core
-
-ASP.NET-specific text.
-
-## In-Memory
-
-In-memory text.
-```
-
-Logical model:
-
-```text
-Hosting
-├── DirectContent = "General hosting text."
-├── ASP.NET Core
-│   └── DirectContent = "ASP.NET-specific text."
-└── In-Memory
-    └── DirectContent = "In-memory text."
-```
-
-For `Hosting`, direct content excludes child sections.
-
----
-
-# 6. Aggregated Content
-
-`GetAggregatedContent(area)` returns the complete textual content exposed through the area.
-
-For a `ContentContainer`, it includes:
-
-```text
-own direct content
+copy target content
 +
-subordinate content
+truncate source
 ```
 
-For a `ContentAggregation`, it includes:
+is obsolete.
 
-```text
-subordinate content only
-```
+Do not implement move by composing `TryAppendContent` and `TryTruncate`.
 
-because the aggregation itself owns no direct content.
+A move changes parent relationship and may require provider-native operations that cannot be represented as text copy/delete.
 
-The provider is responsible for rendering a deterministic valid textual representation.
+For FileBased this may be a physical file move or a Markdown heading subtree relocation.
 
 ---
 
-# 7. Virtual Aggregation
+# 11. Resource Model
 
-Virtual aggregation is an explicitly supported provider pattern.
+## 11.1 Resources belong to the wiki problem domain
 
-A provider may expose logical content areas that do not map one-to-one to physical storage artifacts.
+Images, PDFs, diagrams, and other embedded files are an essential part of wiki/documentation content.
+
+They belong in `IKnowledgeRepository`.
+
+However, resources are **not areas**.
+
+They do not participate in:
+
+- area traversal,
+- parent/child area relationships,
+- `ContentLevel`,
+- textual aggregation.
+
+Text references resources using a provider-neutral canonical reference.
+
+---
+
+## 11.2 Canonical textual resource reference
+
+The canonical repository-level form is:
+
+```text
+knowledge-resource:<ResourceId>
+```
 
 Example:
 
-```text
-/Virtual
-├── All Conclusions
-├── All Code Samples
-└── All Exercises
+```markdown
+![Architecture](knowledge-resource:1.RG9jcy9BcnRpY2xlLlJlczEyMy5wbmc)
 ```
 
-`All Conclusions` may dynamically search source areas for content sections semantically or structurally identified as conclusions.
+The value following `knowledge-resource:` is an opaque repository resource identifier.
 
-The resulting content can be exposed as one read-only aggregation.
-
-Possible use cases:
-
-- collect all examples from many documents,
-- collect all conclusions,
-- collect all exercises,
-- collect all warnings,
-- collect all code blocks,
-- create topic-specific synthesized views,
-- expose cross-project reference collections.
-
-Virtual aggregation nodes SHOULD normally be read-only unless the provider has a clear deterministic write-routing model.
-
-A provider must not pretend that a virtual aggregation is writable when it cannot map mutations back to unambiguous source locations.
-
-A virtual aggregation MUST provide:
-
-- deterministic addressing,
-- deterministic ordering,
-- deterministic content projection,
-- stable capability reporting,
-- read consistency appropriate to the provider.
-
-It MAY expose child areas that themselves point to projected source content.
+Consumers must not parse it.
 
 ---
 
-# 8. Capability Semantics
+# 12. `ResourceId` Is Opaque and Provider-Owned
 
-Capabilities apply to a concrete area.
+## 12.1 Public type
 
-They may depend on:
+The desired public resource identifier type is:
 
-- provider type,
-- provider configuration,
-- permissions,
-- physical source state,
-- virtual-area definition,
-- logical depth,
-- provider-specific constraints.
-
-## `supportsSubAreas`
-
-Means:
-
-> The area can structurally contain child areas.
-
-This does not imply that children may be created.
-
-## `canAddSubAreas`
-
-Means:
-
-> The caller may create a new direct child.
-
-## `canAppendContent`
-
-Means:
-
-> The area generally supports sparse hierarchical append.
-
-For `ContentAggregation`, the incoming payload must not contain direct content at the aggregation level.
-
-## `canTruncate`
-
-Means:
-
-> The represented content scope may be cleared while the addressed area remains.
-
-For an aggregation this can remove all subordinate content even though direct content is empty.
-
-Read-only virtual aggregations commonly report:
-
-```text
-canBeRenamed    = false
-canBeDeleted    = false
-canAddSubAreas  = false
-canAppendContent = false
-canTruncate     = false
+```csharp
+string ResourceId
 ```
 
-while still supporting:
+The previous globally stable `long ResourceUid` model is superseded.
 
-```text
-GetAreas
-GetAggregatedContent
-```
+A resource identifier is:
+
+- unique within the repository at the time it is exposed,
+- generated or derived by the concrete provider,
+- opaque to consumers,
+- not guaranteed to remain stable across provider-native rename/move operations.
 
 ---
 
-# 9. Sparse Hierarchical Merge
+## 12.2 No semantic interpretation by consumers
 
-`TryAppendContent` is the central additive mutation operation.
+Consumers MUST NOT:
 
-It is not a byte append.
+- split a resource ID,
+- decode it,
+- treat parts as paths,
+- derive parent areas from it,
+- generate new IDs by composition,
+- infer a file extension from it,
+- infer provider type from it.
 
-It is a recursive hierarchical merge.
-
-Conceptually:
-
-```text
-Merge(Target, Incoming):
-
-    if Target is ContentContainer:
-        Target.DirectContent += Incoming.DirectContent
-
-    if Target is ContentAggregation:
-        Incoming.DirectContent MUST be empty
-
-    for each IncomingChild:
-
-        if matching direct TargetChild exists:
-            Merge(TargetChild, IncomingChild)
-
-        else:
-            append IncomingChild subtree
-            after existing Target children
-```
-
-This is a **Sparse Hierarchical Merge**.
-
-The input may contain only the branches that need modification.
-
-It does not need to repeat unchanged parts of the repository.
+Even when a concrete provider uses a reversible encoding internally, that encoding is private implementation detail.
 
 ---
 
-# 10. Matching Rules
+## 12.3 Best practice for public IDs
 
-Matching occurs only among direct children of the current merge target.
+Providers SHOULD avoid exposing identifiers whose semantic structure invites external interpretation.
 
-Never perform recursive global name search.
-
-Existing:
+Bad example for a public ID:
 
 ```text
-A
-├── B
-│   └── X
-└── C
-    └── X
+Docs/Architecture/diagram.png
 ```
 
-Incoming:
+This strongly invites callers to treat the ID as a path.
+
+Preferred public form:
 
 ```text
-X
+1.RG9jcy9BcmNoaXRlY3R1cmUvZGlhZ3JhbS5wbmc
 ```
 
-at target `A` does not address either existing descendant.
+The second value may internally encode the first, but consumers must treat it as opaque.
 
-It refers to direct child:
+This is not intended as encryption or secrecy.
 
-```text
-A/X
+The purpose is abstraction discipline.
+
+---
+
+## 12.4 Identifier changes are legitimate
+
+Some providers have native identities that change when a resource moves or is renamed.
+
+This is allowed.
+
+The contract therefore does not claim that `ResourceId` is lifetime-stable.
+
+Operations that knowingly change provider-native resource identity must report old-to-new identifier mappings.
+
+---
+
+# 13. Resource ID Change Reporting
+
+Use a provider-neutral change descriptor:
+
+```csharp
+public sealed class KnowledgeResourceIdChange {
+
+  private string _PreviousResourceId;
+  private string _CurrentResourceId;
+
+  /// <summary>
+  /// Gets or sets the resource identifier that was valid before the mutation.
+  /// </summary>
+  public string PreviousResourceId {
+    get {
+      return _PreviousResourceId;
+    }
+    set {
+      _PreviousResourceId = value;
+    }
+  }
+
+  /// <summary>
+  /// Gets or sets the resource identifier that is valid after the mutation.
+  /// </summary>
+  public string CurrentResourceId {
+    get {
+      return _CurrentResourceId;
+    }
+    set {
+      _CurrentResourceId = value;
+    }
+  }
+}
 ```
 
-To reach the existing nodes, the incoming structure must explicitly contain:
+This is primarily required for operations such as:
 
-```text
-B
-└── X
+- moving a content scope,
+- renaming a content scope,
+- provider-native collision resolution.
+
+Adapters that keep their own stable identities, such as Joplin, use these changes to update their mapping without recreating the external resource identity.
+
+---
+
+# 14. Desired Resource Contract
+
+The exact final API may evolve while preserving these semantics, but the target shape is:
+
+```csharp
+KnowledgeResourceInfo[] GetResources(
+  string area
+);
+
+byte[] GetResourceContent(
+  string resourceId
+);
+
+bool TryAddResource(
+  string area,
+  string preferredFileName,
+  string contentType,
+  byte[] content,
+  out string resourceId
+);
+
+bool TryReplaceResource(
+  string resourceId,
+  string contentType,
+  byte[] content
+);
+
+bool TryDeleteResource(
+  string resourceId
+);
+```
+
+`preferredFileName` is a hint.
+
+A provider may preserve it if meaningful.
+
+A provider may choose another physical name when:
+
+- no usable name exists,
+- the name is unsafe,
+- the name collides,
+- the provider has no file-name concept.
+
+The returned `resourceId` is authoritative.
+
+---
+
+## 14.1 `KnowledgeResourceInfo`
+
+A resource information object should expose semantic metadata such as:
+
+```csharp
+public sealed class KnowledgeResourceInfo {
+
+  private string _ResourceId;
+  private string _FileName;
+  private string _ContentType;
+  private long _Length;
+
+  public string ResourceId {
+    get {
+      return _ResourceId;
+    }
+    set {
+      _ResourceId = value;
+    }
+  }
+
+  public string FileName {
+    get {
+      return _FileName;
+    }
+    set {
+      _FileName = value;
+    }
+  }
+
+  public string ContentType {
+    get {
+      return _ContentType;
+    }
+    set {
+      _ContentType = value;
+    }
+  }
+
+  public long Length {
+    get {
+      return _Length;
+    }
+    set {
+      _Length = value;
+    }
+  }
+}
+```
+
+`FileName` is descriptive metadata.
+
+It is not the resource identity.
+
+---
+
+# 15. FileBased Provider: General Model
+
+## 15.1 Physical Markdown must remain normal Markdown
+
+This requirement is mandatory.
+
+The file-based provider must never persist:
+
+```markdown
+![Image](knowledge-resource:...)
+```
+
+as its native Markdown representation.
+
+Instead, physical Markdown contains ordinary relative file links:
+
+```markdown
+![Image](Article.Res123.png)
 ```
 
 or:
 
-```text
-C
-└── X
+```markdown
+![Logo](../Shared/CompanyLogo.png)
 ```
 
-This guarantees deterministic routing.
-
----
-
-# 11. Free Text Append
-
-For a `ContentContainer`, incoming free text before the first subordinate structure belongs to the target's direct content.
-
-Existing:
+Only the repository-facing representation uses:
 
 ```markdown
-# A
-
-Old text.
-
-## B
-
-B content.
+![Image](knowledge-resource:<opaque-resource-id>)
 ```
 
-Append:
+---
+
+## 15.2 Mapping occurs at the storage boundary
+
+FileBased uses two conceptual transformations:
 
 ```text
-Additional A text.
+Physical Markdown
+    |
+    | read mapping
+    v
+Canonical Knowledge Markdown
 ```
 
-Result:
+and:
+
+```text
+Canonical Knowledge Markdown
+    |
+    | write mapping
+    v
+Physical Markdown
+```
+
+The internal logical content model should operate on canonical `knowledge-resource:` references.
+
+Physical paths should appear only at the FileBased storage boundary.
+
+---
+
+## 15.3 Read mapping
+
+Example physical file:
+
+```text
+Docs/Article.md
+Docs/diagram.png
+```
+
+Physical Markdown:
 
 ```markdown
-# A
-
-Old text.
-
-Additional A text.
-
-## B
-
-B content.
+![Architecture](diagram.png)
 ```
 
-The physical text is inserted into the logical direct-content region.
-
-It is not appended blindly to the physical end of a file.
-
-For `ContentAggregation`, this payload is invalid because the aggregation cannot own direct text.
-
----
-
-# 12. Mixed Free Text and Structured Append
-
-Existing:
+The FileBased provider resolves the relative link to the normalized repository-relative resource path:
 
 ```text
-A
-├── DirectContent = "Old"
-├── B
-└── C
+Docs/diagram.png
 ```
 
-Incoming:
+It then creates its opaque public `ResourceId`.
 
-```text
-DirectContent = "New"
-
-D
-└── E
-```
-
-Result:
-
-```text
-A
-├── DirectContent = "Old" + "New"
-├── B
-├── C
-└── D
-    └── E
-```
-
-When projected into a linear textual format, the newly appended direct text may appear before existing child sections while newly created child sections appear after them.
-
-This is correct.
-
-Logical ownership is more important than preserving physical contiguity of the incoming payload.
-
----
-
-# 13. Distributed Sparse Merge
-
-Existing:
-
-```text
-Architecture
-├── Hosting
-│   ├── ASP.NET Core
-│   └── In-Memory
-├── Authentication
-│   └── JWT
-└── Logging
-```
-
-Incoming:
-
-```text
-Hosting
-├── ASP.NET Core
-│   └── + content
-└── Containers
-
-Authentication
-└── OAuth
-
-Deployment
-```
-
-Result:
-
-```text
-Architecture
-├── Hosting
-│   ├── ASP.NET Core
-│   │   └── + appended content
-│   ├── In-Memory
-│   └── Containers
-├── Authentication
-│   ├── JWT
-│   └── OAuth
-├── Logging
-└── Deployment
-```
-
-One call can update multiple distributed branches atomically.
-
----
-
-# 14. AI-Agent Optimization
-
-AI clients should prefer one append rooted at the nearest common ancestor of multiple intended additive mutations.
-
-Instead of:
-
-```text
-Append /A/B/C
-Append /A/B/D
-Append /A/E/F
-```
-
-prefer:
-
-```text
-Append /A
-```
-
-with sparse structure:
-
-```text
-B
-├── C
-└── D
-
-E
-└── F
-```
-
-Benefits:
-
-- fewer tool calls,
-- fewer tokens,
-- fewer round trips,
-- fewer race conditions,
-- fewer intermediate states,
-- more coherent provider-level transactions,
-- potentially one coherent version-control commit.
-
----
-
-# 15. Relative Structure
-
-Structured textual payloads are interpreted relative to the target area.
-
-A Markdown provider must not treat incoming heading numbers as absolute document coordinates.
-
-Incoming:
+The repository-facing Markdown becomes conceptually:
 
 ```markdown
-# Authentication
-
-## JWT
+![Architecture](knowledge-resource:<encoded Docs/diagram.png>)
 ```
 
-at a deeply nested target means:
-
-```text
-Target
-└── Authentication
-    └── JWT
-```
-
-The provider rebases the physical heading levels as required.
-
-Logical hierarchy is authoritative.
+The physical file is not modified merely because it was read.
 
 ---
 
-# 16. Structural Normalization
+## 15.4 Write mapping
 
-A provider may normalize irregular incoming structural levels.
+When canonical repository content contains:
+
+```markdown
+![Architecture](knowledge-resource:<ResourceId>)
+```
+
+FileBased resolves its own opaque ID back to the provider-native resource path and writes the correct relative Markdown path.
+
+For example:
+
+```markdown
+![Architecture](diagram.png)
+```
+
+or:
+
+```markdown
+![Architecture](../Shared/diagram.png)
+```
+
+depending on physical location.
+
+This makes the stored Markdown independently usable.
+
+---
+
+# 16. FileBased Native Resource Identity
+
+## 16.1 Native identity
+
+For FileBased, the provider-native resource identity is the normalized repository-relative path.
 
 Example:
 
+```text
+Docs/Article.Res123.png
+```
+
+Do not use the absolute operating-system path:
+
+```text
+C:\Repositories\Wiki\Docs\Article.Res123.png
+```
+
+because moving or cloning the repository root must not change every resource identity.
+
+Normalize provider-native paths consistently.
+
+Prefer `/` as the canonical internal separator independent of operating system.
+
+---
+
+## 16.2 Public FileBased `ResourceId`
+
+FileBased should not expose the native path directly.
+
+Preferred implementation:
+
+```text
+<encoding-version>.<Base64Url(normalized repository-relative path)>
+```
+
+Example:
+
+```text
+1.RG9jcy9BcnRpY2xlLlJlczEyMy5wbmc
+```
+
+The version prefix is optional implementation detail but recommended because persisted adapter mappings may survive future encoding changes.
+
+Base64Url is used instead of normal Base64 to avoid URI-hostile characters.
+
+This encoding is a FileBased implementation detail.
+
+No consumer may decode it.
+
+---
+
+# 17. No FileBased Sidecar Mapping Files
+
+Do not introduce files such as:
+
+```text
+.resources.json
+.knowledge/resources.json
+resource-map.db
+```
+
+solely to remember mappings between logical resources and physical resource paths.
+
+For FileBased, the file system itself is the source of truth.
+
+A manually created file already has a native identity through its repository-relative path.
+
+A manually edited Markdown reference already expresses the relationship between document and resource.
+
+This is a deliberate architectural decision.
+
+---
+
+# 18. FileBased Resource Naming
+
+## 18.1 Arbitrary manually managed resource names are valid
+
+A user may create:
+
+```text
+Article.md
+architecture.png
+logo-final.svg
+photo 2026-09-17.jpg
+```
+
+and write:
+
 ```markdown
-# A
-### B
-##### C
+![Architecture](architecture.png)
 ```
 
-may be interpreted logically as:
+The provider must accept this.
+
+It must not rename such a file merely to force an internal UID naming scheme.
+
+---
+
+## 18.2 Provider-generated fallback names
+
+When a resource enters through the API and no useful physical filename is available, FileBased needs a safe generated filename.
+
+Canonical fallback convention:
 
 ```text
-A
-└── B
-    └── C
+<DocumentBaseName>.Res<Snowflake44>.<extension>
 ```
 
-The provider may render canonical physical levels.
-
-It must not alter logical parent-child relationships.
-
-If the target physical format cannot represent the resulting hierarchy, the mutation must fail atomically.
-
----
-
-# 17. Minimal Physical Diffs
-
-Providers should avoid rewriting unaffected content.
-
-This is particularly important for version-controlled implementations.
-
-A small logical append should ideally result in a small physical diff.
-
-Normalization of new input is acceptable.
-
-Unnecessary reformatting of existing content is discouraged.
-
----
-
-# 18. `TryAddSubArea`
-
-Creates exactly one direct child.
-
-It does not create a complex subtree.
-
-New children are appended after existing siblings unless another stable provider-defined insertion rule exists.
-
-Use `TryAppendContent` for complex structured additions.
-
----
-
-# 19. `TryRename`
-
-Rename changes only the addressed area's own name.
-
-It preserves:
-
-- direct content,
-- descendants,
-- descendant order,
-- sibling position.
-
-Virtual areas may be non-renamable.
-
----
-
-# 20. `TryDelete`
-
-Delete removes:
+Example:
 
 ```text
-addressed area
-+
-complete descendant tree
+Article.Res111039863826467328.png
 ```
 
-The area itself disappears.
+Snowflake44 remains useful here, but its purpose is now:
 
-This differs from truncate.
+- collision-resistant physical fallback naming,
+
+not:
+
+- the public resource identity.
+
+The public identity is still the provider-defined opaque string derived from native identity.
 
 ---
 
-# 21. `TryTruncate`
+## 18.3 Preferred filename
 
-Truncate preserves the addressed area.
+When an upstream source supplies a meaningful filename, FileBased should preserve it when safe and collision-free.
 
-For `ContentContainer` it removes:
+If no meaningful filename exists, such as a pasted screenshot from Joplin, use the generated fallback.
+
+If a supplied name collides, FileBased may choose a different safe name.
+
+The returned `ResourceId` always identifies the actual resulting resource.
+
+---
+
+# 19. FileBased Resource Ownership Convention
+
+A crucial distinction exists between **document-owned generated resources** and **free/shared resources**.
+
+No sidecar metadata is used to record ownership.
+
+Ownership is inferred only from a deliberately narrow generated naming convention.
+
+---
+
+## 19.1 Document-owned resource
+
+A file matching:
 
 ```text
-DirectContent
-+
-all descendants
+<DocumentBaseName>.Res<ResourceToken>.<extension>
 ```
 
-For `ContentAggregation` it removes:
+is considered document-owned by that Markdown document.
+
+Example:
 
 ```text
-all descendants
+Article.md
+Article.Res111039863826467328.png
 ```
 
-because direct content is always empty.
+This convention is intentionally narrow.
 
-The aggregation or container itself remains.
+Do not treat every file beginning with `Article` as owned.
 
-Read-only virtual aggregations normally reject truncation.
-
----
-
-# 22. `TryReplace`
-
-Replace is:
+For example:
 
 ```text
-Atomic(
-    Truncate(target)
-    +
-    Append(target, newContent)
-)
+ArticleLogo.png
+Article.Architecture.png
 ```
 
-For a `ContentContainer`, replacement content may contain direct text and children.
-
-For a `ContentAggregation`, replacement content must contain subordinate structure only.
-
-The target area itself remains.
+must not automatically be considered owned merely because their names begin with the document name.
 
 ---
 
-# 23. `TryMoveContent`
+## 19.2 Free/shared resource
 
-MoveContent is:
+Any resource that does not match the strict owned-resource pattern is treated as independent.
+
+Example:
 
 ```text
-Atomic(
-    Append(target, source content scope)
-    +
-    Truncate(source)
-)
+CompanyLogo.png
+SharedArchitecture.svg
 ```
 
-The source area itself remains.
+A Markdown document may reference it, but the provider does not infer exclusive ownership.
 
-Both `ContentAggregation` and `ContentContainer` may be source or target.
+---
 
-## Source aggregation
+# 20. Moving a FileBased Document with Resources
 
-A source aggregation contributes only descendants.
+This is one of the most important resource semantics.
 
-## Target aggregation
-
-A target aggregation cannot receive unstructured direct text.
-
-Therefore the moved source content must be representable as subordinate structure.
-
-## Invalid topology
-
-These are invalid:
+Consider:
 
 ```text
-MoveContent(A, A)
-MoveContent(A, A/B)
-MoveContent(A, A/B/C)
+FolderA/
+  Article.md
+  Article.Res123.png
+  CompanyLogo.png
 ```
 
-because the target cannot be the source or a descendant of the source.
+`Article.md` references both images.
 
-This may be valid:
+The document is moved to:
 
 ```text
-MoveContent(A/B, A)
+FolderB/
 ```
 
-when all capabilities allow it.
+---
+
+## 20.1 Owned resource
+
+`Article.Res123.png` matches the owned-resource convention.
+
+Therefore it moves with the document:
+
+```text
+FolderB/
+  Article.md
+  Article.Res123.png
+```
+
+The physical Markdown reference may remain byte-identical:
+
+```markdown
+![Image](Article.Res123.png)
+```
+
+However, the provider-native resource identity changed:
+
+```text
+FolderA/Article.Res123.png
+```
+
+to:
+
+```text
+FolderB/Article.Res123.png
+```
+
+Therefore the opaque public `ResourceId` also changes.
+
+`TryMoveContent` must report:
+
+```text
+old ResourceId -> new ResourceId
+```
+
+through `KnowledgeResourceIdChange[]`.
 
 ---
 
-# 24. Atomicity
+## 20.2 Free/shared resource
 
-All mutations must be atomic from the consumer's perspective:
+`CompanyLogo.png` does not match the owned-resource pattern.
 
-- `TryDelete`
-- `TryRename`
-- `TryAddSubArea`
-- `TryAppendContent`
-- `TryTruncate`
-- `TryReplace`
-- `TryMoveContent`
+It remains in `FolderA`.
 
-A failed operation must leave no partial externally observable state.
+The moved Markdown document must be repaired so that its physical relative link remains valid.
 
-Provider-specific implementation techniques may differ.
+Before:
 
----
+```markdown
+![Logo](CompanyLogo.png)
+```
 
-# 25. Failure Semantics
+After moving `Article.md` to `FolderB`:
 
-A `Try...` method returns false when the logical mutation cannot be completed.
+```markdown
+![Logo](../FolderA/CompanyLogo.png)
+```
 
-Typical causes:
+The resource itself did not move.
 
-- area not found,
-- capability unavailable,
-- invalid name,
-- ambiguous address,
-- invalid payload,
-- illegal free text on aggregation,
-- illegal move topology,
-- provider depth exceeded,
-- physical persistence failure,
-- inability to preserve atomicity.
+Therefore its provider-native identity and its public `ResourceId` remain unchanged.
 
-The implementation must not leave partial state.
+No `KnowledgeResourceIdChange` is produced for that resource.
 
 ---
 
-# 26. Requirements Table
+## 20.3 Important symmetry
 
-| ID | Requirement | Mandatory |
-|---|---|---|
-| KR-001 | Expose knowledge through absolute logical area paths. | Yes |
-| KR-002 | Represent repository root as `/`. | Yes |
-| KR-003 | Treat area hierarchy as ordered. | Yes |
-| KR-004 | Recursive enumeration uses pre-order traversal. | Yes |
-| KR-005 | Preserve natural sibling order. | Yes |
-| KR-006 | Distinguish `BeyondContent`, `ContentAggregation`, and `ContentContainer`. | Yes |
-| KR-007 | `ContentAggregation` owns no direct content. | Yes |
-| KR-008 | `HasDirectContent` returns false for `ContentAggregation`. | Yes |
-| KR-009 | `GetDirectContent` returns empty string for `ContentAggregation`. | Yes |
-| KR-010 | `GetAggregatedContent` is valid for aggregation and container levels. | Yes |
-| KR-011 | Virtual aggregation nodes are permitted. | Yes |
-| KR-012 | Virtual aggregations must expose deterministic order and content. | Yes |
-| KR-013 | Virtual aggregations should be read-only unless write routing is unambiguous. | Strongly recommended |
-| KR-014 | Direct content excludes descendant content. | Yes |
-| KR-015 | `TryAppendContent` is non-destructive. | Yes |
-| KR-016 | Append performs sparse hierarchical merge. | Yes |
-| KR-017 | Append matches only direct children at each level. | Yes |
-| KR-018 | Append may update multiple distributed branches in one call. | Yes |
-| KR-019 | Existing sibling order is preserved. | Yes |
-| KR-020 | Newly created siblings preserve incoming order. | Yes |
-| KR-021 | Free text may be appended only to content containers. | Yes |
-| KR-022 | Aggregation append payloads must contain subordinate structure only. | Yes |
-| KR-023 | Structured input is interpreted relative to the target. | Yes |
-| KR-024 | Providers preserve logical hierarchy when rebasing physical structure. | Yes |
-| KR-025 | `TryTruncate` preserves the addressed area. | Yes |
-| KR-026 | `TryDelete` removes the addressed area and descendants. | Yes |
-| KR-027 | `TryRename` preserves subtree and sibling position. | Yes |
-| KR-028 | `TryReplace` is atomic truncate plus append. | Yes |
-| KR-029 | `TryMoveContent` is atomic append-to-target plus truncate-source. | Yes |
-| KR-030 | Move supports aggregation and container levels. | Yes |
-| KR-031 | Move target may not be inside source subtree. | Yes |
-| KR-032 | All mutations are atomic. | Yes |
-| KR-033 | Physical storage details do not leak into the interface. | Yes |
-| KR-034 | Providers should minimize unnecessary rewrites. | Strongly recommended |
+The two cases are intentionally complementary:
+
+```text
+OWNED RESOURCE
+
+Resource moves
+Physical relative Markdown reference may stay unchanged
+Repository ResourceId changes
+```
+
+```text
+FREE / SHARED RESOURCE
+
+Resource stays
+Physical Markdown reference changes
+Repository ResourceId stays unchanged
+```
+
+This distinction must be preserved in implementations and tests.
 
 ---
 
-# 27. Top-Down Examples
+# 21. Renaming a FileBased Document
 
-## Read a complete notebook-like aggregation
+If:
+
+```text
+Article.md
+Article.Res123.png
+```
+
+is renamed to:
+
+```text
+Architecture.md
+```
+
+the owned resource should become:
+
+```text
+Architecture.Res123.png
+```
+
+The physical Markdown link must be updated accordingly.
+
+The provider-native resource path changes, therefore the public `ResourceId` changes.
+
+The rename operation must report the resource ID change.
+
+Free/shared resources are not renamed merely because the referencing document is renamed.
+
+---
+
+# 22. Manual File-System Changes
+
+The FileBased provider must remain friendly to direct manual editing.
+
+## 22.1 Manually added image
+
+A user may add:
+
+```text
+new-diagram.png
+```
+
+and reference it from Markdown.
+
+No registration step is required.
+
+On the next read, the provider derives a resource identity from the existing file path and exposes an opaque `ResourceId`.
+
+No Snowflake is generated merely because the file was manually added.
+
+---
+
+## 22.2 Manually edited image content
+
+If the same physical path remains and the bytes change, it remains the same provider-native resource identity.
+
+The repository exposes the new content under the same FileBased resource ID.
+
+---
+
+## 22.3 Manual rename outside the repository API
+
+If a user manually renames:
+
+```text
+foo.png
+```
+
+to:
+
+```text
+bar.png
+```
+
+and adjusts Markdown accordingly, then without hidden historical metadata the provider cannot prove that these are the same historical logical resource.
+
+That is acceptable.
+
+From the repository's perspective this may appear as:
+
+```text
+old resource disappeared
+new resource appeared
+```
+
+Adapters may optionally reconcile by content hash, but such heuristics are not part of the core contract.
+
+Do not add sidecar metadata merely to preserve identity across arbitrary out-of-band filesystem changes.
+
+---
+
+# 23. FileBased Markdown Document Semantics
+
+The established logical FileBased area model remains:
+
+```text
+[Folder]
+Document
+Document/Heading
+Document/Heading/SubHeading
+```
+
+This syntax is a FileBased logical-path concern only.
+
+Other adapters must never depend on it.
+
+---
+
+## 23.1 Directory content level
+
+A physical directory is `ContentAggregation` only when it directly contains at least one active Markdown document.
+
+A directory containing only subdirectories is `BeyondContent`.
+
+---
+
+## 23.2 Directory aggregation depth
+
+Directory aggregation includes only direct Markdown documents.
+
+Do not recursively fold subdirectories into the parent aggregation.
+
+For each direct document, aggregation renders an appropriate document-level heading and rebases internal headings.
+
+---
+
+## 23.3 Non-Markdown files
+
+Normal resource files do not become areas.
+
+Other unrelated files are ignored by textual area enumeration.
+
+Provider-generated resource companions must never accidentally become knowledge documents merely because of naming or extension edge cases.
+
+---
+
+# 24. FileBased Soft Delete
+
+Soft delete is an optional safety feature.
+
+When enabled, deleting:
+
+```text
+Foo.md
+```
+
+renames it to a form such as:
+
+```text
+Foo.DELETED.md
+Foo.DELETED.2.md
+```
+
+Soft-deleted artifacts are ignored by logical repository loading.
+
+Soft delete is a safety net, not a substitute for correct synchronization semantics.
+
+Moves must not trigger soft delete.
+
+A move must use provider-native move semantics.
+
+---
+
+# 25. FileBased Atomicity and Rollback Safety
+
+A previous destructive rollback design deleted the complete repository root and then copied a snapshot back.
+
+This is forbidden.
+
+A transient lock on one file could otherwise destroy unrelated files.
+
+Rollback must be non-destructive:
+
+1. restore/copy all original snapshot artifacts first,
+2. only after originals have been restored, remove artifacts that should not exist,
+3. use atomic replacement where possible,
+4. retry transient sharing/IO failures,
+5. never delete the whole repository before successful restoration.
+
+Expected transient IO failures may be logged with:
 
 ```csharp
-string content = repository.GetAggregatedContent(
-  "/Knowledge/Engineering"
+DevLogger.LogError(ex);
+```
+
+Do not introduce broad pro-forma catch blocks.
+
+Temporary file locks should fail safely without data loss.
+
+---
+
+# 26. Git-Based Provider
+
+The Git provider builds on FileBased semantics.
+
+Typical design:
+
+- clone into a temporary working directory,
+- knowledge root under a configured repository path such as `/doc`,
+- use LibGit2Sharp,
+- use explicit authentication callback,
+- do not depend on global Git credentials,
+- refresh/fetch before mutation,
+- commit one successful logical mutation,
+- push,
+- on non-fast-forward, fetch/reset and replay the logical mutation,
+- never force-push.
+
+Resource behavior is inherited from FileBased storage semantics.
+
+The Git layer must not reinterpret resources, areas, or move semantics.
+
+---
+
+# 27. Aggregated Repository
+
+`AggregatedKnowledgeRepository` may mount arbitrary repositories at arbitrary logical mount points.
+
+It may support:
+
+- deep mounts,
+- synthetic parent areas,
+- multiple repositories mounted at the same logical path,
+- overlay reads.
+
+Read behavior may merge compatible results.
+
+Mutation routing must remain conservative.
+
+A mutation is allowed only when target ownership can be determined unambiguously.
+
+Cross-provider moves must be rejected unless one implementation can guarantee the repository contract's atomicity and semantics.
+
+Do not implement cross-provider move as copy-plus-delete merely to make the call succeed.
+
+Resource IDs remain opaque provider-defined values.
+
+An aggregator must not decode or reinterpret resource identifiers.
+
+If an aggregator needs to multiplex resource identities from multiple child repositories, it must generate its own opaque aggregate-level resource IDs or otherwise preserve unambiguous ownership without exposing child-provider semantics.
+
+---
+
+# 28. Joplin WebDAV Adapter
+
+## 28.1 Role
+
+The Joplin layer is an adapter/projection over one `IKnowledgeRepository`.
+
+It is not a knowledge provider implementation.
+
+Its job is to translate between:
+
+```text
+Joplin synchronization model
+        and
+provider-neutral knowledge model
+```
+
+It must not know FileBased storage syntax.
+
+---
+
+## 28.2 WebDAV handling
+
+Use ASP.NET Core middleware that dispatches raw HTTP methods.
+
+Typical methods include:
+
+- `OPTIONS`,
+- `PROPFIND`,
+- `GET`,
+- `HEAD`,
+- `PUT`,
+- `DELETE`,
+- `MKCOL`,
+- `MOVE`.
+
+Do not depend on MVC HTTP verb attributes for WebDAV verbs.
+
+Middleware registration conceptually looks like:
+
+```csharp
+app.UseJoplinKnowledgeRepositoryWebDav(
+  "/api/knowledge/joplin"
 );
 ```
 
-`Engineering` may be a `ContentAggregation`.
+The exact integration must respect the application's established startup conventions.
 
-It has no direct content but may expose many subordinate containers.
+---
 
-## Read one concrete container
+## 28.3 Joplin-specific state is separate
+
+Joplin requires protocol artifacts that are not knowledge:
+
+- `info.json`,
+- locks,
+- temp files,
+- `.resource` blobs,
+- Joplin item metadata,
+- unsupported item types,
+- projection state.
+
+These belong in:
 
 ```csharp
-string content = repository.GetDirectContent(
-  "/Knowledge/Engineering/Architecture"
+IJoplinSyncStateStore
+```
+
+They must not be injected into the knowledge area hierarchy.
+
+This state store is intentionally Joplin-specific.
+
+---
+
+# 29. Joplin Item Types
+
+Relevant Joplin sync item types include:
+
+```text
+1 = note
+2 = folder/notebook
+4 = resource
+```
+
+A note's `parent_id` represents notebook placement.
+
+Changing `parent_id` is mapped to the provider-neutral repository move operation.
+
+A Joplin resource is a distinct sync item plus binary blob.
+
+---
+
+# 30. Joplin `:/<id>` References Must Be Classified
+
+Joplin uses the `:/<32-hex-id>` syntax for more than binary attachments.
+
+It may also be used for links to notes.
+
+Therefore:
+
+```text
+:/abc...
+```
+
+must never automatically be treated as a resource.
+
+The adapter must classify the referenced Joplin item.
+
+Only actual resource items (`type_: 4`) or already-established resource mappings are translated to:
+
+```text
+knowledge-resource:<ResourceId>
+```
+
+Note links remain note links.
+
+This rule is critical.
+
+---
+
+# 31. Joplin Resource Mapping Has Its Own Stable Identity
+
+Joplin resource identity and repository resource identity are deliberately decoupled.
+
+The Joplin sync/projection state stores:
+
+```text
+JoplinResourceId <-> Knowledge ResourceId
+```
+
+Example:
+
+```text
+Joplin:
+f5f34707ac3d80ab59368d5101d933fe
+
+Knowledge:
+1.RG9jcy9BcnRpY2xlLlJlczEyMy5wbmc
+```
+
+The Joplin ID is Joplin's stable external identity.
+
+The Knowledge `ResourceId` is the current opaque repository identity.
+
+---
+
+## 31.1 Repository ID change does not imply new Joplin resource
+
+If FileBased moves an owned resource and reports:
+
+```text
+old Knowledge ResourceId
+    ->
+new Knowledge ResourceId
+```
+
+the adapter updates the existing mapping:
+
+```text
+same Joplin resource ID
+    ->
+new Knowledge ResourceId
+```
+
+It must not create a new Joplin resource merely because the repository identifier changed.
+
+This is a major reason why Joplin mapping state is retained independently.
+
+---
+
+# 32. Joplin Import of Resources
+
+When Joplin uploads a resource:
+
+1. Joplin metadata and blob may arrive in either order.
+2. The adapter stores raw synchronization artifacts in the sync-state store.
+3. Once enough information exists, the adapter calls `TryAddResource`.
+4. It supplies a meaningful preferred filename if Joplin provides one.
+5. If no usable name exists, the provider chooses a safe physical fallback.
+6. The returned opaque `ResourceId` is stored in the Joplin projection mapping.
+7. Joplin Markdown references are translated to canonical `knowledge-resource:<ResourceId>` references before repository content is written.
+
+FileBased may use:
+
+```text
+<Document>.Res<Snowflake44>.<ext>
+```
+
+when a pasted screenshot has no meaningful file name.
+
+Joplin must not know that convention.
+
+---
+
+# 33. Joplin Export of Resources
+
+When repository Markdown contains:
+
+```text
+knowledge-resource:<ResourceId>
+```
+
+the Joplin adapter:
+
+1. looks up an existing Joplin resource mapping,
+2. creates one if necessary,
+3. retrieves binary bytes and metadata through `IKnowledgeRepository`,
+4. persists/refreshes Joplin metadata and blob artifacts in the sync-state store,
+5. renders:
+
+```text
+:/<JoplinResourceId>
+```
+
+into the Joplin-facing Markdown.
+
+The original Knowledge `ResourceId` is never exposed to Joplin as semantic content.
+
+---
+
+# 34. Joplin Pending Parent Handling
+
+Joplin may upload a child note before its parent notebook.
+
+This is not a semantic repository error.
+
+Required behavior:
+
+1. persist the raw Joplin sync item,
+2. accept the upload as pending,
+3. return successful sync semantics when appropriate,
+4. materialize the note once the parent arrives,
+5. retry pending items after relevant parent changes.
+
+Do not return a semantic conflict merely because upload order is temporarily incomplete.
+
+---
+
+# 35. Joplin Raw Serialization
+
+Joplin raw item serialization must preserve its expected item structure.
+
+A robust pattern is:
+
+```text
+title
+
+optional body
+
+property: value
+property: value
+type_: N
+```
+
+Do not append a trailing newline after the final `type_:` line if that causes Joplin's parser to interpret an empty line as the end of the property block.
+
+Serialization stability matters.
+
+---
+
+# 36. Joplin Projection Stability
+
+Repeated GET/PROPFIND operations over unchanged knowledge must not manufacture new remote versions.
+
+Important rules:
+
+- root timestamps must be stable,
+- projection hashes must exclude volatile transport metadata,
+- semantic hash and transport representation must be separated,
+- a successful PUT must synchronize state to the actual resulting repository content,
+- do not intentionally clear hashes merely to force a subsequent remote change.
+
+A stable unchanged projection should be byte-stable where practical.
+
+This behavior is critical for avoiding conflict loops.
+
+---
+
+# 37. Joplin DELETE Is Not Permission to Destroy Knowledge
+
+A WebDAV DELETE is a synchronization-protocol event.
+
+It must not blindly call:
+
+```csharp
+IKnowledgeRepository.TryDelete(...)
+```
+
+or:
+
+```csharp
+TryDeleteResource(...)
+```
+
+for projected knowledge.
+
+Joplin may delete/reconcile sync artifacts for reasons that do not mean:
+
+```text
+permanently destroy the authoritative knowledge source
+```
+
+The safe default is:
+
+- suppress the Joplin projection record,
+- preserve provider-neutral knowledge.
+
+This applies to notes and resources.
+
+---
+
+# 38. Joplin Conflict Rebind
+
+A Joplin conflict copy may later appear with a new Joplin item ID but correspond to an existing logical knowledge area.
+
+The adapter may rebind the new Joplin ID to the existing knowledge area when logical identity is unambiguous.
+
+This avoids duplicate physical documents.
+
+The previous Joplin identity can remain suppressed.
+
+Knowledge must never be deleted merely to reconcile Joplin conflict state.
+
+---
+
+# 39. Temporary Storage Failures
+
+If repository mutation fails because storage is temporarily unavailable, such as a transient file lock:
+
+- retry provider-local transient IO where appropriate,
+- do not misrepresent the failure as a semantic conflict,
+- do not acknowledge a Joplin resource update as committed if repository replacement failed,
+- return `503 Service Unavailable` with an appropriate retry hint when the adapter can classify the failure as temporary.
+
+A false `204` after an unsuccessful resource write is forbidden.
+
+---
+
+# 40. Joplin Authentication
+
+Authentication is optional and externally pluggable.
+
+Use an abstraction such as:
+
+```csharp
+public interface IJoplinWebDavAuthenticationValidator {
+
+  bool ValidateCredentials(
+    string userName,
+    string password,
+    HttpContext context
+  );
+}
+```
+
+When no validator is registered, existing open-endpoint behavior may remain.
+
+When a validator is registered:
+
+- parse HTTP Basic Authentication,
+- invoke the validator,
+- return `401`,
+- send an appropriate `WWW-Authenticate` header on failure.
+
+Do not embed a user database into the Joplin adapter.
+
+---
+
+# 41. Generic REST/MCP Facades
+
+A generic facade should remain intentionally thin.
+
+It should expose repository semantics rather than reimplement provider logic.
+
+Do not introduce FileBased or Joplin assumptions into generic HTTP or MCP layers.
+
+Resource delivery may use facade-specific URLs, but the underlying identity remains the opaque `ResourceId`.
+
+The facade must not require the consumer to understand how a provider encodes the identifier.
+
+---
+
+# 42. Top-Down Example: Basic Knowledge Traversal
+
+```csharp
+IKnowledgeRepository repository = CreateRepository();
+
+string[] areas = repository.GetAreas(
+  true,
+  "/"
+);
+
+foreach (string area in areas) {
+  string name = repository.GetAreaName(
+    area
+  );
+
+  ContentLevel contentLevel;
+  bool supportsSubAreas;
+  bool canBeRenamed;
+  bool canBeDeleted;
+  bool canAddSubAreas;
+  bool canAppendContent;
+  bool canTruncate;
+  bool supportsResources;
+
+  repository.GetAreaCapabilities(
+    area,
+    out contentLevel,
+    out supportsSubAreas,
+    out canBeRenamed,
+    out canBeDeleted,
+    out canAddSubAreas,
+    out canAppendContent,
+    out canTruncate,
+    out supportsResources
+  );
+
+  // Consumer logic operates exclusively on provider-neutral semantics.
+}
+```
+
+The caller never asks whether `area` is a file, directory, heading, notebook, or database node.
+
+---
+
+# 43. Top-Down Example: Moving Content
+
+```csharp
+KnowledgeResourceIdChange[] resourceIdChanges;
+
+bool moved = repository.TryMoveContent(
+  contentAreaToMove,
+  newParentArea,
+  out resourceIdChanges
+);
+
+if (moved) {
+  foreach (KnowledgeResourceIdChange change in resourceIdChanges) {
+    UpdateExternalResourceMapping(
+      change.PreviousResourceId,
+      change.CurrentResourceId
+    );
+  }
+}
+```
+
+This pattern is intentionally adapter-friendly.
+
+A consumer that does not persist resource mappings may ignore the returned array.
+
+A Joplin adapter must use it.
+
+---
+
+# 44. Advanced Example: Owned FileBased Resource Move
+
+Initial physical state:
+
+```text
+FolderA/
+  Article.md
+  Article.Res987654321.png
+```
+
+Physical Markdown:
+
+```markdown
+![Screenshot](Article.Res987654321.png)
+```
+
+Repository-facing Markdown:
+
+```markdown
+![Screenshot](knowledge-resource:<OpaqueResourceIdA>)
+```
+
+Move:
+
+```csharp
+TryMoveContent(
+  articleArea,
+  folderBArea,
+  out resourceIdChanges
 );
 ```
 
-## Perform one sparse multi-branch update
+Result:
+
+```text
+FolderB/
+  Article.md
+  Article.Res987654321.png
+```
+
+Physical Markdown may remain:
+
+```markdown
+![Screenshot](Article.Res987654321.png)
+```
+
+Repository-facing Markdown now contains:
+
+```markdown
+![Screenshot](knowledge-resource:<OpaqueResourceIdB>)
+```
+
+The operation reports:
+
+```text
+OpaqueResourceIdA -> OpaqueResourceIdB
+```
+
+The Joplin adapter updates its mapping while preserving the existing Joplin resource ID.
+
+---
+
+# 45. Advanced Example: Free Shared Resource Move
+
+Initial state:
+
+```text
+FolderA/
+  Article.md
+  CompanyLogo.png
+```
+
+Physical Markdown:
+
+```markdown
+![Logo](CompanyLogo.png)
+```
+
+Move `Article.md` to `FolderB`.
+
+Result:
+
+```text
+FolderA/
+  CompanyLogo.png
+
+FolderB/
+  Article.md
+```
+
+Updated physical Markdown:
+
+```markdown
+![Logo](../FolderA/CompanyLogo.png)
+```
+
+Repository resource ID remains unchanged because the resource itself did not move.
+
+No resource ID change is reported.
+
+---
+
+# 46. Advanced Example: Joplin Screenshot Paste
+
+A user pastes a screenshot into Joplin.
+
+Joplin provides:
+
+```text
+Joplin Resource ID = f5f34707ac3d80ab59368d5101d933fe
+```
+
+There may be no meaningful original file name.
+
+The adapter calls:
 
 ```csharp
-bool success = repository.TryAppendContent(
-  "/Knowledge/Engineering",
-  """
-  # Architecture
-
-  Additional architecture information.
-
-  # Development
-
-  Additional development information.
-  """
+TryAddResource(
+  noteArea,
+  string.Empty,
+  "image/png",
+  content,
+  out resourceId
 );
 ```
 
-This is valid if `Engineering` is a writable `ContentAggregation` and the payload can be routed entirely into subordinate areas.
+FileBased chooses:
 
-## Invalid aggregation append
+```text
+Article.Res<Snowflake44>.png
+```
+
+and returns an opaque resource ID representing its native path.
+
+The Joplin sync state stores:
+
+```text
+f5f34707ac3d80ab59368d5101d933fe
+    <->
+<opaque Knowledge ResourceId>
+```
+
+Joplin continues to use:
+
+```text
+:/f5f34707ac3d80ab59368d5101d933fe
+```
+
+The physical Markdown uses:
+
+```text
+Article.Res<Snowflake44>.png
+```
+
+The repository-facing Markdown uses:
+
+```text
+knowledge-resource:<opaque ResourceId>
+```
+
+Each layer uses its own natural identity.
+
+---
+
+# 47. Requirements Matrix
+
+| Requirement | Normative rule |
+|---|---|
+| Provider neutrality | Consumers must not depend on provider-native storage representation. |
+| One interface | Areas, content, and resources are exposed through `IKnowledgeRepository`. |
+| Resources are not areas | Binary assets do not participate in area hierarchy or `ContentLevel`. |
+| Area names | Use `GetAreaName`; do not decode path segments. |
+| Area creation | Use `KnowledgeAreaKind`, not provider-specific name syntax. |
+| Recursive enumeration | Depth-first pre-order; preserve natural sibling order. |
+| Reads | Must not mutate underlying storage. |
+| Mutations | Atomic from consumer perspective. |
+| Move | Reparent logical scope; never append-plus-truncate. |
+| Move target | `newParentArea` is a parent, never replacement content. |
+| Resource capability | Exposed through `supportsResources`. |
+| Resource reference | Canonical form is `knowledge-resource:<ResourceId>`. |
+| Resource ID type | `string`. |
+| Resource ID ownership | Provider-defined and opaque. |
+| Resource ID interpretation | Consumers must not parse, decode, compose, or infer semantics. |
+| Resource ID stability | May change on provider-native rename/move. |
+| Resource ID changes | Mutations report old-to-new mappings. |
+| FileBased native identity | Normalized repository-relative resource path. |
+| FileBased public ID | Prefer opaque versioned Base64Url encoding of native identity. |
+| FileBased sidecar metadata | Not used for resource identity mapping. |
+| Physical Markdown | Must contain ordinary relative file links. |
+| FileBased read mapping | Relative path -> opaque resource ID -> canonical `knowledge-resource:` reference. |
+| FileBased write mapping | Canonical reference -> physical relative Markdown path. |
+| Manual resources | Arbitrary safe filenames are valid and remain unchanged. |
+| Generated fallback | `<Document>.Res<Snowflake44>.<ext>`. |
+| Owned resource | Strict generated `<Document>.Res<Token>.<ext>` convention. |
+| Free/shared resource | Any resource not matching the strict ownership pattern. |
+| Owned resource on document move | Moves with document; resource ID changes and is reported. |
+| Free resource on document move | Remains in place; Markdown link is repaired; resource ID remains stable. |
+| Soft delete | Optional safety feature; never used to implement moves. |
+| Rollback | Non-destructive restore; never delete repository root before successful restoration. |
+| Joplin state | Separate `IJoplinSyncStateStore`. |
+| Joplin IDs | Stable Joplin identity is independent from Knowledge ResourceId. |
+| Joplin mapping | Joplin Resource ID <-> current Knowledge ResourceId. |
+| Joplin ID after Knowledge move | Keep same Joplin ID; update mapping only. |
+| Joplin `:/id` | Classify item type; do not assume every ID is a resource. |
+| Joplin parent ordering | Child-before-parent uploads are pending, not semantic conflicts. |
+| Joplin DELETE | Must not blindly destroy knowledge. |
+| Joplin conflicts | Prefer safe suppression/rebind over destructive reconciliation. |
+| Temporary write lock | Retry safely; use 503 rather than false conflict/success. |
+| Unit-test framework | MSTest only for .NET tests. |
+
+---
+
+# 48. Bottom-Up Artifact Guide
+
+## 48.1 `IKnowledgeRepository`
+
+The central provider-neutral contract.
+
+It defines:
+
+- area traversal,
+- names,
+- capabilities,
+- content reads,
+- content mutations,
+- resource access,
+- resource ID change reporting.
+
+It must contain no Joplin- or FileBased-specific semantics.
+
+---
+
+## 48.2 `ContentLevel`
+
+Defines whether an area is:
+
+- structural,
+- aggregating,
+- directly content-bearing.
+
+It is not a physical storage type.
+
+---
+
+## 48.3 `KnowledgeAreaKind`
+
+Communicates semantic creation intent.
+
+It prevents consumers from encoding provider-specific structure into names.
+
+---
+
+## 48.4 `KnowledgeResourceInfo`
+
+Describes one provider-neutral resource.
+
+Its `ResourceId` is opaque.
+
+Its filename is metadata, not identity.
+
+---
+
+## 48.5 `KnowledgeResourceIdChange`
+
+Describes a resource identifier transition caused by a successful repository mutation.
+
+It allows external adapters to preserve their own stable identities.
+
+---
+
+## 48.6 `FileBasedKnowledgeRepository`
+
+Owns all FileBased-specific behavior:
+
+- logical file/directory/heading mapping,
+- physical Markdown parsing/rendering,
+- physical-to-canonical resource-link mapping,
+- Base64Url resource ID encoding,
+- owned/free resource handling,
+- fallback resource naming,
+- physical move/rename behavior,
+- soft delete,
+- atomic IO,
+- non-destructive rollback,
+- transient lock retry.
+
+No Joplin behavior belongs here.
+
+---
+
+## 48.7 `GitBasedKnowledgeRepository`
+
+Adds Git synchronization, commit, and push semantics around FileBased logical mutations.
+
+It should not redefine the logical knowledge model.
+
+---
+
+## 48.8 `AggregatedKnowledgeRepository`
+
+Combines repositories under logical mounts.
+
+It owns overlay and routing behavior.
+
+It must remain conservative for ambiguous mutations and resource ownership.
+
+---
+
+## 48.9 `IJoplinSyncStateStore`
+
+Stores Joplin-specific protocol and projection state.
+
+It is allowed to remember Joplin mappings because those mappings are Joplin adapter state, not provider-neutral knowledge.
+
+---
+
+## 48.10 `JoplinKnowledgeRepositoryWebDavHandler`
+
+Owns translation between:
+
+- Joplin folders,
+- Joplin notes,
+- Joplin resources,
+- Joplin WebDAV sync items,
+
+and:
+
+- provider-neutral areas,
+- textual content,
+- opaque repository resources.
+
+It must use only `IKnowledgeRepository` semantics.
+
+---
+
+## 48.11 `JoplinKnowledgeRepositoryWebDavMiddleware`
+
+Owns raw WebDAV HTTP method dispatch.
+
+It exists to avoid forcing WebDAV verbs through normal MVC verb discovery.
+
+---
+
+# 49. Testing Strategy
+
+All .NET unit tests for this project MUST use MSTest.
+
+Do not generate xUnit or NUnit tests.
+
+Canonical attributes:
 
 ```csharp
-bool success = repository.TryAppendContent(
-  "/Knowledge/Engineering",
-  "This text has no subordinate target."
-);
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+[TestClass]
+public sealed class ExampleTests {
+
+  /// <summary>
+  /// Verifies the expected behavior.
+  /// </summary>
+  [TestMethod]
+  public void Operation_Condition_ExpectedResult() {
+  }
+}
 ```
 
-This must fail because a content aggregation cannot own direct text.
+High-value regression tests include:
+
+- document move does not create soft-delete artifacts,
+- heading move preserves both parents,
+- document rename preserves resource behavior,
+- owned resource moves with document,
+- owned resource move reports ResourceId change,
+- free resource remains in place while physical Markdown link is repaired,
+- physical Markdown never persists `knowledge-resource:` references,
+- reading physical Markdown returns canonical `knowledge-resource:` references,
+- manually added image becomes a resource without sidecar registration,
+- Joplin child-before-parent materializes later,
+- Joplin `parent_id` change invokes repository move semantics,
+- repeated unchanged GET is byte-stable,
+- identical repeated PUT is idempotent,
+- Joplin note link is not misclassified as a resource,
+- Joplin resource replacement preserves Joplin identity,
+- Joplin DELETE does not delete authoritative knowledge,
+- conflict rebind does not duplicate knowledge,
+- temporary resource-write failure does not return false success,
+- Joplin resource mapping updates after repository ResourceId changes.
+
+Tests should prefer public APIs over private implementation details.
 
 ---
 
-# 28. Advanced Virtual Aggregation Example
+# 50. C# Implementation Rules for This Skill
 
-A provider may expose:
+Apply the project's global C# development rules.
 
-```text
-/Virtual Views
-└── All Examples
+In particular:
+
+- prompt communication may be German, but code and code comments are English,
+- do not use `var`,
+- avoid nullable/coalescing constructs when unnecessary,
+- fields and constants use PascalCase with `_` prefix,
+- methods have `<summary>` XML documentation,
+- prefer arrays over `List<>` in public signatures,
+- use explicit `this.` for instance members except fields,
+- do not use the async/await pattern unless explicitly approved,
+- do not use inline conditional operators,
+- always use braces,
+- opening braces stay on the same line,
+- lambda parameters are parenthesized,
+- properties are explicitly implemented,
+- use `DevLogger.LogError(ex)` only for targeted expected exceptions,
+- trace with `DevLogger.LogTrace(0, 99999, "...")`,
+- avoid Windows-only interop/DllImport unless explicitly approved,
+- use Newtonsoft.Json rather than `System.Text.Json`,
+- MSTest only for .NET unit tests.
+
+All generated C# artifacts in this knowledge-access project use:
+
+```csharp
+namespace AI.SmartStandards.KnowledgeAccess {
 ```
 
-with:
-
-```text
-ContentLevel = ContentAggregation
-canAppendContent = false
-canTruncate = false
-canAddSubAreas = false
-canBeRenamed = false
-canBeDeleted = false
-```
-
-`GetAggregatedContent("/Virtual Views/All Examples")` may dynamically collect:
-
-```text
-/ProjectA/[Guide]/Example
-/ProjectB/[Tutorial]/Example
-/ProjectC/[Reference]/Examples/Advanced
-```
-
-into one deterministic textual result.
-
-The provider may preserve source order, project-defined order, explicit ranking, or another stable deterministic ordering strategy.
-
-The provider should document that strategy.
-
-The virtual area does not need a backing document.
-
-This pattern enables powerful cross-cutting knowledge views without changing the source material.
+Tests use the corresponding test namespace.
 
 ---
 
-# 29. Bottom-Up Implementation Guidance
+# 51. Anti-Patterns
 
-## `IKnowledgeRepository`
+AI agents must actively avoid the following.
 
-Owns the provider-neutral logical behavior.
+## 51.1 FileBased syntax in adapters
 
-It should not expose:
-
-- file paths,
-- Git commits,
-- notebook IDs,
-- Markdown heading numbers,
-- database primary keys,
-- remote API IDs.
-
-## `ContentLevel`
-
-Describes semantic content participation, not storage type.
-
-## Internal logical representation
-
-Providers should internally resolve physical state into something conceptually equivalent to:
+Wrong:
 
 ```text
-ResolvedArea
-├── Path
-├── ContentLevel
-├── DirectContent
-├── Children[]
-└── Capabilities
+Joplin checks whether an area segment is [Folder].
 ```
 
-For aggregation nodes:
+Correct:
 
 ```text
-DirectContent = empty
-```
-
-always.
-
-## Parser
-
-Text-oriented providers parse source content into the ordered logical tree.
-
-## Renderer
-
-Renderers project logical mutations back into the physical provider format.
-
-## Virtual projection engine
-
-Providers supporting virtual aggregations may implement a projection layer that:
-
-1. queries source areas,
-2. selects matching content,
-3. determines stable order,
-4. synthesizes logical children or aggregated textual content,
-5. reports read-only capabilities unless reverse write routing is unambiguous.
-
-## Mutation engine
-
-Providers should reuse one hierarchical merge implementation.
-
-Conceptually:
-
-```text
-Append = Merge
-Replace = Atomic(Truncate + Merge)
-MoveContent = Atomic(Merge(target, source-scope) + Truncate(source))
+Joplin asks the repository for semantic type/capabilities.
 ```
 
 ---
 
-# 30. Implementation Checklist
+## 51.2 Physical path as public semantic contract
 
-Before considering a provider complete, verify:
+Wrong:
 
-- logical paths are canonical,
-- direct siblings are unambiguous,
-- enumeration order is deterministic,
-- recursive enumeration is pre-order,
-- sibling order is preserved,
-- `BeyondContent` never exposes textual content,
-- `ContentAggregation` never owns direct content,
-- `ContentContainer` may own direct content,
-- aggregation reads work correctly,
-- virtual aggregations are deterministic,
-- virtual aggregations report truthful capabilities,
-- append rejects unstructured direct text on aggregations,
-- append merges into existing direct child branches,
-- append creates missing branches,
-- append supports multiple distributed branches,
-- append preserves existing ordering,
-- relative hierarchy is rebased correctly,
-- truncate preserves the addressed area,
-- delete removes the addressed area,
-- rename preserves subtree and sibling position,
-- replace is atomic,
-- move is atomic,
-- move supports aggregation and container areas correctly,
-- invalid recursive move topology is rejected,
-- provider storage details remain hidden,
-- failed mutations leave no partial state,
-- version-controlled providers minimize unnecessary diffs.
+```text
+Consumer splits ResourceId on "/".
+```
+
+Correct:
+
+```text
+Consumer stores ResourceId as opaque string.
+```
 
 ---
 
-# 31. Design Principle Summary
+## 51.3 Persisting canonical resource links directly into FileBased Markdown
 
-Always reason in this order:
+Wrong:
 
-```text
-Physical or virtual provider state
-        ↓
-Resolve
-        ↓
-Ordered logical area tree
-        ↓
-Determine ContentLevel
-        ↓
-Apply IKnowledgeRepository semantics
-        ↓
-Validate complete resulting state
-        ↓
-Persist or project atomically
-        ↓
-Expose stable logical result
+```markdown
+![Image](knowledge-resource:...)
 ```
 
-The authoritative abstraction is the ordered logical area tree.
+on disk.
 
-Physical files, Markdown headings, notebook pages, remote objects and virtual cross-cutting views are merely provider-specific projections.
+Correct:
 
-The key implementation principle is:
+```markdown
+![Image](relative-image.png)
+```
 
-> **Think in logical ordered areas first. Map to physical or virtual provider mechanics second.**
+on disk.
+
+---
+
+## 51.4 Hidden FileBased resource brain
+
+Wrong:
+
+```text
+.knowledge/resources.json is required to know what image belongs to what.
+```
+
+Correct:
+
+```text
+The physical filesystem and Markdown references are authoritative.
+```
+
+---
+
+## 51.5 Treating every Joplin `:/id` as a resource
+
+Wrong.
+
+The target may be a note.
+
+Classify the Joplin item first.
+
+---
+
+## 51.6 Move implemented as copy-plus-delete
+
+Wrong.
+
+Use provider-native logical reparenting semantics.
+
+---
+
+## 51.7 Joplin DELETE mapped to authoritative delete
+
+Wrong.
+
+Sync reconciliation is not equivalent to user-authorized source destruction.
+
+---
+
+## 51.8 Stable-ID assumptions
+
+Wrong:
+
+```text
+ResourceId never changes.
+```
+
+Correct:
+
+```text
+Provider-native identity may change; mutations report ResourceId changes.
+```
+
+---
+
+# 52. Design Rationale
+
+This architecture deliberately separates three identity domains:
+
+```text
+External adapter identity
+        |
+        | adapter-owned mapping
+        v
+Opaque repository ResourceId
+        |
+        | provider-owned mapping/encoding
+        v
+Provider-native identity
+```
+
+For Joplin + FileBased this becomes:
+
+```text
+Joplin Resource ID
+        |
+        | IJoplinSyncStateStore
+        v
+Knowledge ResourceId
+        |
+        | FileBased private Base64Url resolution
+        v
+Repository-relative physical resource path
+```
+
+This is a strength rather than duplication.
+
+Each layer owns only the identity semantics it can correctly maintain.
+
+The repository abstraction is protected from Joplin-specific IDs.
+
+Joplin is protected from FileBased path semantics.
+
+The physical file repository remains human-readable and independently useful.
+
+No hidden FileBased metadata database is required.
+
+Moves and renames remain correctly observable by stateful adapters through explicit resource-ID change reporting.
+
+---
+
+# 53. Final Architectural North Star
+
+When evaluating any future change, ask:
+
+1. **Can an arbitrary new `IKnowledgeRepository` implementation work with the existing adapters without knowing those adapters?**
+2. **Can an adapter such as Joplin operate without knowing the concrete repository implementation?**
+3. **Does the contract describe logical semantics rather than physical implementation?**
+4. **Does FileBased remain a normal, human-editable Markdown repository on disk?**
+5. **Are resource identifiers treated as opaque provider-owned values?**
+6. **Are identity changes reported explicitly rather than guessed later?**
+7. **Does a mutation preserve unrelated knowledge and avoid destructive fallbacks?**
+8. **Would the behavior remain correct under sync retries, conflicts, file locks, and manual filesystem edits?**
+
+If the answer to any of these questions is no, the design is probably crossing an abstraction boundary.
+
+The architectural target is not merely to make today's FileBased/Joplin combination work.
+
+The target is a stable knowledge abstraction in which physical providers and external adapters can evolve independently while preserving predictable wiki semantics.

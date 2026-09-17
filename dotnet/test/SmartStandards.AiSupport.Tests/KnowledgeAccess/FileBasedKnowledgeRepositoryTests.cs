@@ -641,5 +641,127 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
         );
       }
     }
+
+    /// <summary>
+    /// Verifies that renaming a document also renames its physical resource companion
+    /// files while preserving the logical ResourceUid and resource content.
+    /// </summary>
+    [TestMethod]
+    public void TryRename_DocumentWithResource_PreservesResourceUidAndRenamesCompanionFile() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        Assert.IsTrue(
+          repository.TryAddSubArea(
+            "/",
+            "OriginalDocument",
+            KnowledgeAreaKind.Content
+          )
+        );
+
+        string originalArea = context.GetChildArea(
+          repository,
+          "/",
+          "OriginalDocument"
+        );
+
+        byte[] resourceContent =
+          new byte[] { 21, 22, 23, 24 };
+
+        long resourceUid;
+
+        Assert.IsTrue(
+          repository.TryAddResource(
+            originalArea,
+            ".png",
+            "image/png",
+            resourceContent,
+            out resourceUid
+          )
+        );
+
+        Assert.IsTrue(
+          repository.TryAppendContent(
+            originalArea,
+            "![Image](knowledge-resource:"
+            + resourceUid.ToString()
+            + ")"
+          )
+        );
+
+        string oldCompanionFile = Path.Combine(
+          context.KnowledgeDirectory,
+          "OriginalDocument.Res"
+          + resourceUid.ToString()
+          + ".png"
+        );
+
+        Assert.IsTrue(
+          File.Exists(oldCompanionFile)
+        );
+
+        Assert.IsTrue(
+          repository.TryRename(
+            originalArea,
+            "RenamedDocument"
+          )
+        );
+
+        Assert.AreEqual(
+          string.Empty,
+          context.GetChildArea(
+            repository,
+            "/",
+            "OriginalDocument"
+          )
+        );
+
+        string renamedArea = context.GetChildArea(
+          repository,
+          "/",
+          "RenamedDocument"
+        );
+
+        Assert.IsFalse(
+          string.IsNullOrEmpty(renamedArea)
+        );
+
+        string newCompanionFile = Path.Combine(
+          context.KnowledgeDirectory,
+          "RenamedDocument.Res"
+          + resourceUid.ToString()
+          + ".png"
+        );
+
+        Assert.IsFalse(
+          File.Exists(oldCompanionFile)
+        );
+
+        Assert.IsTrue(
+          File.Exists(newCompanionFile)
+        );
+
+        CollectionAssert.AreEqual(
+          resourceContent,
+          repository.GetResourceContent(
+            renamedArea,
+            resourceUid
+          )
+        );
+
+        Assert.IsTrue(
+          repository.GetAggregatedContent(
+            renamedArea
+          ).Contains(
+            "knowledge-resource:" + resourceUid.ToString(),
+            StringComparison.Ordinal
+          )
+        );
+      }
+    }
+
   }
 }
