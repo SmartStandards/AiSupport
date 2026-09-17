@@ -34,7 +34,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
   public class KnowledgeRepositoryController : ControllerBase {
 
     private const string _MarkdownContentType = "text/markdown; charset=utf-8";
-    private const string _ResourceRouteSegment = "resources";
     private const string _KnowledgeResourceReferencePrefix = "knowledge-resource:";
 
     private static readonly Regex _KnowledgeResourceReferenceRegex = new Regex(
@@ -69,7 +68,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// A self-describing navigation listing for BeyondContent areas or aggregated
     /// Markdown for content-capable areas.
     /// </returns>
-    [HttpGet]
+    [HttpGet(Name = KnowledgeRepositoryHttpRouteNames._RawRoot)]
     public IActionResult GetRoot() {
       return this.GetAreaInternal("/");
     }
@@ -85,7 +84,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     /// <param name="area">The catch-all logical area path relative to the controller route.</param>
     /// <returns>The navigation listing or aggregated Markdown content.</returns>
-    [HttpGet("{**area}")]
+    [HttpGet("{**area}", Name = KnowledgeRepositoryHttpRouteNames._RawArea)]
     public IActionResult GetArea(string area) {
       return this.GetAreaInternal(this.ToRepositoryArea(area));
     }
@@ -99,7 +98,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     /// <param name="resourceId">The opaque repository resource identifier.</param>
     /// <returns>The binary resource content or HTTP 404 when the resource does not exist.</returns>
-    [HttpGet("resources/{resourceId}")]
+    [HttpGet("resources/{resourceId}", Name = KnowledgeRepositoryHttpRouteNames._RawResource)]
     public IActionResult GetResource(string resourceId) {
       if (string.IsNullOrWhiteSpace(resourceId)) {
         return this.NotFound();
@@ -502,16 +501,22 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// configured forwarded-header pipeline while local HTTP development continues to work.
     /// </summary>
     private string BuildAbsoluteResourceUrl(string resourceId) {
-      return this.Request.Scheme
-        + "://"
-        + this.Request.Host.Value
-        + this.Request.PathBase.Value
-        + "/api/knowledge/"
-        + _ResourceRouteSegment
-        + "/"
-        + Uri.EscapeDataString(
-          resourceId
+      string url = this.Url.RouteUrl(
+        KnowledgeRepositoryHttpRouteNames._RawResource,
+        new {
+          resourceId = resourceId
+        },
+        this.Request.Scheme,
+        this.Request.Host.Value
+      );
+
+      if (string.IsNullOrWhiteSpace(url)) {
+        throw new InvalidOperationException(
+          "The ASP.NET Core route for the knowledge resource endpoint could not be resolved."
         );
+      }
+
+      return url;
     }
 
     /// <summary>
@@ -611,37 +616,38 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// visible while special characters inside a segment remain safe.
     /// </summary>
     private string BuildAbsoluteAreaUrl(string repositoryArea) {
-      string path = this.BuildAreaRequestPath(repositoryArea);
+      string routeName;
+      object routeValues;
 
-      return this.Request.Scheme
-        + "://"
-        + this.Request.Host.Value
-        + this.Request.PathBase.Value
-        + path;
-    }
-
-    /// <summary>
-    /// Builds the controller-relative HTTP request path for one logical repository area.
-    /// </summary>
-    private string BuildAreaRequestPath(string repositoryArea) {
-      string controllerPath = "/api/knowledge";
-
-      if (repositoryArea == "/") {
-        return controllerPath;
+      if (string.Equals(
+            repositoryArea,
+            "/",
+            StringComparison.Ordinal
+          )) {
+        routeName = KnowledgeRepositoryHttpRouteNames._RawRoot;
+        routeValues = new { };
+      }
+      else {
+        routeName = KnowledgeRepositoryHttpRouteNames._RawArea;
+        routeValues = new {
+          area = repositoryArea.TrimStart('/')
+        };
       }
 
-      string[] segments = repositoryArea
-        .Split('/', StringSplitOptions.RemoveEmptyEntries);
+      string url = this.Url.RouteUrl(
+        routeName,
+        routeValues,
+        this.Request.Scheme,
+        this.Request.Host.Value
+      );
 
-      StringBuilder builder = new StringBuilder();
-      builder.Append(controllerPath);
-
-      foreach (string segment in segments) {
-        builder.Append('/');
-        builder.Append(Uri.EscapeDataString(segment));
+      if (string.IsNullOrWhiteSpace(url)) {
+        throw new InvalidOperationException(
+          "The ASP.NET Core route for the knowledge area endpoint could not be resolved."
+        );
       }
 
-      return builder.ToString();
+      return url;
     }
 
     /// <summary>

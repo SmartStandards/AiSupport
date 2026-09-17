@@ -92,7 +92,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Returns the human-readable repository root.
     /// </summary>
-    [HttpGet]
+    [HttpGet(Name = KnowledgeRepositoryHttpRouteNames._HtmlRoot)]
     public IActionResult GetRoot() {
       return this.GetAreaInternal(
         "/"
@@ -105,7 +105,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <param name="area">
     /// The catch-all logical area path relative to the HTML controller route.
     /// </param>
-    [HttpGet("{**area}")]
+    [HttpGet("{**area}", Name = KnowledgeRepositoryHttpRouteNames._HtmlArea)]
     public IActionResult GetArea(string area) {
       return this.GetAreaInternal(
         this.ToRepositoryArea(
@@ -462,14 +462,22 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private string BuildAbsoluteResourceUrl(
       string resourceId
     ) {
-      return this.Request.Scheme
-        + "://"
-        + this.Request.Host.Value
-        + this.Request.PathBase.Value
-        + "/api/knowledge/raw/resources/"
-        + Uri.EscapeDataString(
-          resourceId
+      string url = this.Url.RouteUrl(
+        KnowledgeRepositoryHttpRouteNames._RawResource,
+        new {
+          resourceId = resourceId
+        },
+        this.Request.Scheme,
+        this.Request.Host.Value
+      );
+
+      if (string.IsNullOrWhiteSpace(url)) {
+        throw new InvalidOperationException(
+          "The ASP.NET Core route for the knowledge resource endpoint could not be resolved."
         );
+      }
+
+      return url;
     }
 
     /// <summary>
@@ -1275,37 +1283,36 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private string BuildHtmlAreaRequestPath(
       string repositoryArea
     ) {
-      string controllerPath =
-        this.Request.PathBase.Value
-        + "/api/knowledge";
+      string routeName;
+      object routeValues;
 
-      if (repositoryArea == "/") {
-        return controllerPath;
+      if (string.Equals(
+            repositoryArea,
+            "/",
+            StringComparison.Ordinal
+          )) {
+        routeName = KnowledgeRepositoryHttpRouteNames._HtmlRoot;
+        routeValues = new { };
+      }
+      else {
+        routeName = KnowledgeRepositoryHttpRouteNames._HtmlArea;
+        routeValues = new {
+          area = repositoryArea.TrimStart('/')
+        };
       }
 
-      string[] segments =
-        repositoryArea.Split(
-          '/',
-          StringSplitOptions.RemoveEmptyEntries
-        );
-
-      StringBuilder builder =
-        new StringBuilder();
-
-      builder.Append(
-        controllerPath
+      string url = this.Url.RouteUrl(
+        routeName,
+        routeValues
       );
 
-      foreach (string segment in segments) {
-        builder.Append('/');
-        builder.Append(
-          Uri.EscapeDataString(
-            segment
-          )
+      if (string.IsNullOrWhiteSpace(url)) {
+        throw new InvalidOperationException(
+          "The ASP.NET Core route for the human-readable knowledge endpoint could not be resolved."
         );
       }
 
-      return builder.ToString();
+      return url;
     }
 
     /// <summary>
