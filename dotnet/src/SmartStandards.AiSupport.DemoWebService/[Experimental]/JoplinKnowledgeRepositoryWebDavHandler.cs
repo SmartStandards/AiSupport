@@ -1077,11 +1077,15 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private string GetPreferredJoplinResourceFileName(
       JoplinSerializedItem resourceItem
     ) {
+      // Only Joplin's explicit filename metadata represents a user-visible physical
+      // filename that is worth preserving.
+      //
+      // In particular, the Joplin resource title is deliberately NOT used as a filename
+      // fallback. Pasted images commonly have a title or other display metadata without
+      // having a meaningful original filename. Such resources are known to belong to the
+      // referencing note and should therefore receive the provider-owned FileBased fallback
+      // <Document>.Res<Snowflake44>.<extension>.
       string fileName = resourceItem.FileName;
-
-      if (string.IsNullOrWhiteSpace(fileName)) {
-        fileName = resourceItem.Title;
-      }
 
       if (string.IsNullOrWhiteSpace(fileName)) {
         return string.Empty;
@@ -1097,9 +1101,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
             resourceItem.Id,
             StringComparison.OrdinalIgnoreCase
           )) {
-        // Joplin commonly synthesizes a hash-like filename for pasted screenshots.
-        // Treating that value as a meaningful human filename would accidentally turn
-        // an otherwise document-owned resource into a free/shared FileBased resource.
+        // A filename that consists only of the Joplin resource ID plus extension is
+        // technical synchronization metadata rather than a meaningful original filename.
+        // Treat it like a pasted resource so FileBased can express document ownership.
         return string.Empty;
       }
 

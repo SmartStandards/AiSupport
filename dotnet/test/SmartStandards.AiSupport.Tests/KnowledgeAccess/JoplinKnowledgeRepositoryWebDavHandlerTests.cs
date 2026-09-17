@@ -1441,5 +1441,127 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
       }
     }
 
+
+    /// <summary>
+    /// Verifies that a pasted Joplin image without explicit filename metadata is materialized
+    /// as a document-owned FileBased resource even when Joplin supplies a resource title.
+    /// </summary>
+    [TestMethod]
+    public void Put_PastedJoplinImageWithoutFilename_UsesDocumentOwnedFileBasedResourceName() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        JoplinKnowledgeRepositoryWebDavHandler handler =
+          context.CreateJoplinHandler(repository);
+
+        byte[] imageBytes =
+          new byte[] { 121, 122, 123, 124 };
+
+        context.PutBytes(
+          handler,
+          ".resource/" + _ResourceId,
+          imageBytes
+        );
+
+        context.PutText(
+          handler,
+          _ResourceId + ".md",
+          context.CreateJoplinResourceItem(
+            _ResourceId,
+            "Pasted image",
+            string.Empty,
+            "image/png",
+            "png"
+          )
+        );
+
+        IActionResult noteResult = context.PutText(
+          handler,
+          _NoteAId + ".md",
+          context.CreateJoplinNoteItem(
+            _NoteAId,
+            "Pasted Image Note",
+            string.Empty,
+            "![Image](:/" + _ResourceId + ")"
+          )
+        );
+
+        Assert.AreEqual(
+          StatusCodes.Status204NoContent,
+          context.GetStatusCode(noteResult)
+        );
+
+        string noteArea = context.GetChildArea(
+          repository,
+          "/",
+          "Pasted Image Note"
+        );
+
+        Assert.IsFalse(
+          string.IsNullOrEmpty(noteArea)
+        );
+
+        string[] ownedResourceFiles = Directory.GetFiles(
+          context.KnowledgeDirectory,
+          "Pasted Image Note.Res*.png",
+          SearchOption.TopDirectoryOnly
+        );
+
+        Assert.AreEqual(
+          1,
+          ownedResourceFiles.Length
+        );
+
+        Assert.IsFalse(
+          File.Exists(
+            Path.Combine(
+              context.KnowledgeDirectory,
+              "Pasted image.png"
+            )
+          )
+        );
+
+        KnowledgeResourceInfo[] resources =
+          repository.GetResources(
+            noteArea
+          );
+
+        Assert.AreEqual(
+          1,
+          resources.Length
+        );
+
+        CollectionAssert.AreEqual(
+          imageBytes,
+          repository.GetResourceContent(
+            resources[0].ResourceId
+          )
+        );
+
+        string physicalMarkdown = File.ReadAllText(
+          Path.Combine(
+            context.KnowledgeDirectory,
+            "Pasted Image Note.md"
+          )
+        );
+
+        string encodedOwnedResourceFileName = Uri.EscapeDataString(
+          Path.GetFileName(
+            ownedResourceFiles[0]
+          )
+        );
+
+        Assert.IsTrue(
+          physicalMarkdown.Contains(
+            encodedOwnedResourceFileName,
+            StringComparison.Ordinal
+          )
+        );
+      }
+    }
+
   }
 }
