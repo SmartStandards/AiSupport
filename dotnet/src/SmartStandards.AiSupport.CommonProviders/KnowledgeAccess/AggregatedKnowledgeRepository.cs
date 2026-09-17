@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace AI.SmartStandards.KnowledgeAccess {
 
@@ -45,9 +46,21 @@ namespace AI.SmartStandards.KnowledgeAccess {
   public class AggregatedKnowledgeRepository : IKnowledgeRepository {
 
     private const string _RootArea = "/";
+    private const string _KnowledgeResourceReferencePrefix = "knowledge-resource:";
+
+    private static readonly TimeSpan _TreeReadBurstWindow =
+      TimeSpan.FromMilliseconds(500);
+
+    private static readonly Regex _KnowledgeResourceReferenceRegex = new Regex(
+      @"knowledge-resource:(?<id>[A-Za-z0-9._~-]+)",
+      RegexOptions.Compiled | RegexOptions.CultureInvariant
+    );
+
 
     private readonly object _SyncRoot;
     private readonly List<MountedRepository> _Repositories;
+    private AggregatedTree _CachedTree;
+    private DateTime _CachedTreeLastAccessUtc;
 
     /// <summary>
     /// Creates an empty aggregated knowledge repository.
@@ -55,6 +68,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
     public AggregatedKnowledgeRepository() {
       _SyncRoot = new object();
       _Repositories = new List<MountedRepository>();
+      _CachedTree = null;
+      _CachedTreeLastAccessUtc = DateTime.MinValue;
     }
 
     /// <summary>
@@ -87,13 +102,26 @@ namespace AI.SmartStandards.KnowledgeAccess {
       string normalizedMountPoint = this.NormalizeAreaPath(mountPoint);
 
       lock (_SyncRoot) {
+        int mountPointOrdinal = _Repositories.Count(
+          (MountedRepository candidate) => string.Equals(
+            candidate.MountPoint,
+            normalizedMountPoint,
+            StringComparison.Ordinal
+          )
+        );
+
         MountedRepository mountedRepository = new MountedRepository(
           repository,
           normalizedMountPoint,
+          mountPointOrdinal,
           _Repositories.Count
         );
 
-        _Repositories.Add(mountedRepository);
+        _Repositories.Add(
+          mountedRepository
+        );
+
+        this.InvalidateTreeCache();
       }
     }
 
@@ -450,7 +478,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
               );
 
             aggregateResource.ResourceId = this.CreateAggregatedResourceId(
-              contribution.MountedRepository.RegistrationOrder,
+              contribution.MountedRepository,
               providerResource.ResourceId
             );
 
@@ -475,28 +503,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     public byte[] GetResourceContent(string resourceId) {
       lock (_SyncRoot) {
-        int registrationOrder;
+        MountedRepository mountedRepository;
         string childResourceId;
 
-        if (!this.TryParseAggregatedResourceId(
+        if (!this.TryResolveAggregatedResourceId(
               resourceId,
-              out registrationOrder,
+              out mountedRepository,
               out childResourceId
             )) {
           throw new InvalidOperationException(
-            "The aggregated resource identifier is invalid."
-          );
-        }
-
-        MountedRepository mountedRepository =
-          _Repositories.FirstOrDefault(
-            (MountedRepository candidate) =>
-              candidate.RegistrationOrder == registrationOrder
-          );
-
-        if (mountedRepository == null) {
-          throw new InvalidOperationException(
-            "The aggregated resource provider is no longer registered."
+            "The aggregated resource identifier is invalid or its provider is no longer mounted."
           );
         }
 
@@ -556,10 +572,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
 
         resourceId = this.CreateAggregatedResourceId(
-          contribution.MountedRepository.RegistrationOrder,
+          contribution.MountedRepository,
           childResourceId
         );
 
+        this.InvalidateTreeCache();
         return true;
       }
     }
@@ -574,32 +591,29 @@ namespace AI.SmartStandards.KnowledgeAccess {
       byte[] content
     ) {
       lock (_SyncRoot) {
-        int registrationOrder;
+        MountedRepository mountedRepository;
         string childResourceId;
 
-        if (!this.TryParseAggregatedResourceId(
+        if (!this.TryResolveAggregatedResourceId(
               resourceId,
-              out registrationOrder,
+              out mountedRepository,
               out childResourceId
             )) {
           return false;
         }
 
-        MountedRepository mountedRepository =
-          _Repositories.FirstOrDefault(
-            (MountedRepository candidate) =>
-              candidate.RegistrationOrder == registrationOrder
+        bool replaced =
+          mountedRepository.Repository.TryReplaceResource(
+            childResourceId,
+            contentType,
+            content
           );
 
-        if (mountedRepository == null) {
-          return false;
+        if (replaced) {
+          this.InvalidateTreeCache();
         }
 
-        return mountedRepository.Repository.TryReplaceResource(
-          childResourceId,
-          contentType,
-          content
-        );
+        return replaced;
       }
     }
 
@@ -609,30 +623,27 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     public bool TryDeleteResource(string resourceId) {
       lock (_SyncRoot) {
-        int registrationOrder;
+        MountedRepository mountedRepository;
         string childResourceId;
 
-        if (!this.TryParseAggregatedResourceId(
+        if (!this.TryResolveAggregatedResourceId(
               resourceId,
-              out registrationOrder,
+              out mountedRepository,
               out childResourceId
             )) {
           return false;
         }
 
-        MountedRepository mountedRepository =
-          _Repositories.FirstOrDefault(
-            (MountedRepository candidate) =>
-              candidate.RegistrationOrder == registrationOrder
+        bool deleted =
+          mountedRepository.Repository.TryDeleteResource(
+            childResourceId
           );
 
-        if (mountedRepository == null) {
-          return false;
+        if (deleted) {
+          this.InvalidateTreeCache();
         }
 
-        return mountedRepository.Repository.TryDeleteResource(
-          childResourceId
-        );
+        return deleted;
       }
     }
 
@@ -672,22 +683,41 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// </summary>
     public string GetDirectContent(string area) {
       lock (_SyncRoot) {
-        AggregatedNode node = this.RequireNode(area);
+        AggregatedNode node = this.RequireNode(
+          area
+        );
+
         List<string> blocks = new List<string>();
 
         foreach (AreaContribution contribution in node.Contributions) {
-          string content = contribution.MountedRepository.Repository.GetDirectContent(
-            contribution.LocalArea
-          );
+          string providerContent =
+            contribution.MountedRepository.Repository.GetDirectContent(
+              contribution.LocalArea
+            );
 
-          if (!string.IsNullOrWhiteSpace(content)) {
-            blocks.Add(content.Trim('\r', '\n'));
+          string aggregatedContent =
+            this.TranslateProviderContentToAggregated(
+              contribution,
+              providerContent
+            );
+
+          if (!string.IsNullOrWhiteSpace(aggregatedContent)) {
+            blocks.Add(
+              aggregatedContent.Trim(
+                '\r',
+                '\n'
+              )
+            );
           }
         }
 
-        return string.Join(Environment.NewLine + Environment.NewLine, blocks);
+        return string.Join(
+          Environment.NewLine + Environment.NewLine,
+          blocks
+        );
       }
     }
+
 
     /// <summary>
     /// Returns the complete aggregated textual view rooted at the specified global area.
@@ -751,9 +781,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contribution.MountedRepository.Repository.TryDelete(
-          contribution.LocalArea
-        );
+        bool deleted =
+          contribution.MountedRepository.Repository.TryDelete(
+            contribution.LocalArea
+          );
+
+        if (deleted) {
+          this.InvalidateTreeCache();
+        }
+
+        return deleted;
       }
     }
 
@@ -799,10 +836,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
 
         resourceIdChanges = this.WrapResourceIdChanges(
-          contribution.MountedRepository.RegistrationOrder,
+          contribution.MountedRepository,
           childChanges
         );
 
+        this.InvalidateTreeCache();
         return true;
       }
     }
@@ -831,11 +869,18 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contribution.MountedRepository.Repository.TryAddSubArea(
-          contribution.LocalArea,
-          name,
-          kind
-        );
+        bool added =
+          contribution.MountedRepository.Repository.TryAddSubArea(
+            contribution.LocalArea,
+            name,
+            kind
+          );
+
+        if (added) {
+          this.InvalidateTreeCache();
+        }
+
+        return added;
       }
     }
 
@@ -859,10 +904,23 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contribution.MountedRepository.Repository.TryAppendContent(
-          contribution.LocalArea,
-          content
-        );
+        string providerContent =
+          this.TranslateAggregatedContentToProvider(
+            contribution,
+            content
+          );
+
+        bool appended =
+          contribution.MountedRepository.Repository.TryAppendContent(
+            contribution.LocalArea,
+            providerContent
+          );
+
+        if (appended) {
+          this.InvalidateTreeCache();
+        }
+
+        return appended;
       }
     }
 
@@ -882,9 +940,16 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contribution.MountedRepository.Repository.TryTruncate(
-          contribution.LocalArea
-        );
+        bool truncated =
+          contribution.MountedRepository.Repository.TryTruncate(
+            contribution.LocalArea
+          );
+
+        if (truncated) {
+          this.InvalidateTreeCache();
+        }
+
+        return truncated;
       }
     }
 
@@ -931,10 +996,23 @@ namespace AI.SmartStandards.KnowledgeAccess {
           return false;
         }
 
-        return contribution.MountedRepository.Repository.TryReplace(
-          contribution.LocalArea,
-          newContent
-        );
+        string providerContent =
+          this.TranslateAggregatedContentToProvider(
+            contribution,
+            newContent
+          );
+
+        bool replaced =
+          contribution.MountedRepository.Repository.TryReplace(
+            contribution.LocalArea,
+            providerContent
+          );
+
+        if (replaced) {
+          this.InvalidateTreeCache();
+        }
+
+        return replaced;
       }
     }
 
@@ -999,14 +1077,130 @@ namespace AI.SmartStandards.KnowledgeAccess {
         }
 
         resourceIdChanges = this.WrapResourceIdChanges(
-          contentContribution.MountedRepository.RegistrationOrder,
+          contentContribution.MountedRepository,
           childChanges
         );
 
+        this.InvalidateTreeCache();
         return true;
       }
     }
 
+
+    /// <summary>
+    /// Translates provider-local canonical resource references into aggregator-owned opaque
+    /// resource identifiers before textual content leaves this repository.
+    ///
+    /// This translation is mandatory because <see cref="GetResources(string)"/> exposes
+    /// aggregate-level ResourceIds rather than child-provider ResourceIds. Content and
+    /// resource metadata must therefore always use the same identifier namespace.
+    /// </summary>
+    private string TranslateProviderContentToAggregated(
+      AreaContribution contribution,
+      string providerContent
+    ) {
+      if (string.IsNullOrEmpty(providerContent)) {
+        return providerContent;
+      }
+
+      MatchCollection matches = _KnowledgeResourceReferenceRegex.Matches(
+        providerContent
+      );
+
+      if (matches.Count == 0) {
+        return providerContent;
+      }
+
+      IKnowledgeRepository repository =
+        contribution.MountedRepository.Repository;
+
+      if (!this.RepositorySupportsResources(
+            repository,
+            contribution.LocalArea
+          )) {
+        return providerContent;
+      }
+
+      KnowledgeResourceInfo[] resources = repository.GetResources(
+        contribution.LocalArea
+      );
+
+      Dictionary<string, string> mappings =
+        new Dictionary<string, string>(
+          StringComparer.Ordinal
+        );
+
+      foreach (KnowledgeResourceInfo resource in resources) {
+        if (string.IsNullOrWhiteSpace(resource.ResourceId)) {
+          continue;
+        }
+
+        mappings[resource.ResourceId] =
+          this.CreateAggregatedResourceId(
+            contribution.MountedRepository,
+            resource.ResourceId
+          );
+      }
+
+      return _KnowledgeResourceReferenceRegex.Replace(
+        providerContent,
+        (Match match) => {
+          string childResourceId = match.Groups["id"].Value;
+
+          if (!mappings.ContainsKey(childResourceId)) {
+            return match.Value;
+          }
+
+          return _KnowledgeResourceReferencePrefix
+            + mappings[childResourceId];
+        }
+      );
+    }
+
+    /// <summary>
+    /// Translates aggregator-owned canonical resource references back into the child
+    /// provider's opaque ResourceId namespace before a mutation is delegated.
+    ///
+    /// Resource identifiers belonging to another mounted repository are rejected by
+    /// leaving the reference unchanged. The child provider will consequently reject the
+    /// mutation rather than accidentally receiving a foreign resource identity.
+    /// </summary>
+    private string TranslateAggregatedContentToProvider(
+      AreaContribution contribution,
+      string aggregatedContent
+    ) {
+      if (string.IsNullOrEmpty(aggregatedContent)) {
+        return aggregatedContent;
+      }
+
+      return _KnowledgeResourceReferenceRegex.Replace(
+        aggregatedContent,
+        (Match match) => {
+          string aggregatedResourceId = match.Groups["id"].Value;
+
+          MountedRepository mountedRepository;
+          string childResourceId;
+
+          if (!this.TryResolveAggregatedResourceId(
+                aggregatedResourceId,
+                out mountedRepository,
+                out childResourceId
+              )) {
+            return match.Value;
+          }
+
+          if (!object.ReferenceEquals(
+                mountedRepository,
+                contribution.MountedRepository
+              )) {
+            return match.Value;
+          }
+
+          return _KnowledgeResourceReferencePrefix
+            + childResourceId;
+        }
+      );
+    }
 
     /// <summary>
     /// Creates a detached resource metadata copy for the aggregated read model.
@@ -1024,66 +1218,161 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Creates one opaque aggregator-owned resource identifier.
+    ///
+    /// The external identifier contains two separately Base64Url-encoded components:
+    /// a mount-instance namespace and the child provider's opaque resource identifier.
+    /// Consumers MUST treat the complete value as opaque.
     /// </summary>
     private string CreateAggregatedResourceId(
-      int registrationOrder,
+      MountedRepository mountedRepository,
       string childResourceId
     ) {
-      string nativeIdentity =
-        registrationOrder.ToString(CultureInfo.InvariantCulture)
-        + "|"
-        + childResourceId;
+      if (mountedRepository == null) {
+        throw new ArgumentNullException(
+          nameof(mountedRepository)
+        );
+      }
 
-      string encoded = Convert.ToBase64String(
-        Encoding.UTF8.GetBytes(nativeIdentity)
-      ).TrimEnd('=')
-        .Replace('+', '-')
-        .Replace('/', '_');
+      if (string.IsNullOrWhiteSpace(childResourceId)) {
+        throw new ArgumentException(
+          "A child resource identifier is required.",
+          nameof(childResourceId)
+        );
+      }
 
-      return "1." + encoded;
+      string providerToken = mountedRepository.ResourceNamespaceToken;
+
+      string childToken = this.EncodeBase64Url(
+        childResourceId
+      );
+
+      return "2."
+        + providerToken
+        + "."
+        + childToken;
     }
 
     /// <summary>
-    /// Resolves one aggregator-owned resource identifier.
+    /// Resolves one aggregator-owned resource identifier to the exact mounted repository
+    /// instance and the original opaque child provider resource identifier.
+    ///
+    /// Version 2 uses mount-point plus mount-local ordinal as the provider namespace.
+    /// Version 1 remains readable for compatibility with projection state created by an
+    /// earlier aggregator implementation that used global registration order.
     /// </summary>
-    private bool TryParseAggregatedResourceId(
+    private bool TryResolveAggregatedResourceId(
       string resourceId,
-      out int registrationOrder,
+      out MountedRepository mountedRepository,
       out string childResourceId
     ) {
-      registrationOrder = 0;
+      mountedRepository = null;
       childResourceId = string.Empty;
 
-      if (string.IsNullOrWhiteSpace(resourceId) ||
-          !resourceId.StartsWith("1.", StringComparison.Ordinal)) {
+      if (string.IsNullOrWhiteSpace(resourceId)) {
         return false;
       }
 
-      string encoded = resourceId.Substring(2)
-        .Replace('-', '+')
-        .Replace('_', '/');
-
-      int remainder = encoded.Length % 4;
-
-      if (remainder == 2) {
-        encoded += "==";
-      }
-      else if (remainder == 3) {
-        encoded += "=";
-      }
-      else if (remainder == 1) {
-        return false;
-      }
-
-      string nativeIdentity;
-
-      try {
-        nativeIdentity = Encoding.UTF8.GetString(
-          Convert.FromBase64String(encoded)
+      if (resourceId.StartsWith(
+            "2.",
+            StringComparison.Ordinal
+          )) {
+        return this.TryResolveVersion2AggregatedResourceId(
+          resourceId,
+          out mountedRepository,
+          out childResourceId
         );
       }
-      catch (FormatException ex) {
-        DevLogger.LogError(ex);
+
+      if (resourceId.StartsWith(
+            "1.",
+            StringComparison.Ordinal
+          )) {
+        return this.TryResolveLegacyVersion1AggregatedResourceId(
+          resourceId,
+          out mountedRepository,
+          out childResourceId
+        );
+      }
+
+      return false;
+    }
+
+    /// <summary>
+    /// Resolves a version-2 aggregate resource identifier.
+    /// </summary>
+    private bool TryResolveVersion2AggregatedResourceId(
+      string resourceId,
+      out MountedRepository mountedRepository,
+      out string childResourceId
+    ) {
+      mountedRepository = null;
+      childResourceId = string.Empty;
+
+      string[] parts = resourceId.Split(
+        '.',
+        StringSplitOptions.None
+      );
+
+      if (parts.Length != 3 ||
+          !string.Equals(
+            parts[0],
+            "2",
+            StringComparison.Ordinal
+          ) ||
+          string.IsNullOrWhiteSpace(parts[1]) ||
+          string.IsNullOrWhiteSpace(parts[2])) {
+        return false;
+      }
+
+      string decodedChildResourceId;
+
+      if (!this.TryDecodeBase64Url(
+            parts[2],
+            out decodedChildResourceId
+          )) {
+        return false;
+      }
+
+      MountedRepository provider =
+        _Repositories.FirstOrDefault(
+          (MountedRepository candidate) => string.Equals(
+            candidate.ResourceNamespaceToken,
+            parts[1],
+            StringComparison.Ordinal
+          )
+        );
+
+      if (provider == null) {
+        return false;
+      }
+
+      mountedRepository = provider;
+      childResourceId = decodedChildResourceId;
+      return true;
+    }
+
+    /// <summary>
+    /// Resolves the previous version-1 aggregate resource identifier that encoded global
+    /// registration order and child ResourceId into one Base64Url payload.
+    ///
+    /// This compatibility path is intentionally read-only. Newly exposed identifiers always
+    /// use the version-2 mount-instance namespace format.
+    /// </summary>
+    private bool TryResolveLegacyVersion1AggregatedResourceId(
+      string resourceId,
+      out MountedRepository mountedRepository,
+      out string childResourceId
+    ) {
+      mountedRepository = null;
+      childResourceId = string.Empty;
+
+      string encoded = resourceId.Substring(2);
+      string nativeIdentity;
+
+      if (!this.TryDecodeBase64Url(
+            encoded,
+            out nativeIdentity
+          )) {
         return false;
       }
 
@@ -1096,8 +1385,13 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return false;
       }
 
+      int registrationOrder;
+
       if (!int.TryParse(
-            nativeIdentity.Substring(0, separatorIndex),
+            nativeIdentity.Substring(
+              0,
+              separatorIndex
+            ),
             NumberStyles.None,
             CultureInfo.InvariantCulture,
             out registrationOrder
@@ -1105,12 +1399,87 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return false;
       }
 
+      MountedRepository provider =
+        _Repositories.FirstOrDefault(
+          (MountedRepository candidate) =>
+            candidate.RegistrationOrder == registrationOrder
+        );
+
+      if (provider == null) {
+        return false;
+      }
+
+      mountedRepository = provider;
       childResourceId = nativeIdentity.Substring(
         separatorIndex + 1
       );
 
-      return !string.IsNullOrEmpty(
+      return !string.IsNullOrWhiteSpace(
         childResourceId
+      );
+    }
+
+    /// <summary>
+    /// Encodes one UTF-8 string using unpadded Base64Url.
+    /// </summary>
+    private string EncodeBase64Url(string value) {
+      string encoded = Convert.ToBase64String(
+        Encoding.UTF8.GetBytes(value)
+      );
+
+      return encoded
+        .TrimEnd('=')
+        .Replace('+', '-')
+        .Replace('/', '_');
+    }
+
+    /// <summary>
+    /// Decodes one unpadded Base64Url UTF-8 string.
+    /// </summary>
+    private bool TryDecodeBase64Url(
+      string encoded,
+      out string value
+    ) {
+      value = string.Empty;
+
+      if (string.IsNullOrWhiteSpace(encoded)) {
+        return false;
+      }
+
+      string normalized = encoded
+        .Replace('-', '+')
+        .Replace('_', '/');
+
+      int remainder = normalized.Length % 4;
+
+      if (remainder == 2) {
+        normalized += "==";
+      }
+      else if (remainder == 3) {
+        normalized += "=";
+      }
+      else if (remainder == 1) {
+        return false;
+      }
+
+      byte[] bytes;
+
+      try {
+        bytes = Convert.FromBase64String(
+          normalized
+        );
+      }
+      catch (FormatException ex) {
+        DevLogger.LogError(ex);
+        return false;
+      }
+
+      value = Encoding.UTF8.GetString(
+        bytes
+      );
+
+      return !string.IsNullOrEmpty(
+        value
       );
     }
 
@@ -1118,7 +1487,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// Wraps child-provider resource identifier changes in aggregate-level opaque IDs.
     /// </summary>
     private KnowledgeResourceIdChange[] WrapResourceIdChanges(
-      int registrationOrder,
+      MountedRepository mountedRepository,
       KnowledgeResourceIdChange[] childChanges
     ) {
       if (childChanges == null ||
@@ -1134,12 +1503,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
           new KnowledgeResourceIdChange();
 
         change.PreviousResourceId = this.CreateAggregatedResourceId(
-          registrationOrder,
+          mountedRepository,
           childChanges[index].PreviousResourceId
         );
 
         change.CurrentResourceId = this.CreateAggregatedResourceId(
-          registrationOrder,
+          mountedRepository,
           childChanges[index].CurrentResourceId
         );
 
@@ -1150,13 +1519,45 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Builds the complete current global overlay tree from all mounted repositories.
-    /// 
-    /// No long-lived cache is used intentionally. Mounted repositories may represent
-    /// remote or virtual knowledge that changes independently, so every public read sees
-    /// a fresh logical projection of the current provider states.
+    /// Returns one structurally consistent aggregate-tree snapshot for a contiguous burst
+    /// of read operations.
+    ///
+    /// Higher-level consumers such as the Joplin projection perform many logically related
+    /// repository reads in immediate succession. Rebuilding the complete overlay tree for
+    /// every GetAreaName, capability, content and resource call would recursively enumerate
+    /// every mounted provider again and can repeatedly trigger remote Git refreshes.
+    ///
+    /// The cache is deliberately a short sliding read-burst cache rather than long-lived
+    /// repository state. After a short idle period the next read rebuilds the tree and
+    /// therefore observes independently changed providers. Mutations routed through this
+    /// aggregator invalidate the snapshot immediately.
     /// </summary>
     private AggregatedTree BuildTree() {
+      DateTime now = DateTime.UtcNow;
+
+      if (_CachedTree != null &&
+          now - _CachedTreeLastAccessUtc <= _TreeReadBurstWindow) {
+        _CachedTreeLastAccessUtc = now;
+        return _CachedTree;
+      }
+
+      AggregatedTree tree = this.BuildTreeCore();
+
+      _CachedTree = tree;
+      _CachedTreeLastAccessUtc = DateTime.UtcNow;
+
+      return tree;
+    }
+
+    /// <summary>
+    /// Invalidates the current aggregate-tree snapshot.
+    /// </summary>
+    private void InvalidateTreeCache() {
+      _CachedTree = null;
+      _CachedTreeLastAccessUtc = DateTime.MinValue;
+    }
+
+    private AggregatedTree BuildTreeCore() {
       AggregatedTree tree = new AggregatedTree();
 
       foreach (MountedRepository mountedRepository in _Repositories) {
@@ -1434,16 +1835,27 @@ namespace AI.SmartStandards.KnowledgeAccess {
           continue;
         }
 
-        string aggregatedContent =
+        string providerContent =
           contribution.MountedRepository.Repository.GetAggregatedContent(
             contribution.LocalArea
+          );
+
+        string aggregatedContent =
+          this.TranslateProviderContentToAggregated(
+            contribution,
+            providerContent
           );
 
         if (string.IsNullOrWhiteSpace(aggregatedContent)) {
           continue;
         }
 
-        builder.Append(aggregatedContent.Trim('\r', '\n'));
+        builder.Append(
+          aggregatedContent.Trim(
+            '\r',
+            '\n'
+          )
+        );
         builder.Append(Environment.NewLine);
         builder.Append(Environment.NewLine);
       }
@@ -1708,7 +2120,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       private readonly IKnowledgeRepository _Repository;
       private readonly string _MountPoint;
+      private readonly int _MountPointOrdinal;
       private readonly int _RegistrationOrder;
+      private readonly string _ResourceNamespaceToken;
 
       /// <summary>
       /// Creates one repository mount registration.
@@ -1716,11 +2130,17 @@ namespace AI.SmartStandards.KnowledgeAccess {
       public MountedRepository(
         IKnowledgeRepository repository,
         string mountPoint,
+        int mountPointOrdinal,
         int registrationOrder
       ) {
         _Repository = repository;
         _MountPoint = mountPoint;
+        _MountPointOrdinal = mountPointOrdinal;
         _RegistrationOrder = registrationOrder;
+        _ResourceNamespaceToken = this.CreateResourceNamespaceToken(
+          mountPoint,
+          mountPointOrdinal
+        );
       }
 
       /// <summary>
@@ -1742,12 +2162,57 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       /// <summary>
-      /// Gets the stable registration order.
+      /// Gets the zero-based provider ordinal within this exact mount point.
+      /// </summary>
+      public int MountPointOrdinal {
+        get {
+          return _MountPointOrdinal;
+        }
+      }
+
+      /// <summary>
+      /// Gets the global registration order used exclusively for deterministic aggregate
+      /// ordering and legacy resource-ID compatibility.
       /// </summary>
       public int RegistrationOrder {
         get {
           return _RegistrationOrder;
         }
+      }
+
+      /// <summary>
+      /// Gets the opaque resource namespace token for this mounted provider instance.
+      /// </summary>
+      public string ResourceNamespaceToken {
+        get {
+          return _ResourceNamespaceToken;
+        }
+      }
+
+      /// <summary>
+      /// Creates the stable mount-instance namespace token used by aggregate ResourceIds.
+      /// </summary>
+      private string CreateResourceNamespaceToken(
+        string mountPoint,
+        int mountPointOrdinal
+      ) {
+        string nativeIdentity =
+          mountPoint
+          + "|"
+          + mountPointOrdinal.ToString(
+            CultureInfo.InvariantCulture
+          );
+
+        string encoded = Convert.ToBase64String(
+          Encoding.UTF8.GetBytes(
+            nativeIdentity
+          )
+        );
+
+        return encoded
+          .TrimEnd('=')
+          .Replace('+', '-')
+          .Replace('/', '_');
       }
     }
 

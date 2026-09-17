@@ -204,29 +204,65 @@ namespace AI.SmartStandards.KnowledgeAccess {
       this.TraceWebDavRequest();
 
       lock (_SyncRoot) {
-        JoplinProjection projection = this.BuildProjection();
+        JoplinProjection projection = null;
+        JoplinWebDavEntry entry;
 
-        JoplinWebDavEntry entry = this.ResolveWebDavEntry(
-          path,
-          projection
-        );
+        if (!string.Equals(
+              path,
+              "/",
+              StringComparison.Ordinal
+            ) &&
+            this.TryResolveStateStoreEntry(
+              path,
+              out entry
+            )) {
+          // Opaque Joplin sync-state paths are completely independent of the dynamic
+          // Knowledge projection and can therefore be served directly.
+        }
+        else {
+          projection = this.BuildProjection();
+
+          entry = this.ResolveWebDavEntry(
+            path,
+            projection
+          );
+        }
 
         if (entry == null) {
           return this.NotFound();
         }
 
-        List<JoplinWebDavEntry> entries = new List<JoplinWebDavEntry>();
-        entries.Add(entry);
+        List<JoplinWebDavEntry> entries =
+          new List<JoplinWebDavEntry>();
+
+        entries.Add(
+          entry
+        );
 
         string depth = this.Request.Headers["Depth"].ToString();
 
-        if (!string.Equals(depth, "0", StringComparison.Ordinal)) {
-          JoplinWebDavEntry[] children = this.GetWebDavChildren(
-            path,
-            projection
-          );
+        if (!string.Equals(
+              depth,
+              "0",
+              StringComparison.Ordinal
+            )) {
+          JoplinWebDavEntry[] children;
 
-          entries.AddRange(children);
+          if (projection == null) {
+            children = this.GetStateStoreChildren(
+              path
+            );
+          }
+          else {
+            children = this.GetWebDavChildren(
+              path,
+              projection
+            );
+          }
+
+          entries.AddRange(
+            children
+          );
         }
 
         XNamespace dav = "DAV:";
@@ -312,15 +348,47 @@ namespace AI.SmartStandards.KnowledgeAccess {
       this.TraceWebDavRequest();
 
       lock (_SyncRoot) {
+        JoplinWebDavEntry stateEntry;
+
+        if (this.TryResolveStateStoreEntry(
+              path,
+              out stateEntry
+            )) {
+          if (stateEntry.IsCollection) {
+            return this.StatusCode(
+              StatusCodes.Status405MethodNotAllowed
+            );
+          }
+
+          byte[] stateContent = _SyncStateStore.ReadFile(
+            stateEntry.Path
+          );
+
+          this.ApplyFileHeaders(
+            stateEntry
+          );
+
+          return this.File(
+            stateContent,
+            "application/octet-stream"
+          );
+        }
+
         JoplinProjection projection = this.BuildProjection();
-        JoplinWebDavEntry entry = this.ResolveWebDavEntry(path, projection);
+
+        JoplinWebDavEntry entry = this.ResolveWebDavEntry(
+          path,
+          projection
+        );
 
         if (entry == null) {
           return this.NotFound();
         }
 
         if (entry.IsCollection) {
-          return this.StatusCode(StatusCodes.Status405MethodNotAllowed);
+          return this.StatusCode(
+            StatusCodes.Status405MethodNotAllowed
+          );
         }
 
         byte[] content = this.GetWebDavFileContent(
@@ -328,7 +396,9 @@ namespace AI.SmartStandards.KnowledgeAccess {
           projection
         );
 
-        this.ApplyFileHeaders(entry);
+        this.ApplyFileHeaders(
+          entry
+        );
 
         return this.File(
           content,
@@ -344,14 +414,34 @@ namespace AI.SmartStandards.KnowledgeAccess {
       this.TraceWebDavRequest();
 
       lock (_SyncRoot) {
+        JoplinWebDavEntry stateEntry;
+
+        if (this.TryResolveStateStoreEntry(
+              path,
+              out stateEntry
+            )) {
+          this.ApplyFileHeaders(
+            stateEntry
+          );
+
+          return this.Ok();
+        }
+
         JoplinProjection projection = this.BuildProjection();
-        JoplinWebDavEntry entry = this.ResolveWebDavEntry(path, projection);
+
+        JoplinWebDavEntry entry = this.ResolveWebDavEntry(
+          path,
+          projection
+        );
 
         if (entry == null) {
           return this.NotFound();
         }
 
-        this.ApplyFileHeaders(entry);
+        this.ApplyFileHeaders(
+          entry
+        );
+
         return this.Ok();
       }
     }
@@ -2969,32 +3059,14 @@ namespace AI.SmartStandards.KnowledgeAccess {
         return root;
       }
 
-      // A raw root item in the state store represents an accepted Joplin item that has
-      // not yet been materialized successfully. It must take precedence over the dynamic
-      // projection so Joplin can immediately read back exactly what it uploaded.
-      JoplinSyncStateEntry stateEntry = _SyncStateStore.GetEntry(path);
+      // A raw state-store item represents Joplin protocol/projection state and always
+      // takes precedence over the dynamic Knowledge projection.
+      JoplinWebDavEntry stateBackedEntry;
 
-      if (stateEntry != null) {
-        JoplinWebDavEntry stateBackedEntry = new JoplinWebDavEntry();
-        stateBackedEntry.Path = stateEntry.Path;
-        stateBackedEntry.DisplayName = this.GetWebDavDisplayName(stateEntry.Path);
-        stateBackedEntry.IsCollection = stateEntry.IsCollection;
-        stateBackedEntry.Length = stateEntry.Length;
-        stateBackedEntry.LastModifiedUtc = stateEntry.LastModifiedUtc;
-        stateBackedEntry.SourceKind = JoplinWebDavSourceKind.StateStore;
-
-        if (stateEntry.IsCollection) {
-          stateBackedEntry.ETag = this.ComputeHash(
-            stateEntry.Path
-            + ":"
-            + stateEntry.LastModifiedUtc.Ticks.ToString(CultureInfo.InvariantCulture)
-          );
-        }
-        else {
-          byte[] stateBytes = _SyncStateStore.ReadFile(path);
-          stateBackedEntry.ETag = this.ComputeHash(stateBytes);
-        }
-
+      if (this.TryResolveStateStoreEntry(
+            path,
+            out stateBackedEntry
+          )) {
         return stateBackedEntry;
       }
 
@@ -3024,6 +3096,98 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
     /// <summary>
     /// Returns direct WebDAV children for a collection.
+    /// </summary>
+    /// <summary>
+    /// Resolves one exact Joplin sync-state path without building or consulting the dynamic
+    /// Knowledge projection.
+    ///
+    /// This fast path is essential for protocol files such as <c>/info.json</c>, lock files,
+    /// temporary files and resource blobs. Reading those files must never trigger Git fetches,
+    /// repository enumeration or projection-state mutation.
+    /// </summary>
+    private bool TryResolveStateStoreEntry(
+      string path,
+      out JoplinWebDavEntry entry
+    ) {
+      entry = null;
+
+      JoplinSyncStateEntry stateEntry =
+        _SyncStateStore.GetEntry(
+          path
+        );
+
+      if (stateEntry == null) {
+        return false;
+      }
+
+      JoplinWebDavEntry resolvedEntry =
+        new JoplinWebDavEntry();
+
+      resolvedEntry.Path = stateEntry.Path;
+      resolvedEntry.DisplayName = this.GetWebDavDisplayName(
+        stateEntry.Path
+      );
+      resolvedEntry.IsCollection = stateEntry.IsCollection;
+      resolvedEntry.Length = stateEntry.Length;
+      resolvedEntry.LastModifiedUtc = stateEntry.LastModifiedUtc;
+      resolvedEntry.SourceKind = JoplinWebDavSourceKind.StateStore;
+
+      if (stateEntry.IsCollection) {
+        resolvedEntry.ETag = this.ComputeHash(
+          stateEntry.Path
+          + ":"
+          + stateEntry.LastModifiedUtc.Ticks.ToString(
+            CultureInfo.InvariantCulture
+          )
+        );
+      }
+      else {
+        byte[] stateBytes = _SyncStateStore.ReadFile(
+          path
+        );
+
+        resolvedEntry.ETag = this.ComputeHash(
+          stateBytes
+        );
+      }
+
+      entry = resolvedEntry;
+      return true;
+    }
+
+    /// <summary>
+    /// Returns direct children of one opaque Joplin sync-state collection without building
+    /// the dynamic Knowledge projection.
+    /// </summary>
+    private JoplinWebDavEntry[] GetStateStoreChildren(
+      string path
+    ) {
+      JoplinSyncStateEntry[] stateChildren =
+        _SyncStateStore.GetChildren(
+          path
+        );
+
+      List<JoplinWebDavEntry> children =
+        new List<JoplinWebDavEntry>();
+
+      foreach (JoplinSyncStateEntry stateChild in stateChildren) {
+        JoplinWebDavEntry child;
+
+        if (this.TryResolveStateStoreEntry(
+              stateChild.Path,
+              out child
+            )) {
+          children.Add(
+            child
+          );
+        }
+      }
+
+      return children.ToArray();
+    }
+
+    /// <summary>
+    /// Returns direct WebDAV children for one projected or state-backed path.
     /// </summary>
     private JoplinWebDavEntry[] GetWebDavChildren(
       string path,

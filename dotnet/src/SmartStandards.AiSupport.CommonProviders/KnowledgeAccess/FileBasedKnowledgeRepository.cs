@@ -1613,9 +1613,12 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
-    /// Ensures that a resolved resource path cannot escape the configured repository root.
+    /// Returns whether one physical path is located below the configured repository root.
+    ///
+    /// This method performs no exception-based control flow and is therefore suitable for
+    /// read-time Markdown path probing where an external editor path is an expected input.
     /// </summary>
-    private void EnsurePathInsideRepository(string physicalPath) {
+    private bool IsPathInsideRepository(string physicalPath) {
       string root = Path.GetFullPath(
         _RootDirectory
       ).TrimEnd(
@@ -1632,21 +1635,112 @@ namespace AI.SmartStandards.KnowledgeAccess {
             root,
             StringComparison.OrdinalIgnoreCase
           )) {
-        throw new InvalidOperationException(
-          "A knowledge resource must be represented by a file below the repository root."
-        );
+        return false;
       }
 
       string prefix = root + Path.DirectorySeparatorChar;
 
-      if (!candidate.StartsWith(
-            prefix,
-            StringComparison.OrdinalIgnoreCase
+      return candidate.StartsWith(
+        prefix,
+        StringComparison.OrdinalIgnoreCase
+      );
+    }
+
+    /// <summary>
+    /// Ensures that a resolved provider-owned resource path cannot escape the configured
+    /// repository root.
+    ///
+    /// Unlike read-time Markdown probing, decoding an opaque FileBased ResourceId is a
+    /// strict provider operation. An identifier resolving outside the repository therefore
+    /// remains an exceptional contract violation.
+    /// </summary>
+    private void EnsurePathInsideRepository(string physicalPath) {
+      if (!this.IsPathInsideRepository(
+            physicalPath
           )) {
         throw new InvalidOperationException(
           "The resource identifier resolves outside the configured repository root."
         );
       }
+    }
+
+    /// <summary>
+    /// Attempts to rebase an absolute editor-generated path from another checkout or
+    /// workstation onto the current repository root.
+    ///
+    /// Path suffixes are tested from longest to shortest. The first suffix that resolves
+    /// to an existing file below the current repository root is accepted.
+    ///
+    /// No physical file is changed. The resulting ResourceId is still derived exclusively
+    /// from the current repository-relative path.
+    /// </summary>
+    private bool TryRebaseExternalAbsoluteResourcePath(
+      string externalPhysicalPath,
+      out string rebasedPhysicalPath
+    ) {
+      rebasedPhysicalPath = string.Empty;
+
+      string normalizedExternalPath = externalPhysicalPath
+        .Replace(
+          Path.AltDirectorySeparatorChar,
+          Path.DirectorySeparatorChar
+        );
+
+      string rootPath = Path.GetPathRoot(
+        normalizedExternalPath
+      );
+
+      string pathWithoutRoot = normalizedExternalPath;
+
+      if (!string.IsNullOrEmpty(rootPath) &&
+          pathWithoutRoot.StartsWith(
+            rootPath,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        pathWithoutRoot = pathWithoutRoot.Substring(
+          rootPath.Length
+        );
+      }
+
+      string[] segments = pathWithoutRoot.Split(
+        Path.DirectorySeparatorChar,
+        StringSplitOptions.RemoveEmptyEntries
+      );
+
+      if (segments.Length == 0) {
+        return false;
+      }
+
+      for (int startIndex = 0;
+           startIndex < segments.Length;
+           startIndex++) {
+
+        string relativeCandidate = Path.Combine(
+          segments.Skip(startIndex).ToArray()
+        );
+
+        string candidate = Path.GetFullPath(
+          Path.Combine(
+            _RootDirectory,
+            relativeCandidate
+          )
+        );
+
+        if (!this.IsPathInsideRepository(
+              candidate
+            )) {
+          continue;
+        }
+
+        if (!File.Exists(candidate)) {
+          continue;
+        }
+
+        rebasedPhysicalPath = candidate;
+        return true;
+      }
+
+      return false;
     }
 
     /// <summary>
@@ -1897,26 +1991,33 @@ namespace AI.SmartStandards.KnowledgeAccess {
         physicalPath = Path.GetFullPath(
           physicalPath
         );
-
-        this.EnsurePathInsideRepository(
-          physicalPath
-        );
       }
-      catch (Exception ex) when (
-        ex is ArgumentException ||
-        ex is NotSupportedException ||
-        ex is PathTooLongException ||
-        ex is InvalidOperationException
-      ) {
-        if (ex is InvalidOperationException) {
-          // A path outside the repository is a normal negative resolution result and
-          // therefore deliberately not logged.
-        }
-        else {
-          DevLogger.LogError(ex);
+      catch (ArgumentException ex) {
+        DevLogger.LogError(ex);
+        return false;
+      }
+      catch (NotSupportedException ex) {
+        DevLogger.LogError(ex);
+        return false;
+      }
+      catch (PathTooLongException ex) {
+        DevLogger.LogError(ex);
+        return false;
+      }
+
+      if (!this.IsPathInsideRepository(
+            physicalPath
+          )) {
+        string rebasedPath;
+
+        if (!this.TryRebaseExternalAbsoluteResourcePath(
+              physicalPath,
+              out rebasedPath
+            )) {
+          return false;
         }
 
-        return false;
+        physicalPath = rebasedPath;
       }
 
       if (!File.Exists(physicalPath)) {

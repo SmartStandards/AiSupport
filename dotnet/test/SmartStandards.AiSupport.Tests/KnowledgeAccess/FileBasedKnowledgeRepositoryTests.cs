@@ -1068,5 +1068,118 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
       }
     }
 
+
+    /// <summary>
+    /// Verifies that an absolute editor path originating from another checkout is rebased
+    /// onto the current repository root by matching the longest existing path suffix.
+    ///
+    /// This is especially important for GitBased repositories because every provider
+    /// instance uses a temporary clone path while Markdown may contain an absolute path
+    /// written in the original developer checkout.
+    /// </summary>
+    [TestMethod]
+    public void GetAggregatedContent_AbsolutePathFromDifferentCheckout_RebasesToCurrentRepositoryResource() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        string imagesDirectory = Path.Combine(
+          context.KnowledgeDirectory,
+          "images"
+        );
+
+        Directory.CreateDirectory(
+          imagesDirectory
+        );
+
+        string markdownPath = Path.Combine(
+          context.KnowledgeDirectory,
+          "Article.md"
+        );
+
+        string imagePath = Path.Combine(
+          imagesDirectory,
+          "diagram.png"
+        );
+
+        File.WriteAllBytes(
+          imagePath,
+          new byte[] { 131, 132, 133 }
+        );
+
+        string foreignAbsolutePath;
+
+        if (OperatingSystem.IsWindows()) {
+          foreignAbsolutePath =
+            "C:\\AnotherCheckout\\SomeRepository\\doc\\images\\diagram.png";
+        }
+        else {
+          foreignAbsolutePath =
+            "/another-checkout/some-repository/doc/images/diagram.png";
+        }
+
+        string markdown =
+          "![Architecture]("
+          + foreignAbsolutePath.Replace(
+            '\\',
+            '/'
+          )
+          + ")";
+
+        File.WriteAllText(
+          markdownPath,
+          markdown
+        );
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        string articleArea = context.GetChildArea(
+          repository,
+          "/",
+          "Article"
+        );
+
+        string content = repository.GetAggregatedContent(
+          articleArea
+        );
+
+        Assert.IsTrue(
+          content.Contains(
+            "knowledge-resource:",
+            StringComparison.Ordinal
+          )
+        );
+
+        KnowledgeResourceInfo[] resources =
+          repository.GetResources(
+            articleArea
+          );
+
+        Assert.AreEqual(
+          1,
+          resources.Length
+        );
+
+        Assert.AreEqual(
+          "diagram.png",
+          resources[0].FileName
+        );
+
+        CollectionAssert.AreEqual(
+          new byte[] { 131, 132, 133 },
+          repository.GetResourceContent(
+            resources[0].ResourceId
+          )
+        );
+
+        Assert.AreEqual(
+          markdown,
+          File.ReadAllText(
+            markdownPath
+          )
+        );
+      }
+    }
+
   }
 }

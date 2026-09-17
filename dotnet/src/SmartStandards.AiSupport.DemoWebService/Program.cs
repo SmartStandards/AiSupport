@@ -46,9 +46,21 @@ namespace AI.SmartStandards.DemoWebService {
       );
 
 
-      services.AddSingleton<IKnowledgeRepository>(
-        new FileBasedKnowledgeRepository("C:\\Temp\\_OneNoteExport", false, true)
+
+      AggregatedKnowledgeRepository agg = new AggregatedKnowledgeRepository();
+      agg.Add(new FileBasedKnowledgeRepository("C:\\Temp\\_OneNoteExport", false, true));
+
+      agg.Add(
+        new GitBasedKnowledgeRepository(
+          "https://github.com/SmartStandards/FUSE-fx.RepositoryContract",
+          true, "","/doc/"
+        ),
+        "/FUSE-fx.RepositoryContract/"
       );
+
+      services.AddSingleton<IKnowledgeRepository>(agg);
+
+
 
       services.AddSingleton<IJoplinWebDavAuthenticationValidator>(
         new DelegateBasedJoplinWebDavAuthenticationValidator((userName, password, context) => {

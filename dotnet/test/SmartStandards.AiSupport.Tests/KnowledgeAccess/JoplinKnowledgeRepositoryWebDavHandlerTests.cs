@@ -1563,5 +1563,66 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
       }
     }
 
+
+    /// <summary>
+    /// Verifies that the Joplin sync-target metadata file is served byte-stably across
+    /// repeated reads. The handler serves this file directly from the sync-state store and
+    /// must not require a dynamic Knowledge projection.
+    /// </summary>
+    [TestMethod]
+    public void Get_InfoJson_RepeatedReadsRemainByteStable() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        JoplinKnowledgeRepositoryWebDavHandler handler =
+          context.CreateJoplinHandler(
+            repository
+          );
+
+        IActionResult firstResult = context.Get(
+          handler,
+          "info.json"
+        );
+
+        FileContentResult firstFileResult =
+          firstResult as FileContentResult;
+
+        Assert.IsNotNull(
+          firstFileResult
+        );
+
+        IActionResult secondResult = context.Get(
+          handler,
+          "info.json"
+        );
+
+        FileContentResult secondFileResult =
+          secondResult as FileContentResult;
+
+        Assert.IsNotNull(
+          secondFileResult
+        );
+
+        CollectionAssert.AreEqual(
+          firstFileResult.FileContents,
+          secondFileResult.FileContents
+        );
+
+        string content = Encoding.UTF8.GetString(
+          firstFileResult.FileContents
+        );
+
+        Assert.IsTrue(
+          content.Contains(
+            "\"version\"",
+            StringComparison.OrdinalIgnoreCase
+          )
+        );
+      }
+    }
+
   }
 }

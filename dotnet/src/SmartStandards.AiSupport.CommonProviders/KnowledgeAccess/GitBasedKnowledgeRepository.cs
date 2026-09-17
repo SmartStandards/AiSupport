@@ -15,7 +15,8 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// 
   /// The provider creates an isolated GUID-based working session below the system
   /// temporary directory and clones the remote repository into that session. The
-  /// logical knowledge root is the repository's `/doc` directory.
+  /// logical knowledge root is configurable through <c>knowledgeRoot</c> and defaults
+  /// to the cloned repository root.
   /// 
   /// No global Git configuration, credential helper, user profile file or operating
   /// system Git configuration is modified.
@@ -34,7 +35,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// It never performs an automatic textual Git merge and never force-pushes.
   /// 
   /// The inherited knowledge semantics remain provider-neutral. In particular, logical
-  /// moves are expressed only through <see cref="IKnowledgeRepository.TryMoveContent(string, string)"/>;
+  /// moves are expressed only through <see cref="IKnowledgeRepository.TryMoveContent(string, string, out KnowledgeResourceIdChange[])"/>;
   /// this provider merely persists the resulting filesystem/Markdown changes as Git
   /// changes and MUST NOT depend on any protocol or exposure mechanism used by consumers.
   /// 
@@ -44,7 +45,6 @@ namespace AI.SmartStandards.KnowledgeAccess {
   /// </summary>
   public class GitBasedKnowledgeRepository : FileBasedKnowledgeRepository, IDisposable {
 
-    private const string _DefaultKnowledgeDirectoryName = "doc";
     private const string _TemporaryRootDirectoryName = ".knowledge-repository-git";
     private const string _DefaultCommitAuthorName = "Knowledge Repository";
     private const string _DefaultCommitAuthorEmail = "knowledge-repository@localhost";
@@ -56,6 +56,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private readonly string _AccessToken;
     private readonly string _SessionDirectory;
     private readonly string _RepositoryDirectory;
+    private readonly string _KnowledgeRoot;
     private readonly Repository _Repository;
     private readonly string _BranchName;
     private readonly FileStream _SessionLock;
@@ -65,28 +66,29 @@ namespace AI.SmartStandards.KnowledgeAccess {
     /// <summary>
     /// Creates a Git-backed knowledge repository for a public remote repository that
     /// does not require explicit credentials.
+    ///
+    /// The complete cloned Git repository is exposed as the logical knowledge root.
     /// </summary>
     /// <param name="repositoryUrl">The HTTPS Git repository URL.</param>
     /// <param name="readOnly">Whether the knowledge repository is read-only.</param>
-    public GitBasedKnowledgeRepository(string repositoryUrl, bool readOnly)
-      : this(repositoryUrl, readOnly, string.Empty) {
+    public GitBasedKnowledgeRepository(
+      string repositoryUrl,
+      bool readOnly
+    ) : this(
+      repositoryUrl,
+      readOnly,
+      string.Empty,
+      "/"
+    ) {
     }
 
     /// <summary>
     /// Creates a Git-backed knowledge repository for the specified remote repository.
-    /// 
+    ///
+    /// The complete cloned Git repository is exposed as the logical knowledge root.
     /// The access token is kept only in process memory and supplied through LibGit2Sharp
     /// credential callbacks. It is not appended to the repository URL and is not written
     /// to Git configuration files.
-    /// 
-    /// The provider clones the repository into:
-    /// 
-    /// `Path.GetTempPath()/.knowledge-repository-git/&lt;GUID&gt;/repository`
-    /// 
-    /// and exposes the cloned repository's `/doc` directory as the logical knowledge
-    /// root. If `/doc` does not yet exist, it is created locally for writable instances.
-    /// A read-only instance exposes an empty local `/doc` scope when the remote repository
-    /// does not contain one.
     /// </summary>
     /// <param name="repositoryUrl">The HTTPS Git repository URL.</param>
     /// <param name="readOnly">Whether all knowledge mutations are disabled.</param>
@@ -98,9 +100,59 @@ namespace AI.SmartStandards.KnowledgeAccess {
       string repositoryUrl,
       bool readOnly,
       string accessToken
+    ) : this(
+      repositoryUrl,
+      readOnly,
+      accessToken,
+      "/"
+    ) {
+    }
+
+    /// <summary>
+    /// Creates a Git-backed knowledge repository for the specified remote repository and
+    /// exposes the configured repository-relative subdirectory as the logical knowledge root.
+    ///
+    /// Examples:
+    ///
+    /// <c>/</c> exposes the complete cloned repository.
+    /// <c>/docs/</c> exposes only the repository's <c>docs</c> directory.
+    /// <c>docs</c> is normalized identically to <c>/docs/</c>.
+    ///
+    /// The configured knowledge root is strictly repository-relative. Parent traversal and
+    /// paths that would escape the cloned repository are rejected.
+    ///
+    /// The access token is kept only in process memory and supplied through LibGit2Sharp
+    /// credential callbacks. It is not appended to the repository URL and is not written
+    /// to Git configuration files.
+    ///
+    /// The provider clones the repository into:
+    ///
+    /// <c>Path.GetTempPath()/.knowledge-repository-git/&lt;GUID&gt;/repository</c>
+    ///
+    /// and then initializes the inherited FileBased repository at the resolved knowledge
+    /// root below that clone.
+    /// </summary>
+    /// <param name="repositoryUrl">The HTTPS Git repository URL.</param>
+    /// <param name="readOnly">Whether all knowledge mutations are disabled.</param>
+    /// <param name="accessToken">
+    /// Optional GitHub or Azure DevOps personal access token. Pass an empty string for a
+    /// public repository that requires no credentials.
+    /// </param>
+    /// <param name="knowledgeRoot">
+    /// Repository-relative knowledge root. Use <c>/</c> for the complete repository or a
+    /// path such as <c>/docs/</c> to expose a deeper subtree.
+    /// </param>
+    public GitBasedKnowledgeRepository(
+      string repositoryUrl,
+      bool readOnly,
+      string accessToken,
+      string knowledgeRoot = "/"
     ) : base(readOnly) {
       if (string.IsNullOrWhiteSpace(repositoryUrl)) {
-        throw new ArgumentException("A Git repository URL is required.", nameof(repositoryUrl));
+        throw new ArgumentException(
+          "A Git repository URL is required.",
+          nameof(repositoryUrl)
+        );
       }
 
       _RepositoryUrl = repositoryUrl.Trim();
@@ -109,6 +161,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
       if (_AccessToken == null) {
         _AccessToken = string.Empty;
       }
+
+      _KnowledgeRoot = this.NormalizeKnowledgeRoot(
+        knowledgeRoot
+      );
+
       _Disposed = false;
       _LastRemoteRefreshUtc = DateTime.MinValue;
 
@@ -119,20 +176,37 @@ namespace AI.SmartStandards.KnowledgeAccess {
         _TemporaryRootDirectoryName
       );
 
-      Directory.CreateDirectory(temporaryRoot);
-      this.TryMarkDirectoryHidden(temporaryRoot);
+      Directory.CreateDirectory(
+        temporaryRoot
+      );
+
+      this.TryMarkDirectoryHidden(
+        temporaryRoot
+      );
 
       _SessionDirectory = Path.Combine(
         temporaryRoot,
         Guid.NewGuid().ToString("N")
       );
 
-      _RepositoryDirectory = Path.Combine(_SessionDirectory, "repository");
+      _RepositoryDirectory = Path.Combine(
+        _SessionDirectory,
+        "repository"
+      );
 
-      Directory.CreateDirectory(_SessionDirectory);
-      this.TryMarkDirectoryHidden(_SessionDirectory);
+      Directory.CreateDirectory(
+        _SessionDirectory
+      );
 
-      string sessionLockPath = Path.Combine(_SessionDirectory, ".active.lock");
+      this.TryMarkDirectoryHidden(
+        _SessionDirectory
+      );
+
+      string sessionLockPath = Path.Combine(
+        _SessionDirectory,
+        ".active.lock"
+      );
+
       _SessionLock = new FileStream(
         sessionLockPath,
         FileMode.OpenOrCreate,
@@ -142,19 +216,25 @@ namespace AI.SmartStandards.KnowledgeAccess {
 
       try {
         this.CloneRepository();
-        _Repository = new Repository(_RepositoryDirectory);
-        _BranchName = _Repository.Head.FriendlyName;
 
-        string knowledgeDirectory = Path.Combine(
-          _RepositoryDirectory,
-          _DefaultKnowledgeDirectoryName
+        _Repository = new Repository(
+          _RepositoryDirectory
         );
 
+        _BranchName = _Repository.Head.FriendlyName;
+
+        string knowledgeDirectory = this.ResolveKnowledgeDirectory();
+
         if (!Directory.Exists(knowledgeDirectory)) {
-          Directory.CreateDirectory(knowledgeDirectory);
+          Directory.CreateDirectory(
+            knowledgeDirectory
+          );
         }
 
-        this.InitializeRootDirectory(knowledgeDirectory);
+        this.InitializeRootDirectory(
+          knowledgeDirectory
+        );
+
         _LastRemoteRefreshUtc = DateTime.UtcNow;
       }
       catch {
@@ -165,11 +245,150 @@ namespace AI.SmartStandards.KnowledgeAccess {
     }
 
     /// <summary>
+    /// Normalizes and validates one repository-relative knowledge root.
+    /// </summary>
+    private string NormalizeKnowledgeRoot(string knowledgeRoot) {
+      string value = knowledgeRoot;
+
+      if (string.IsNullOrWhiteSpace(value)) {
+        value = "/";
+      }
+
+      value = value
+        .Trim()
+        .Replace(
+          '\\',
+          '/'
+        );
+
+      if (!value.StartsWith("/", StringComparison.Ordinal)) {
+        value = "/" + value;
+      }
+
+      string[] rawSegments = value.Split(
+        '/',
+        StringSplitOptions.RemoveEmptyEntries
+      );
+
+      List<string> normalizedSegments =
+        new List<string>();
+
+      foreach (string rawSegment in rawSegments) {
+        string segment = rawSegment.Trim();
+
+        if (segment.Length == 0 ||
+            string.Equals(
+              segment,
+              ".",
+              StringComparison.Ordinal
+            )) {
+          continue;
+        }
+
+        if (string.Equals(
+              segment,
+              "..",
+              StringComparison.Ordinal
+            )) {
+          throw new ArgumentException(
+            "The Git knowledge root must not contain parent traversal segments.",
+            nameof(knowledgeRoot)
+          );
+        }
+
+        if (segment.IndexOfAny(
+              Path.GetInvalidFileNameChars()
+            ) >= 0) {
+          throw new ArgumentException(
+            "The Git knowledge root contains an invalid path segment.",
+            nameof(knowledgeRoot)
+          );
+        }
+
+        normalizedSegments.Add(
+          segment
+        );
+      }
+
+      if (normalizedSegments.Count == 0) {
+        return "/";
+      }
+
+      return "/"
+        + string.Join(
+          "/",
+          normalizedSegments
+        );
+    }
+
+    /// <summary>
+    /// Resolves the configured repository-relative knowledge root to its physical path below
+    /// the active cloned repository and verifies that the result cannot escape the clone.
+    /// </summary>
+    private string ResolveKnowledgeDirectory() {
+      string repositoryRoot = Path.GetFullPath(
+        _RepositoryDirectory
+      ).TrimEnd(
+        Path.DirectorySeparatorChar,
+        Path.AltDirectorySeparatorChar
+      );
+
+      if (string.Equals(
+            _KnowledgeRoot,
+            "/",
+            StringComparison.Ordinal
+          )) {
+        return repositoryRoot;
+      }
+
+      string relativePath = _KnowledgeRoot
+        .TrimStart('/')
+        .Replace(
+          '/',
+          Path.DirectorySeparatorChar
+        );
+
+      string candidate = Path.GetFullPath(
+        Path.Combine(
+          repositoryRoot,
+          relativePath
+        )
+      );
+
+      string repositoryPrefix =
+        repositoryRoot
+        + Path.DirectorySeparatorChar;
+
+      if (!candidate.StartsWith(
+            repositoryPrefix,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        throw new InvalidOperationException(
+          "The configured Git knowledge root resolves outside the cloned repository."
+        );
+      }
+
+      return candidate;
+    }
+
+    /// <summary>
     /// Gets the remote repository URL.
     /// </summary>
     public string RepositoryUrl {
       get {
         return _RepositoryUrl;
+      }
+    }
+
+    /// <summary>
+    /// Gets the normalized repository-relative knowledge root.
+    ///
+    /// The root is always represented with a leading slash and without a trailing slash,
+    /// except for the repository root itself which is represented as <c>/</c>.
+    /// </summary>
+    public string KnowledgeRoot {
+      get {
+        return _KnowledgeRoot;
       }
     }
 
@@ -449,24 +668,18 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return true;
     }
 
+    /// <summary>
+    /// Returns whether the current Git working tree contains changes inside the configured
+    /// knowledge root.
+    /// </summary>
     private bool HasKnowledgeChanges() {
       RepositoryStatus status = _Repository.RetrieveStatus(
         new StatusOptions()
       );
 
       foreach (StatusEntry entry in status) {
-        string normalizedPath = entry.FilePath.Replace('\\', '/');
-
-        if (normalizedPath.Equals(
-              _DefaultKnowledgeDirectoryName,
-              StringComparison.OrdinalIgnoreCase
-            )) {
-          return true;
-        }
-
-        if (normalizedPath.StartsWith(
-              _DefaultKnowledgeDirectoryName + "/",
-              StringComparison.OrdinalIgnoreCase
+        if (this.IsRepositoryPathInsideKnowledgeRoot(
+              entry.FilePath
             )) {
           return true;
         }
@@ -475,13 +688,31 @@ namespace AI.SmartStandards.KnowledgeAccess {
       return false;
     }
 
+    /// <summary>
+    /// Stages all Git changes below the configured knowledge root.
+    /// </summary>
     private void StageKnowledgeDirectory() {
+      string repositoryRelativeKnowledgeRoot =
+        this.GetRepositoryRelativeKnowledgeRoot();
+
+      if (string.IsNullOrEmpty(repositoryRelativeKnowledgeRoot)) {
+        Commands.Stage(
+          _Repository,
+          "*"
+        );
+        return;
+      }
+
       Commands.Stage(
         _Repository,
-        _DefaultKnowledgeDirectoryName
+        repositoryRelativeKnowledgeRoot
       );
     }
 
+    /// <summary>
+    /// Removes untracked files below the configured knowledge root before replaying a
+    /// mutation against a freshly synchronized remote state.
+    /// </summary>
     private void RemoveUntrackedKnowledgeFiles() {
       RepositoryStatus status = _Repository.RetrieveStatus(
         new StatusOptions()
@@ -492,27 +723,77 @@ namespace AI.SmartStandards.KnowledgeAccess {
           continue;
         }
 
-        string normalizedPath = entry.FilePath.Replace('\\', '/');
-
-        if (!normalizedPath.StartsWith(
-              _DefaultKnowledgeDirectoryName + "/",
-              StringComparison.OrdinalIgnoreCase
+        if (!this.IsRepositoryPathInsideKnowledgeRoot(
+              entry.FilePath
             )) {
           continue;
         }
 
         string physicalPath = Path.Combine(
           _RepositoryDirectory,
-          entry.FilePath.Replace('/', Path.DirectorySeparatorChar)
+          entry.FilePath.Replace(
+            '/',
+            Path.DirectorySeparatorChar
+          )
         );
 
         if (File.Exists(physicalPath)) {
-          File.Delete(physicalPath);
+          File.Delete(
+            physicalPath
+          );
         }
       }
 
       this.DeleteEmptyDirectories(
-        Path.Combine(_RepositoryDirectory, _DefaultKnowledgeDirectoryName)
+        this.ResolveKnowledgeDirectory()
+      );
+    }
+
+    /// <summary>
+    /// Returns the configured knowledge root as a Git repository-relative path.
+    ///
+    /// An empty string represents the complete repository root.
+    /// </summary>
+    private string GetRepositoryRelativeKnowledgeRoot() {
+      if (string.Equals(
+            _KnowledgeRoot,
+            "/",
+            StringComparison.Ordinal
+          )) {
+        return string.Empty;
+      }
+
+      return _KnowledgeRoot.TrimStart('/');
+    }
+
+    /// <summary>
+    /// Returns whether one Git repository-relative path belongs to the configured knowledge
+    /// root.
+    /// </summary>
+    private bool IsRepositoryPathInsideKnowledgeRoot(string repositoryPath) {
+      string normalizedPath = repositoryPath.Replace(
+        '\\',
+        '/'
+      );
+
+      string repositoryRelativeKnowledgeRoot =
+        this.GetRepositoryRelativeKnowledgeRoot();
+
+      if (string.IsNullOrEmpty(repositoryRelativeKnowledgeRoot)) {
+        return true;
+      }
+
+      if (string.Equals(
+            normalizedPath,
+            repositoryRelativeKnowledgeRoot,
+            StringComparison.OrdinalIgnoreCase
+          )) {
+        return true;
+      }
+
+      return normalizedPath.StartsWith(
+        repositoryRelativeKnowledgeRoot + "/",
+        StringComparison.OrdinalIgnoreCase
       );
     }
 
