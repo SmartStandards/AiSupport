@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.9.12112.369 stable
+VisualStudioVersion = 18.9.12112.369
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{4130D21C-FE8F-4925-93E7-217B4AF1B7D9}"
 	ProjectSection(SolutionItems) = preProject
@@ -42,6 +42,9 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartStandards.AiSupport.DemoWebService", "src\SmartStandards.AiSupport.DemoWebService\SmartStandards.AiSupport.DemoWebService.csproj", "{ACC7E659-9075-BE3A-4ABE-EF4E0CAD732F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartStandards.AiSupport.Tests", "test\SmartStandards.AiSupport.Tests\SmartStandards.AiSupport.Tests.csproj", "{82F0FA9D-E805-6DCB-8119-8E54E959A1B0}"
+	ProjectSection(ProjectDependencies) = postProject
+		{A01C25E0-234A-9925-49F2-4D773006B2A8} = {A01C25E0-234A-9925-49F2-4D773006B2A8}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

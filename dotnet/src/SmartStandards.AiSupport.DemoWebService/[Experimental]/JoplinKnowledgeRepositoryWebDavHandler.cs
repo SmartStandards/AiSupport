@@ -69,9 +69,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private readonly object _SyncRoot;
     private readonly IKnowledgeRepository _KnowledgeRepository;
     private readonly IJoplinSyncStateStore _SyncStateStore;
+    private readonly string _WebDavBasePath;
 
     /// <summary>
-    /// Creates the Joplin WebDAV protocol handler.
+    /// Creates the Joplin WebDAV protocol handler using the default application-relative
+    /// endpoint path.
     /// </summary>
     /// <param name="knowledgeRepository">
     /// The provider-neutral knowledge repository exposed as Joplin notebooks and notes.
@@ -83,18 +85,57 @@ namespace AI.SmartStandards.KnowledgeAccess {
     public JoplinKnowledgeRepositoryWebDavHandler(
       IKnowledgeRepository knowledgeRepository,
       IJoplinSyncStateStore syncStateStore
+    ) : this(
+      knowledgeRepository,
+      syncStateStore,
+      "/api/knowledge/joplin"
+    ) {
+    }
+
+    /// <summary>
+    /// Creates the Joplin WebDAV protocol handler for one concrete profile-scoped endpoint.
+    /// </summary>
+    /// <param name="knowledgeRepository">
+    /// The provider-neutral knowledge repository exposed as Joplin notebooks and notes.
+    /// </param>
+    /// <param name="syncStateStore">
+    /// Persistent storage for Joplin-specific synchronization artifacts that do not
+    /// belong in the knowledge repository itself.
+    /// </param>
+    /// <param name="webDavBasePath">
+    /// The application-relative WebDAV root including the profile URL segment, for example
+    /// <c>/api/knowledge/joplin/123456789</c>.
+    /// </param>
+    public JoplinKnowledgeRepositoryWebDavHandler(
+      IKnowledgeRepository knowledgeRepository,
+      IJoplinSyncStateStore syncStateStore,
+      string webDavBasePath
     ) {
       if (knowledgeRepository == null) {
-        throw new ArgumentNullException(nameof(knowledgeRepository));
+        throw new ArgumentNullException(
+          nameof(knowledgeRepository)
+        );
       }
 
       if (syncStateStore == null) {
-        throw new ArgumentNullException(nameof(syncStateStore));
+        throw new ArgumentNullException(
+          nameof(syncStateStore)
+        );
+      }
+
+      if (string.IsNullOrWhiteSpace(webDavBasePath)) {
+        throw new ArgumentException(
+          "A Joplin WebDAV base path is required.",
+          nameof(webDavBasePath)
+        );
       }
 
       _SyncRoot = new object();
       _KnowledgeRepository = knowledgeRepository;
       _SyncStateStore = syncStateStore;
+      _WebDavBasePath = this.NormalizeWebDavBasePath(
+        webDavBasePath
+      );
 
       this.EnsureJoplinInfrastructure();
     }
@@ -3639,16 +3680,25 @@ namespace AI.SmartStandards.KnowledgeAccess {
     private string BuildWebDavHref(string path) {
       StringBuilder builder = new StringBuilder();
 
-      builder.Append(this.Request.PathBase.Value);
-      builder.Append("/api/knowledge/joplin");
+      builder.Append(
+        this.Request.PathBase.Value
+      );
+      builder.Append(
+        _WebDavBasePath
+      );
 
       if (path != "/") {
         string[] segments = path
-          .Split('/', StringSplitOptions.RemoveEmptyEntries);
+          .Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries
+          );
 
         foreach (string segment in segments) {
           builder.Append('/');
-          builder.Append(Uri.EscapeDataString(segment));
+          builder.Append(
+            Uri.EscapeDataString(segment)
+          );
         }
       }
       else {
@@ -3670,7 +3720,7 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       string basePath = this.Request.PathBase.Value
-        + "/api/knowledge/joplin";
+        + _WebDavBasePath;
 
       int index = value.IndexOf(
         basePath,
@@ -3682,6 +3732,44 @@ namespace AI.SmartStandards.KnowledgeAccess {
       }
 
       return this.NormalizeWebDavPath(value);
+    }
+
+    /// <summary>
+    /// Normalizes the application-relative WebDAV root used when emitting href and
+    /// Destination values.
+    /// </summary>
+    private string NormalizeWebDavBasePath(string path) {
+      string normalized = path
+        .Trim()
+        .Replace('\\', '/');
+
+      if (!normalized.StartsWith(
+            "/",
+            StringComparison.Ordinal
+          )) {
+        normalized = "/" + normalized;
+      }
+
+      while (normalized.Contains(
+        "//",
+        StringComparison.Ordinal
+      )) {
+        normalized = normalized.Replace(
+          "//",
+          "/",
+          StringComparison.Ordinal
+        );
+      }
+
+      if (normalized.Length > 1 &&
+          normalized.EndsWith(
+            "/",
+            StringComparison.Ordinal
+          )) {
+        normalized = normalized.TrimEnd('/');
+      }
+
+      return normalized;
     }
 
     /// <summary>

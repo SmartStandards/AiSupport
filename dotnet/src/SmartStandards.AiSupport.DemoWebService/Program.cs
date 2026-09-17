@@ -61,9 +61,8 @@ namespace AI.SmartStandards.DemoWebService {
       services.AddSingleton<IKnowledgeRepository>(agg);
 
 
-
       services.AddSingleton<IJoplinWebDavAuthenticationValidator>(
-        new DelegateBasedJoplinWebDavAuthenticationValidator((userName, password, context) => {
+        new DelegateBasedJoplinWebDavAuthenticationValidator((userName, password, syncId, context) => {
           if (string.IsNullOrWhiteSpace(userName) || string.IsNullOrWhiteSpace(password)) {
             return false;
           }
@@ -71,11 +70,13 @@ namespace AI.SmartStandards.DemoWebService {
         })
       );
 
-      services.AddSingleton<IJoplinSyncStateStore>(
-        new FileBasedJoplinSyncStateStore("C:\\Temp\\Joplin")
+      //services.AddSingleton<IJoplinSyncStateStore>(
+      //  new FileBasedJoplinSyncStateStore("C:\\Temp\\Joplin")
+      //);
+      services.AddSingleton<IJoplinSyncStateStoreFactory>(
+        new FileBasedJoplinSyncStateStoreFactory("C:\\Temp\\Joplin")
       );
 
-      
 
 
       services.AddAiSupport((ai) => { 
