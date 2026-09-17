@@ -1347,5 +1347,99 @@ namespace AI.SmartStandards.KnowledgeAccess.Tests {
       }
     }
 
+
+    /// <summary>
+    /// Verifies that projected Joplin resource metadata serializes blob_updated_time as a
+    /// numeric Unix timestamp in milliseconds. Joplin stores this field as a NOT NULL
+    /// integer and converts non-numeric values to NaN during synchronization.
+    /// </summary>
+    [TestMethod]
+    public void Get_ProjectedResourceMetadata_BlobUpdatedTimeIsNumericUnixMilliseconds() {
+      using (KnowledgeRepositoryTestContext context =
+        new KnowledgeRepositoryTestContext()) {
+
+        FileBasedKnowledgeRepository repository =
+          context.CreateRepository();
+
+        JoplinKnowledgeRepositoryWebDavHandler handler =
+          context.CreateJoplinHandler(repository);
+
+        context.PutBytes(
+          handler,
+          ".resource/" + _ResourceId,
+          new byte[] { 111, 112, 113 }
+        );
+
+        context.PutText(
+          handler,
+          _ResourceId + ".md",
+          context.CreateJoplinResourceItem(
+            _ResourceId,
+            _ResourceId + ".png",
+            _ResourceId + ".png",
+            "image/png",
+            "png"
+          )
+        );
+
+        context.PutText(
+          handler,
+          _NoteAId + ".md",
+          context.CreateJoplinNoteItem(
+            _NoteAId,
+            "Resource Note",
+            string.Empty,
+            "![Image](:/" + _ResourceId + ")"
+          )
+        );
+
+        IActionResult resourceResult = context.Get(
+          handler,
+          _ResourceId + ".md"
+        );
+
+        FileContentResult fileResult =
+          resourceResult as FileContentResult;
+
+        Assert.IsNotNull(
+          fileResult
+        );
+
+        string metadata = Encoding.UTF8.GetString(
+          fileResult.FileContents
+        );
+
+        string[] lines = metadata.Split(
+          '\n'
+        );
+
+        string blobUpdatedTimeLine = Array.Find(
+          lines,
+          (string line) => line.StartsWith(
+            "blob_updated_time: ",
+            StringComparison.Ordinal
+          )
+        );
+
+        Assert.IsFalse(
+          string.IsNullOrWhiteSpace(blobUpdatedTimeLine)
+        );
+
+        string value = blobUpdatedTimeLine.Substring(
+          "blob_updated_time: ".Length
+        ).Trim();
+
+        Assert.IsTrue(
+          value.Length >= 13
+        );
+
+        foreach (char character in value) {
+          Assert.IsTrue(
+            char.IsDigit(character)
+          );
+        }
+      }
+    }
+
   }
 }

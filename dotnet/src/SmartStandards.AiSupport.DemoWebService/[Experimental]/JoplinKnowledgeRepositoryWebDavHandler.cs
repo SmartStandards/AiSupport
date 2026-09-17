@@ -1625,7 +1625,11 @@ namespace AI.SmartStandards.KnowledgeAccess {
       properties.Append("master_key_id: \n");
       properties.Append("user_data: \n");
       properties.Append("blob_updated_time: ");
-      properties.Append(this.FormatJoplinTime(record.ModifiedUtc));
+      properties.Append(
+        this.FormatJoplinUnixTimeMilliseconds(
+          record.ModifiedUtc
+        )
+      );
       properties.Append('\n');
       properties.Append("ocr_text: \n");
       properties.Append("ocr_details: \n");
@@ -3387,6 +3391,22 @@ namespace AI.SmartStandards.KnowledgeAccess {
         .ToUniversalTime()
         .ToString(
           "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+          CultureInfo.InvariantCulture
+        );
+    }
+
+    /// <summary>
+    /// Formats one UTC timestamp as Unix epoch milliseconds for Joplin properties that are
+    /// explicitly numeric, such as resource blob_updated_time.
+    /// </summary>
+    private string FormatJoplinUnixTimeMilliseconds(DateTime value) {
+      DateTimeOffset timestamp = new DateTimeOffset(
+        value.ToUniversalTime()
+      );
+
+      return timestamp
+        .ToUnixTimeMilliseconds()
+        .ToString(
           CultureInfo.InvariantCulture
         );
     }
