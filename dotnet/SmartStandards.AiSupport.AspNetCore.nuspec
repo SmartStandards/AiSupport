@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
   <metadata>
     <id>SmartStandards.AiSupport.AspNetCore</id>
-    <version>0.1.1</version>
+    <version>0.1.0</version>
     <title>SmartStandards.AiSupport.AspNetCore</title>
     <authors>SmartStandards</authors>
     <owners>(public domain)</owners>
@@ -29,8 +29,9 @@
         }
       } -->
       <group targetFramework="net10.0">
-        <dependency id="SmartStandards.AiSupport" version="[0.1.1]" />
-        <dependency id="UJMW.DynamicController" version="[5.6.0,6.0)" />
+        <dependency id="SmartStandards.AiSupport" version="[0.1.0]" />
+        <dependency id="UJMW.DynamicController" version="[5.6.2,6.0)" />
+        <dependency id="Newtonsoft.Json" version="[13.0.4,14.0)" />
       </group>
     </dependencies>
   </metadata>
