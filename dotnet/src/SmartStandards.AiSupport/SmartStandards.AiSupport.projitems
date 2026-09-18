@@ -14,7 +14,6 @@
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\ICodeArtifactMap.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingSessionStore.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\IPromtLibrary.cs" />
-    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\IKnowledgeRepository.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="$(MSBuildThisFileDirectory)LowLevelPrompting\" />

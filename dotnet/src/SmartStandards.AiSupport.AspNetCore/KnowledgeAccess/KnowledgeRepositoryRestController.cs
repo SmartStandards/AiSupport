@@ -1,9 +1,0 @@
-﻿
-namespace AI.SmartStandards.KnowledgeAccess {
-
-
-
-
-
-
-}

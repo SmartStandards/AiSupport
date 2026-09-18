@@ -10,9 +10,5 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)AiSupportSetupExtensions.cs" />
-    <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\KnowledgeRepositoryRestController.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <Folder Include="$(MSBuildThisFileDirectory)KnowledgeAccess\" />
   </ItemGroup>
 </Project>

@@ -1,17 +1,12 @@
-using AI.SmartStandards.KnowledgeAccess;
 using CyclicTriggering;
+using KnowledgeManagement.SmartStandards;
+using KnowledgeManagement.SmartStandards.Endpoints.Joplin;
+using KnowledgeManagement.SmartStandards.Providers;
+using KnowledgeManagement.SmartStandards.Wrappers;
 using Logging.SmartStandards;
 using Logging.SmartStandards.AspSupport;
 using Microsoft.AspNetCore;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using System;
 using System.Reflection;
-using System.Security.Cryptography;
 using System.Web.UJMW;
 
 namespace AI.SmartStandards.DemoWebService {
