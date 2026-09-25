@@ -40,3 +40,6 @@ description: every agent should read additional skill sources as mentioned here
 
 
 
+
+- `C:\GIT\AI-Skills\AI-ENTRY.md` (entry point; then `AI-CONTEXT-SNAPSHOT.md`, `FxKnowledge/`, `Guidelines/`, `.agents/skills/ai-cowork-process/SKILL.md`)
+- Harness/LLM knowledge: skill `.agents/skills/ai-harness-development/` (+ `doc/ideas.md` section 1.10 with source links to Claude Code, Copilot CLI ACP, Codex app-server, MCP, ACP specs)
