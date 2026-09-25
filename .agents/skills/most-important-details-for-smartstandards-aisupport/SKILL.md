@@ -9,8 +9,8 @@ metadata:
 
 ## Documentation layout
 
-- Human-readable docs follow the ai-cowork-process structure: `readme.md`, `doc/requirements.md`, `doc/architecture.md`,
-  `doc/quickstart.md`, `doc/ideas.md`. Links must stay relative.
+- Human-readable docs follow the ai-cowork-process structure: `readme.md`, `doc/1-requirements.md`, `doc/2-architecture.md`,
+  `doc/3-quickstart.md`, `doc/ideas.md`. Links must stay relative. README and all `doc/` files are written in English.
 - `doc/changelog.md` and `doc/versioninfo.json` are maintained by the build/versioning pipeline. **Never edit them.**
 - Future concepts go into `doc/ideas.md`, never into extra ad-hoc files under `doc/`. The Level-2 AI harness concept lives
   there as section 1. Its binding decisions are mirrored in the skill `ai-harness-development`.

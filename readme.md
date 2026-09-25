@@ -1,38 +1,39 @@
 # SmartStandards - AI Support
 
-## Was ist das?
+## About
 
-Provider-neutrale .NET-Verträge für KI-gestützte Anwendungen, dazu Standard-Implementierungen und ASP.NET-Core-Hosting.
-Alle Verträge sind per **UJMW** remotefähig, also auch über das Netz und für AI-Agenten nutzbar.
+Provider-neutral .NET contracts for AI-enabled applications, together with standard implementations and ASP.NET Core
+hosting. All contracts are remotable via **UJMW**, so they can be used across the network and by AI agents.
 
-- `ICommonLLM`: Low-Level-Zugriff auf ein LLM (Web-Search-Prompting mit typisierten Antworten, Bildgenerierung, Bildbearbeitung)
-- `IPromptingUIBackend`: Backend für Chat-Oberflächen (Chat-Historie, später Dateianhänge)
-- `IPromptingSessionStore`: Persistenz von Prompting-Sessions (Basis für einen Adapter zwischen UI-Backend und `ICommonLLM`)
-- `IPromtLibrary`: wiederverwendbare Prompts
-- `ICodeArtifactMap`: Semantik und Komponenten pro Repository-URL
+- `ICommonLLM`: low-level access to an LLM (web-search prompting with typed answers, image generation, image editing)
+- `IPromptingUIBackend`: backend for chat front ends (chat history, file attachments later)
+- `IPromptingSessionStore`: persistence of prompting sessions (basis for an adapter between the UI backend and `ICommonLLM`)
+- `IPromtLibrary`: reusable prompts
+- `ICodeArtifactMap`: semantics and components per repository URL
 
 ## Motivation
 
-Anwendungen sollen gegen stabile Verträge programmieren statt gegen einzelne LLM-Anbieter. So lassen sich Anbieter tauschen
-(Cloud-API, lokale Modelle, Agent-CLIs), und dieselben Funktionen stehen per UJMW auch entfernten Diensten und Agenten zur Verfügung.
+Applications should program against stable contracts instead of individual LLM providers. This makes providers
+interchangeable (cloud APIs, local models, agent CLIs), and the same features are available to remote services and
+agents via UJMW.
 
-## Kurzbeispiel
+## Examples
 
 ```csharp
 DynamicAiServiceFactory.AiOperationsProvider = new OpenAiLLMConnector("<OPENAI_API_KEY>");
-IMeinTool tool = DynamicAiServiceFactory.CreateInstance<IMeinTool>(); // ein LLM "implementiert" das Interface
-int ergebnis = tool.MultipliziereDieDifferenzZweiterZahlenMitSichSelbst(3, 7);
+IMyTool tool = DynamicAiServiceFactory.CreateInstance<IMyTool>(); // an LLM "implements" the interface
+int result = tool.SquareTheDifference(3, 7);
 ```
 
-## Abgrenzung
+## Differentiation
 
-- Keine Chat-Oberfläche und kein eigenes Modell. Das Repository liefert Verträge, Adapter und Hosting.
-- Wissensablagen (`IKnowledgeRepository`) liegen in den separaten Paketen `SmartStandards.KnowledgeManagement*`.
+- No chat user interface and no model of its own. This repository provides contracts, adapters and hosting.
+- Knowledge stores (`IKnowledgeRepository`) live in the separate `SmartStandards.KnowledgeManagement*` packages.
 
-## Dokumentation
+## Documentation
 
-- [Anforderungen](doc/requirements.md)
-- [Architektur](doc/architecture.md)
-- [Quickstart](doc/quickstart.md)
-- [Ideen und zukünftige Richtungen](doc/ideas.md) (u. a. Level-2 AI Harness)
+- [Requirements](doc/1-requirements.md)
+- [Architecture](doc/2-architecture.md)
+- [Quickstart](doc/3-quickstart.md)
 - [Changelog](doc/changelog.md)
+- [Ideas and future directions](doc/ideas.md) (including the Level-2 AI harness)

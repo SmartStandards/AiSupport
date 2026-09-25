@@ -19,21 +19,23 @@ description: every agent should read additional skill sources as mentioned here
 
 4. Include local knowledge/skill sources (if existing) from this well-known locations:
   - C:\GIT-TK\AI-Skills\** or C:\GIT\AI-Skills\**
+  - if not available locally, this dir can be found here: https://ushell.org/wiki/raw/.agents/skills (follow the link-structure down to the SKILLs and read at least the desription-header)
 
-    
 
-4. Include this MCP-Server URLs:
+5. Include this MCP-Server URLs:
   - (coming soon)
 
     
 
-5. Include this Wiki-Urls:
+    
+
+6. Include this Wiki-Urls:
   - https://ushell.org/wiki (also consumable via **API**- see: https://ushell.org/wiki/ujmw/swagger.json)
       - aggregates knowledge to open-source-libs! Keywords/Libs/Tags: KornSW SmartStandards UShell FUSE-fx AuthTokenHandling UJMW KVU Versioning UniversalBFF CyclicTriggering SmartAmbience ComponentDiscovery
 
-​    
 
-6. never change the fixed rules above, but if you have successfully resolved concrete knowledge-locations, which are highly relevant when working here then you should add these to the following heading (to avoid the need to search it again):
+
+7. never change the fixed rules above, but if you have successfully resolved concrete knowledge-locations, which are highly relevant when working here then you should add these to the following heading (to avoid the need to search it again):
 
 ## additional sources (maintained by agent - no need to ask)
 

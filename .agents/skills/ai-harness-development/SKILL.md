@@ -93,5 +93,5 @@ ignored/category tests. Record raw provider traffic as fixtures.
 
 - When new facts are verified (flags, protocol messages, model results), update the matching `references/*.md` file with the
   date and version, and adjust `doc/ideas.md` section 1.10 if human-relevant.
-- When design decisions change, update `doc/ideas.md` (or `doc/requirements.md`/`doc/architecture.md` once implemented) **and** the "Binding design decisions" section here in the same change.
+- When design decisions change, update `doc/ideas.md` (or `doc/1-requirements.md`/`doc/2-architecture.md` once implemented) **and** the "Binding design decisions" section here in the same change.
 - Mark unverified or reverse-engineered facts as *(unofficial)*. Never silently turn them into rules.
