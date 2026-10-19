@@ -446,3 +446,123 @@ important findings for humans:
 - `IUniversalWorkItemRepository`
 - `IAfsRepository`
 - `IServerCommands` (+ a separate MCP adapter that exposes the commands themselves more effectively)
+
+## 3. Epic: Generic MCP Facade over ASP.NET Core Controllers
+
+Status: agreed implementation direction and handoff (2026-10-19); not implemented by this documentation change.
+This epic is independent of the Level-2 harness and MCP-client work above. Before implementing, promote its
+active requirements into [1-requirements.md](1-requirements.md) and maintain [2-architecture.md](2-architecture.md)
+and [3-quickstart.md](3-quickstart.md) accordingly.
+
+### 3.1 Outcome and ownership
+
+Expose existing, explicitly selected ASP.NET Core controller actions as accurately described MCP tools.
+ChatGPT and Claude users should be able to add the remote MCP URL, be guided through authentication, and call
+the selected API operations. The demo must exercise this with a sample CalDAV connector against STRATO.
+
+The facade belongs in AiSupport's ASP.NET Core integration. It consumes ASP.NET Core API metadata and
+documentation, not UJMW internals. Ordinary REST controllers and dynamically generated UJMW controllers must both
+be usable. Do not duplicate UJMW's interface-to-controller generation or its wire protocol. UJMW is a particularly
+well-documented API source, not a required dependency of the new facade component.
+
+### 3.2 Functional requirements
+
+| ID | Requirement |
+| --- | --- |
+| MCP-01 | Provide a reusable generic MCP entry point/controller in the existing ASP.NET Core application. Reuse an appropriate MCP SDK for protocol and transport handling where practical. A hand-written MVC controller is not a reason to reimplement the MCP protocol. |
+| MCP-02 | Index existing controller actions through ApiExplorer, ActionDescriptor and endpoint metadata. Offer explicit inclusion/exclusion configuration. Discovering an action must not automatically publish it. Exclude the MCP and OAuth/discovery endpoints from tool exposure. |
+| MCP-03 | Generate one named tool per selected API operation, with deterministic, collision-checked names and concrete input/output schemas. Avoid an opaque universal Invoke(controller, method, arguments) tool. |
+| MCP-04 | Preserve useful summaries, parameter descriptions and XML comments, including documentation propagated by UJMW into generated controller/Swagger metadata. Reuse the existing OpenAPI description or a documentation adapter; ApiExplorer alone does not necessarily contain the final enriched text. |
+| MCP-05 | Map tool arguments to route, query and JSON-body bindings and map API results to MCP content/structuredContent. Respect serialization names and optionality. Distinguish tool execution errors from MCP protocol errors. |
+| MCP-06 | Execute target actions entirely in process, without loopback HTTP/network calls. Preserve model binding, validation, MVC filters, result execution and target authorization. A direct reflection call is insufficient. |
+| MCP-07 | Isolate each internal call using its own context and DI scope. Handle route values, request body, response capture, cancellation, disposal and ambient HttpContext access correctly. Restore outer context after execution; never share mutable request state between calls. |
+| MCP-08 | Compose the required middleware/endpoint execution explicitly. Calling Endpoint.RequestDelegate alone does not automatically replay authentication or authorization middleware. No recursive dispatch through the MCP entry point. |
+| MCP-09 | Offer a configurable authentication bridge for target endpoints with different requirements. Validate MCP access, then establish the target's accepted identity/evidence and enforce its permissions. Do not assume every controller accepts the MCP bearer token. |
+| MCP-10 | Preserve existing application routes, controller authentication and public contracts. The facade is opt-in; no invasive cross-framework refactoring. |
+
+Start with JSON request/response actions. Identify and explicitly reject unsupported file, streaming, multipart
+and specialized response cases rather than silently pretending universal support. Route constraints, multiple
+response types, non-object return values and schema conversion need defined behavior. Keep authentication headers
+and credential material out of model-visible tool arguments and outputs.
+
+### 3.3 Authentication and AuthTokenHandling dependency
+
+The MCP-facing resource must advertise an interoperable OAuth flow regardless of the original controller's challenge.
+A failed target authorization is not a general license to bypass that controller or to turn every 403 into a login.
+
+Reuse the planned AuthTokenHandling extension:
+[OAuth discovery implementation handoff](https://github.com/SmartStandards/AuthTokenHandling/blob/master/doc/oauth-discovery-implementation-handoff.md).
+
+Its intended API is an ASP.NET convenience registration that publishes protected-resource well-known metadata and
+automatically configures the optional shared static extended-auth-required response/hook. The HTTP response includes
+a WWW-Authenticate Bearer challenge with resource_metadata. Merely replacing a body or reason phrase is insufficient.
+Keep maximum backward compatibility in AuthTokenHandling; default behavior remains unchanged without opt-in.
+
+Protected-resource metadata and authorization-server metadata are distinct roles. General discovery, PKCE, token
+validation and OAuth-controller improvements belong in AuthTokenHandling, not in a parallel AiSupport OAuth framework.
+Check the current dependency implementation/version before integrating; the handoff is a specification, not proof
+that the required feature has shipped.
+
+### 3.4 Demo composition: existing OAuth controller and mini IOAuthService
+
+Extend dotnet/src/SmartStandards.AiSupport.DemoWebService as the runnable example:
+
+1. Register the generic MCP facade and a deliberately small set of sample API actions.
+2. Enable the new AuthTokenHandling well-known registration and its extended challenge behavior.
+3. Host the OAuth controller already supplied by AuthTokenHandling.MvcSupport.
+4. Supply a minimal demo implementation of AuthTokenHandling's IOAuthService and the required page/configuration
+   services. Reuse its login UI/controller flow; do not create a second unrelated OAuth endpoint implementation.
+5. Expose authorization-server metadata for this hosted OAuth service. Where required protocol capabilities are
+   missing, implement reusable additive changes upstream in AuthTokenHandling rather than demo-local protocol forks.
+6. Configure the external public base URL, STRATO CalDAV server/calendar URLs, allowed OAuth clients and exact callback
+   URLs, token lifetimes and protected key material. Publish no real credentials in source or sample configuration.
+
+The user logs in with STRATO credentials on the demo's browser login page. There is no additional demo-user password.
+The mini service validates the credentials via the CalDAV connector, issues a short-lived one-use authorization code
+and exchanges it using Authorization Code plus PKCE/S256. Bind code, client, redirect URI, resource and granted scopes.
+Choose and verify a client-registration mechanism that works with both target products; do not assume static client
+IDs alone satisfy URL-only onboarding.
+
+The sample may issue authenticated-encrypted refresh tokens containing the STRATO credentials. This is an intentional
+experiment strategy, not the framework default. Keep encryption keys outside the token and persist them appropriately.
+Define expiry, client/resource binding, refresh rotation, replay detection and revocation. Rotation/revocation require
+appropriate server-side state; encryption alone does not provide them.
+
+MCP calls carry an access token, not the refresh token. Define how the demo recovers the STRATO credentials for those
+calls, for example an access-token session mapping held server-side with explicit expiry. Document restart and
+single-instance limitations if the sample uses in-memory state. Do not expose credentials as ordinary public claims
+in a signed-only JWT, tool metadata, responses, logs or URLs.
+
+### 3.5 CalDAV sample
+
+The CalDAV connector may initially live under a clearly identified Sample area in DemoWebService. A separate package
+or repository is not required for this epic. Keep its design clean enough for later extraction:
+
+- Accept configured trusted CalDAV/calendar URLs and ordinary per-user credentials.
+- Implement CalDAV communication independently of MCP, OAuth, token formats and the demo login implementation.
+- Provide a credential-validation operation and useful calendar operations, initially calendar/event listing and
+  bounded event queries; add create/update/delete only with explicit write permissions and defined concurrency behavior.
+- Handle authentication failures, network failures, CalDAV error responses, date/time zones, recurrence and ETags
+  deliberately. Declare supported semantics rather than promising full recurrence support without implementation.
+- Do not forward credentials to arbitrary caller-supplied hosts or cross-origin redirects.
+
+A demo-only integration layer connects the IOAuthService login check, token/session handling, request-scoped
+credential access and CalDAV operations. No static per-user credential store shared across requests.
+STRATO-specific configuration stays in the sample. The connector itself must not depend on its authentication strategy.
+
+### 3.6 Work packages and acceptance
+
+| Work package | Deliverable / acceptance |
+| --- | --- |
+| API catalog and documentation | A regular controller and a generated UJMW controller produce useful tool schemas and summaries without a UJMW dependency in the facade. |
+| In-process dispatch proof | Model validation, an action filter, target authorization and result execution demonstrably run; no listener or loopback HTTP is contacted. Parallel calls and outer/inner context isolation work. |
+| Generic MCP hosting | Protocol initialization, tools/list and tools/call work using the selected SDK/transport; malformed input and operation failures are distinguished. |
+| Authentication integration | Missing MCP authentication produces discovery-aware challenges; metadata is reachable anonymously; differing target policies remain enforced. |
+| OAuth demo | Existing AuthTokenHandling OAuth controller hosts the mini IOAuthService; login, code exchange, PKCE failure and refresh paths work. |
+| CalDAV sample | Credentials are validated against configured STRATO URLs; authenticated tools query the user's calendar without leaking credentials. Automated tests use fakes unless real external integration is explicitly enabled. |
+| Product interoperability | Add the published MCP URL in ChatGPT and Claude, complete login, list/call tools and exercise token refresh. Record any required client registration/setup; URL-only discovery is the goal, not an unverified guarantee. |
+| Handoff documentation | Document startup wiring, configuration, example tool calls, supported action shapes, sample limitations and separation of reusable framework code from demo code. |
+
+Before implementation, confirm the current SDK and OAuth interoperability requirements against primary documentation.
+Follow existing shared-project/.projitems inclusion and packaging rules. Preserve generated changelog/version files.
+This epic authorizes a future implementation plan; the present task changes documentation only.
