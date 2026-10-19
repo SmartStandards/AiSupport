@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using System;
 using System.Web.UJMW;
 
 namespace AI.SmartStandards {
@@ -9,25 +10,11 @@ namespace AI.SmartStandards {
       this IServiceCollection services, Action<IAiSupportSetup> onRegisteringTargets
     ) {
 
-      //AspWorkerBasedCyclicTriggeringService service = new AspWorkerBasedCyclicTriggeringService();
-      //onRegisteringTargets.Invoke(service);
+      AiSupportSetup setup = new AiSupportSetup(services);
 
-      ////register the executor into the asp DI framework:
-      //services.AddSingleton<ICyclicTriggerReceiver>(service);
-      //services.AddSingleton<ITriggerTargetRegistrar>(service);
-
-      //if (service._AmbientHttpInfoProviderShouldBeRegistered) {
-      //  services.AddSingleton<IAmbientHttpContextProvider>(service);
-      //}
-
-      ////asp-special type of service-registration for background-workers
-      //services.AddHostedService<AspWorkerBasedCyclicTriggeringService.HostedServiceProxyForExternalTriggerReceiver>();
-
-      ////external trigger endpoint
-      //service.RegisterUjmwEndpointIfRequired(services);
-
-      ////request-interceptor to grap the current HttpContext + trigger special events
-      //service.RegisterAsyncRequstFilterIfRequired(services);
+      if (onRegisteringTargets != null) {
+        onRegisteringTargets.Invoke(setup);
+      }
 
     }
 
@@ -35,6 +22,34 @@ namespace AI.SmartStandards {
 
 
   public interface IAiSupportSetup {
+
+    void AddMcpFacade(Action<McpFacadeOptions> configure);
+
+  }
+
+  internal sealed class AiSupportSetup : IAiSupportSetup {
+
+    private readonly IServiceCollection _Services;
+
+    public AiSupportSetup(IServiceCollection services) {
+      _Services = services;
+    }
+
+    public void AddMcpFacade(Action<McpFacadeOptions> configure) {
+
+      _Services.AddOptions<McpFacadeOptions>();
+
+      if (configure != null) {
+        _Services.Configure(configure);
+      }
+
+      _Services.AddSingleton<McpJsonSchemaGenerator>();
+      _Services.AddSingleton<McpDocumentationProvider>();
+      _Services.AddSingleton<McpToolCatalog>();
+      _Services.AddSingleton<McpToolInvoker>();
+      _Services.AddSingleton<McpProtocolHandler>();
+      _Services.AddSingleton<McpIndexPageRenderer>();
+    }
 
   }
   

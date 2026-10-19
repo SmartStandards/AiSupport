@@ -449,10 +449,10 @@ important findings for humans:
 
 ## 3. Epic: Generic MCP Facade over ASP.NET Core Controllers
 
-Status: agreed implementation direction and handoff (2026-10-19); not implemented by this documentation change.
-This epic is independent of the Level-2 harness and MCP-client work above. Before implementing, promote its
-active requirements into [1-requirements.md](1-requirements.md) and maintain [2-architecture.md](2-architecture.md)
-and [3-quickstart.md](3-quickstart.md) accordingly.
+Status: first reusable facade slice implemented; OAuth/CalDAV demo and product-interoperability hardening remain open.
+This epic is independent of the Level-2 harness and MCP-client work above. Implemented slices must keep
+[1-requirements.md](1-requirements.md), [2-architecture.md](2-architecture.md) and [3-quickstart.md](3-quickstart.md)
+in sync.
 
 ### 3.1 Outcome and ownership
 

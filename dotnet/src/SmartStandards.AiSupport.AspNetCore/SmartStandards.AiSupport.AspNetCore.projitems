@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
@@ -10,5 +10,13 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)AiSupportSetupExtensions.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpEndpointRouteBuilderExtensions.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpFacadeOptions.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpDocumentationProvider.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpIndexPageRenderer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpJsonSchemaGenerator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpProtocolHandler.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpToolCatalog.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpToolInvoker.cs" />
   </ItemGroup>
 </Project>

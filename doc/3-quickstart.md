@@ -39,3 +39,39 @@ byte[] png = llm.CallImageGeneratorApi("A lighthouse in the morning fog");
 1. Open `dotnet/SmartStandards.AiSupport.sln` and select `SmartStandards.AiSupport.DemoWebService` as the startup project.
 2. Adjust the local paths configured in `Program.cs` (e.g. `C:\Temp\_OneNoteExport`, `C:\Temp\Joplin`).
 3. Start it. The UJMW endpoints are available via Swagger. The demo requires any non-empty `Authorization` header.
+
+## Expose selected controller actions as MCP tools
+
+Register the facade and explicitly include the API operations that should become tools:
+
+```csharp
+services.AddControllers();
+services.AddAiSupport((ai) => {
+  ai.AddMcpFacade((mcp) => {
+    mcp.EndpointPattern = "/mcp";
+    mcp.IncludeOperation(
+      "get_recent_chats",
+      "GET",
+      "api/prompting/recent-chats",
+      "Returns the most recent prompting chats."
+    );
+  });
+});
+```
+
+Map controllers and the MCP facade through endpoint routing:
+
+```csharp
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.UseEndpoints((endpoints) => {
+  endpoints.MapControllers();
+  endpoints.MapAiSupportMcpFacade();
+});
+```
+
+The MCP endpoint supports `initialize`, `tools/list` and `tools/call`. Tool arguments are generated from ASP.NET Core
+metadata for route, query and JSON-body parameters. Form, file, multipart and streaming shapes are rejected instead of
+being exposed as misleading tools.

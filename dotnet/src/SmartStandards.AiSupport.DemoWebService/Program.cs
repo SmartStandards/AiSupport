@@ -1,3 +1,4 @@
+using AI.SmartStandards.DemoWebService.Sample.Calendar;
 using CyclicTriggering;
 using KnowledgeManagement.SmartStandards;
 using KnowledgeManagement.SmartStandards.Endpoints.Joplin;
@@ -27,6 +28,11 @@ namespace AI.SmartStandards.DemoWebService {
         (string rawAuthHeader, Type contractType, MethodInfo targetContractMethod, string callingMachine, ref int httpReturnCode, ref string failedReason) => {
          
           if(contractType == typeof(ICyclicTriggerReceiver)) {
+            return true;
+          }
+
+          //calendar sample: authentication will be bridged in a later step (OAuth / CalDAV credentials)
+          if (contractType == typeof(ICalendarAccess)) {
             return true;
           }
 
@@ -74,10 +80,29 @@ namespace AI.SmartStandards.DemoWebService {
 
 
 
-      services.AddAiSupport((ai) => { 
+      //SAMPLE: CalDAV calendar access (proxy to a configured CalDAV calendar home)
+      CalDavCalendarAccessOptions calDavOptions = new CalDavCalendarAccessOptions();
+      config.GetSection("CalDav").Bind(calDavOptions);
+      services.AddSingleton(calDavOptions);
+      services.AddSingleton<ICalendarAccess, CalDavCalendarAccess>();
 
-        //TODO: ...
+      services.AddDynamicUjmwControllers((r) => {
+        r.AddControllerFor<ICalendarAccess>((options) => {
+          options.ControllerRoute = "calendar";
+          options.EnableRequestSidechannel = false;
+          options.EnableResponseSidechannel = false;
+          options.ApiGroupName = "Calendar-Demo";
+        });
+      });
 
+      services.AddAiSupport((ai) => {
+        ai.AddMcpFacade((mcp) => {
+          mcp.EndpointPattern = "/mcp";
+          mcp.ServerName = "SmartStandards.AiSupport.DemoWebService";
+          //mcp.IncludeOperation("calendar_list_calendars", "POST", "calendar/GetCalendars");
+          //mcp.IncludeOperation("calendar_list_events", "POST", "calendar/GetEvents");
+          mcp.IncludeOperationsFromApiGroup("Calendar-Demo");
+        });
       });
 
 
@@ -129,6 +154,7 @@ namespace AI.SmartStandards.DemoWebService {
 
       app.UseEndpoints((endpoints) => {
         endpoints.MapControllers();
+        endpoints.MapAiSupportMcpFacade();
       });
 
       int tid = Thread.CurrentThread.ManagedThreadId;

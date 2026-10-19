@@ -37,6 +37,9 @@ packages and is only consumed here.
 ### Hosting (package `SmartStandards.AiSupport.AspNetCore`)
 
 - Integration into ASP.NET Core via `AddAiSupport(...)`, so that the contracts can be provided as UJMW endpoints.
+- An opt-in generic MCP facade for ASP.NET Core applications. It exposes only explicitly selected controller actions
+  as one MCP tool per selected API operation, derives tool metadata from ASP.NET Core API metadata, maps route, query
+  and JSON-body arguments, and executes target actions in process without loopback HTTP.
 
 ## Non-functional requirements
 
@@ -50,5 +53,6 @@ packages and is only consumed here.
 
 - No chat user interface of its own; only the backend is provided.
 - Knowledge stores (`IKnowledgeRepository` and its providers) are no longer part of this repository.
-- Future extensions, in particular the **Level-2 AI harness** (tool-calling handshake, CLI proxies, local LLM, MCP),
-  are **not active requirements** yet. See [ideas.md](ideas.md).
+- The **Level-2 AI harness** (tool-calling handshake, CLI proxies, local LLM, MCP client work) is not an active
+  requirement yet. See [ideas.md](ideas.md).
+- The full OAuth/CalDAV MCP demo scenario is not part of the first reusable facade slice yet.
