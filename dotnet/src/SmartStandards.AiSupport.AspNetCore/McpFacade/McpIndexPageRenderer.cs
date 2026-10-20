@@ -29,10 +29,7 @@ namespace AI.SmartStandards {
     /// Answers a GET request on the MCP endpoint.
     /// </summary>
     public Task HandleAsync(HttpContext context) {
-      string accept = context.Request.Headers["Accept"].ToString();
-      bool wantsEventStream = accept.IndexOf("text/event-stream", StringComparison.OrdinalIgnoreCase) >= 0;
-
-      if (wantsEventStream || !_Options.Value.EnableHumanReadableIndex) {
+      if (this.IsEventStreamRequest(context) || !_Options.Value.EnableHumanReadableIndex) {
         context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
         context.Response.Headers["Allow"] = "POST";
         return Task.CompletedTask;
@@ -45,9 +42,43 @@ namespace AI.SmartStandards {
     }
 
     /// <summary>
+    /// Returns true if the GET request wants to open a SSE stream (MCP Streamable HTTP) instead of the HTML overview.
+    /// </summary>
+    public bool IsEventStreamRequest(HttpContext context) {
+      string accept = context.Request.Headers["Accept"].ToString();
+      return accept.IndexOf("text/event-stream", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    /// <summary>
+    /// Answers a browser GET request when the browser login is enabled. If not authenticated, the status code
+    /// (and the Bearer challenge) written by the request authenticator is kept and only the login box is shown.
+    /// </summary>
+    public Task HandleBrowserLoginAsync(HttpContext context, McpBrowserLoginResult login, bool authenticated) {
+      string endpointPath = context.Request.PathBase.Add(context.Request.Path).ToUriComponent();
+      string html;
+      if (authenticated) {
+        html = this.RenderHtml(endpointPath, login, true);
+        context.Response.StatusCode = StatusCodes.Status200OK;
+      }
+      else {
+        html = this.RenderHtml(endpointPath, login, false);
+      }
+      context.Response.Headers.CacheControl = "no-store";
+      context.Response.ContentType = "text/html; charset=utf-8";
+      return context.Response.WriteAsync(html, Encoding.UTF8);
+    }
+
+    /// <summary>
     /// Renders the tool overview as standalone HTML page (all dynamic values are HTML-encoded).
     /// </summary>
     internal string RenderHtml(string endpointPath) {
+      return this.RenderHtml(endpointPath, null, true);
+    }
+
+    /// <summary>
+    /// Renders the page: optional login box + login trace (browser login), tool overview only if authenticated.
+    /// </summary>
+    private string RenderHtml(string endpointPath, McpBrowserLoginResult login, bool showTools) {
       McpFacadeOptions options = _Options.Value;
       McpToolDefinition[] tools = _Catalog.GetTools();
       McpRejectedOperation[] rejected = _Catalog.GetRejectedOperations();
@@ -57,11 +88,25 @@ namespace AI.SmartStandards {
       html.Append(Encode(options.ServerName));
       html.Append(" - MCP Tools</title><style>");
       html.Append("body{font-family:Segoe UI,Arial,sans-serif;margin:2em;color:#222}");
+      html.Append(".login{border:1px solid #ccc;background:#fafafa;padding:8px 12px;margin-bottom:1em}");
+      html.Append(".trace{margin:0 0 1em 0}.trace pre{white-space:pre-wrap;word-break:break-all;margin:4px 0 0 0;font-size:12px}");
+      html.Append(".Info{border-left:4px solid #999;padding:4px 8px;margin:4px 0}");
+      html.Append(".Warning{border-left:4px solid #e0a000;background:#fff8e0;padding:4px 8px;margin:4px 0}");
+      html.Append(".Error{border-left:4px solid #c00;background:#ffecec;padding:4px 8px;margin:4px 0}");
       html.Append("table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;text-align:left;vertical-align:top}");
       html.Append("th{background:#f0f0f0}code{font-family:Consolas,monospace}.muted{color:#777}ul{margin:0;padding-left:1.2em}");
       html.Append("</style></head><body>");
 
       html.Append("<h1>").Append(Encode(options.ServerName)).Append(" <span class=\"muted\">").Append(Encode(options.ServerVersion)).Append("</span></h1>");
+
+      if (login != null) {
+        this.RenderLoginBox(html, endpointPath, login, showTools);
+      }
+      if (!showTools) {
+        html.Append("</body></html>");
+        return html.ToString();
+      }
+
       html.Append("<p>MCP endpoint: <code>POST ").Append(Encode(endpointPath)).Append("</code> (JSON-RPC 2.0, methods <code>initialize</code>, <code>tools/list</code>, <code>tools/call</code>). ");
       html.Append(tools.Length.ToString()).Append(" tool(s) offered.</p>");
 
@@ -85,6 +130,54 @@ namespace AI.SmartStandards {
 
       html.Append("</body></html>");
       return html.ToString();
+    }
+
+    /// <summary>
+    /// Renders the login state (with login/refresh/logout links) and the trace of the last login steps.
+    /// </summary>
+    private void RenderLoginBox(StringBuilder html, string endpointPath, McpBrowserLoginResult login, bool authenticated) {
+      string encodedPath = Encode(endpointPath);
+      html.Append("<div class=\"login\">");
+      if (authenticated) {
+        if (login.TokenFromCookie) {
+          html.Append("Signed in (browser login, access token from HttpOnly cookie). ");
+        }
+        else {
+          html.Append("Authenticated via 'Authorization' header. ");
+        }
+        html.Append("<a href=\"").Append(encodedPath).Append("?login\">Login again</a>");
+        if (login.HasRefreshToken) {
+          html.Append(" | <a href=\"").Append(encodedPath).Append("?refresh\">Refresh token</a>");
+        }
+        html.Append(" | <a href=\"").Append(encodedPath).Append("?logout\">Logout</a>");
+      }
+      else {
+        html.Append("Not authenticated - the MCP endpoint requires an access token. ");
+        html.Append("<a href=\"").Append(encodedPath).Append("?login\"><b>Login</b></a> ");
+        html.Append("<span class=\"muted\">(runs the same discovery + OAuth code flow with PKCE as MCP clients and shows every step)</span>");
+        if (login.HasRefreshToken) {
+          html.Append(" | <a href=\"").Append(encodedPath).Append("?logout\">Logout</a>");
+        }
+      }
+      html.Append("</div>");
+
+      McpBrowserLoginTraceEntry[] entries = login.GetEntries();
+      if (entries.Length == 0) {
+        return;
+      }
+      html.Append("<div class=\"trace\"><h2>OAuth flow trace</h2>");
+      if (login.HasErrors) {
+        html.Append("<p><b>The flow FAILED</b> (see the red entries).</p>");
+      }
+      foreach (McpBrowserLoginTraceEntry entry in entries) {
+        html.Append("<div class=\"").Append(entry.Kind.ToString()).Append("\"><b>");
+        html.Append(Encode(entry.Kind.ToString().ToUpperInvariant())).Append(": ").Append(Encode(entry.Title)).Append("</b>");
+        if (!string.IsNullOrEmpty(entry.Detail)) {
+          html.Append("<pre>").Append(Encode(entry.Detail)).Append("</pre>");
+        }
+        html.Append("</div>");
+      }
+      html.Append("</div>");
     }
 
     /// <summary>

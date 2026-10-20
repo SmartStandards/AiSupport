@@ -5,7 +5,9 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -14,9 +16,10 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
   /// <summary>
   /// ICalendarAccess implementation that acts as a proxy to a CalDAV server (RFC 4791).
   /// Only resources below the configured calendar home are contacted; redirects are never followed.
-  /// Authentication is intentionally not implemented yet (it will be bridged in a later step).
+  /// Credentials are resolved per call from an optional ICalDavCredentialSource and applied to each single
+  /// HttpRequestMessage (never as default header of the shared HttpClient).
   /// </summary>
-  public class CalDavCalendarAccess : ICalendarAccess, IDisposable {
+  public class CalDavCalendarAccess : ICalendarAccess, ICalDavCredentialValidator, IDisposable {
 
     private static readonly XNamespace _DavNs = "DAV:";
     private static readonly XNamespace _CalDavNs = "urn:ietf:params:xml:ns:caldav";
@@ -25,24 +28,93 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
     private readonly Uri _CalendarHome;
     private readonly string _ConfigurationError;
     private readonly HttpClient _HttpClient;
+    private readonly ICalDavCredentialSource _CredentialSource;
 
     /// <summary>
-    /// Creates a new CalDAV proxy for the configured calendar home.
+    /// Creates a new (unauthenticated) CalDAV proxy for the configured calendar home.
     /// An invalid or missing configuration does not fail here (the host must still start), but every call
     /// reports it as a clear InvalidOperationException.
     /// </summary>
-    public CalDavCalendarAccess(CalDavCalendarAccessOptions options) {
+    public CalDavCalendarAccess(CalDavCalendarAccessOptions options) : this(options, null, null) {
+    }
+
+    /// <summary>
+    /// Creates a new CalDAV proxy which resolves the credentials for every call from the given source.
+    /// </summary>
+    public CalDavCalendarAccess(CalDavCalendarAccessOptions options, ICalDavCredentialSource credentialSource) : this(options, credentialSource, null) {
+    }
+
+    /// <summary>
+    /// Creates a new CalDAV proxy using a custom HTTP message handler (e.g. a fake server for tests).
+    /// If no handler is given, a handler without redirects, cookies and default credentials is created.
+    /// </summary>
+    public CalDavCalendarAccess(CalDavCalendarAccessOptions options, ICalDavCredentialSource credentialSource, HttpMessageHandler handler) {
       if (options == null) {
         throw new ArgumentNullException(nameof(options));
       }
 
       _CalendarHome = TryCreateCalendarHome(options.CalendarHomeUrl, out _ConfigurationError);
+      _CredentialSource = credentialSource;
 
-      HttpClientHandler handler = new HttpClientHandler();
-      handler.AllowAutoRedirect = false;
-      handler.UseCookies = false;
+      if (handler == null) {
+        HttpClientHandler defaultHandler = new HttpClientHandler();
+        defaultHandler.AllowAutoRedirect = false;
+        defaultHandler.UseCookies = false;
+        defaultHandler.UseDefaultCredentials = false;
+        handler = defaultHandler;
+      }
       _HttpClient = new HttpClient(handler, true);
       _HttpClient.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
+    }
+
+    /// <summary>
+    /// Validates the given credentials with an authenticated PROPFIND (Depth: 0) on the configured calendar home.
+    /// </summary>
+    public CalDavCredentialValidationResult ValidateCredentials(CalDavCredentials credentials) {
+      this.EnsureConfigured();
+      if (credentials == null) {
+        throw new ArgumentNullException(nameof(credentials));
+      }
+      string body = (
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+        "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/></d:prop></d:propfind>"
+      );
+      try {
+        using (HttpRequestMessage request = new HttpRequestMessage(new HttpMethod("PROPFIND"), _CalendarHome)) {
+          request.Headers.Add("Depth", "0");
+          request.Content = new StringContent(body, Encoding.UTF8, "application/xml");
+          using (HttpResponseMessage response = this.Send(request, credentials)) {
+            int statusCode = (int)response.StatusCode;
+            if (statusCode == 207) {
+              return CalDavCredentialValidationResult.Valid;
+            }
+            if (statusCode == 401 || statusCode == 403) {
+              return CalDavCredentialValidationResult.Rejected;
+            }
+            return CalDavCredentialValidationResult.ServerUnavailable;
+          }
+        }
+      }
+      catch (HttpRequestException) {
+        return CalDavCredentialValidationResult.ServerUnavailable;
+      }
+      catch (TaskCanceledException) {
+        return CalDavCredentialValidationResult.ServerUnavailable;
+      }
+    }
+
+    /// <summary>
+    /// Sends a request with request-local credentials (resolved for the current call if not given explicitly).
+    /// </summary>
+    private HttpResponseMessage Send(HttpRequestMessage request, CalDavCredentials explicitCredentials) {
+      CalDavCredentials credentials = explicitCredentials;
+      if (credentials == null && _CredentialSource != null) {
+        credentials = _CredentialSource.GetCurrentCredentials();
+      }
+      if (credentials != null) {
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials.CreateBasicAuthorizationParameter());
+      }
+      return _HttpClient.Send(request);
     }
 
     /// <summary>
@@ -233,7 +305,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
 
       using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Delete, existing.Url)) {
         AddIfMatch(request, eTag);
-        using (HttpResponseMessage response = _HttpClient.Send(request)) {
+        using (HttpResponseMessage response = this.Send(request, null)) {
           int statusCode = (int)response.StatusCode;
           ThrowOnCommonWriteFailures(statusCode);
           if (statusCode == 404) {
@@ -281,7 +353,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
           AddIfMatch(request, eTag);
         }
 
-        using (HttpResponseMessage response = _HttpClient.Send(request)) {
+        using (HttpResponseMessage response = this.Send(request, null)) {
           int statusCode = (int)response.StatusCode;
           ThrowOnCommonWriteFailures(statusCode);
           if (statusCode < 200 || statusCode >= 300) {
@@ -310,7 +382,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
     /// </summary>
     private static void ThrowOnCommonWriteFailures(int statusCode) {
       if (statusCode == 401 || statusCode == 403) {
-        throw new UnauthorizedAccessException("The calendar server rejected the request (HTTP " + statusCode + "). Authentication is not configured yet.");
+        throw new UnauthorizedAccessException("The calendar server rejected the request (HTTP " + statusCode + "). The credentials are missing, invalid or lack the required permissions.");
       }
       if (statusCode >= 300 && statusCode < 400) {
         throw new InvalidOperationException("The calendar server answered with a redirect (HTTP " + statusCode + "), which is not followed for security reasons.");
@@ -482,12 +554,12 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
         request.Headers.Add("Depth", depth);
         request.Content = new StringContent(xmlBody, Encoding.UTF8, "application/xml");
 
-        using (HttpResponseMessage response = _HttpClient.Send(request)) {
+        using (HttpResponseMessage response = this.Send(request, null)) {
           string responseBody = ReadBody(response);
           int statusCode = (int)response.StatusCode;
 
           if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden) {
-            throw new UnauthorizedAccessException("The CalDAV server rejected the request (HTTP " + statusCode + "). Authentication is not configured yet.");
+            throw new UnauthorizedAccessException("The CalDAV server rejected the request (HTTP " + statusCode + "). The credentials are missing, invalid or lack the required permissions.");
           }
           if (statusCode >= 300 && statusCode < 400) {
             throw new InvalidOperationException("The CalDAV server answered with a redirect (HTTP " + statusCode + "), which is not followed for security reasons. Check the configured calendar home URL.");

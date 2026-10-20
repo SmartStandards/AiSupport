@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using System;
 using System.Collections.Generic;
 
@@ -11,6 +12,8 @@ namespace AI.SmartStandards {
     private bool _EnableHumanReadableIndex;
     private readonly List<McpOperationRegistration> _IncludedOperations;
     private readonly List<string> _IncludedApiGroups;
+    private Func<HttpContext, bool> _RequestAuthenticator;
+    private bool _EnableBrowserLogin;
 
     public McpFacadeOptions() {
       _EndpointPattern = "/mcp";
@@ -19,6 +22,42 @@ namespace AI.SmartStandards {
       _EnableHumanReadableIndex = true;
       _IncludedOperations = new List<McpOperationRegistration>();
       _IncludedApiGroups = new List<string>();
+      _RequestAuthenticator = null;
+      _EnableBrowserLogin = false;
+    }
+
+    /// <summary>
+    /// If true, the human-readable GET variant of the MCP endpoint acts like an MCP client (DEVELOPMENT/DIAGNOSTICS):
+    /// '?login' runs the complete OAuth discovery (401 challenge, protected-resource metadata, authorization server
+    /// metadata, dynamic client registration) and the authorization code flow with PKCE, receives the authorization
+    /// response on the MCP endpoint itself, redeems the code via a real HTTP POST on the token endpoint and stores the
+    /// received tokens as HttpOnly cookies (path = MCP endpoint). '?logout' removes the cookies.
+    /// The cookies are ONLY evaluated for GET requests - the JSON-RPC POST requests still require a Bearer header.
+    /// Every step (including token response format warnings) is shown as diagnostic trace on the page.
+    /// Default: false.
+    /// </summary>
+    public bool EnableBrowserLogin {
+      get {
+        return _EnableBrowserLogin;
+      }
+      set {
+        _EnableBrowserLogin = value;
+      }
+    }
+
+    /// <summary>
+    /// Optional authentication hook which is executed for every MCP request BEFORE any JSON-RPC processing.
+    /// It must return true to continue. If it returns false, it is responsible for having written the
+    /// HTTP rejection (e.g. status 401 including a 'WWW-Authenticate' challenge, or 403) and the request ends there.
+    /// If null (default), no pre-authentication happens (target authorization of the invoked actions stays active anyway).
+    /// </summary>
+    public Func<HttpContext, bool> RequestAuthenticator {
+      get {
+        return _RequestAuthenticator;
+      }
+      set {
+        _RequestAuthenticator = value;
+      }
     }
 
     /// <summary>

@@ -48,6 +48,7 @@ namespace AI.SmartStandards {
       _Services.AddSingleton<McpToolCatalog>();
       _Services.AddSingleton<McpToolInvoker>();
       _Services.AddSingleton<McpProtocolHandler>();
+      _Services.AddSingleton<McpBrowserLoginHandler>();
       _Services.AddSingleton<McpIndexPageRenderer>();
     }
 

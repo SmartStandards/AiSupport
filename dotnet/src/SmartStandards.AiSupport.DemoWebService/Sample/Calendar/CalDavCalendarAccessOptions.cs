@@ -34,6 +34,56 @@ namespace AI.SmartStandards.DemoWebService.Sample.Calendar {
       }
     }
 
+    private string _MockToLocalDir;
+    private string _MockAuthUser;
+    private string _MockAuthPass;
+
+    /// <summary>
+    /// LOCAL TESTING ONLY: if set, a local mock (persisting *.ics files below this directory) is used
+    /// instead of a real CalDAV server. The complete OAuth/MCP authentication flow stays active.
+    /// </summary>
+    public string MockToLocalDir {
+      get {
+        return _MockToLocalDir;
+      }
+      set {
+        _MockToLocalDir = value;
+      }
+    }
+
+    /// <summary>
+    /// LOCAL TESTING ONLY: the only user name which is accepted by the local mock.
+    /// </summary>
+    public string MockAuthUser {
+      get {
+        return _MockAuthUser;
+      }
+      set {
+        _MockAuthUser = value;
+      }
+    }
+
+    /// <summary>
+    /// LOCAL TESTING ONLY: the only password which is accepted by the local mock.
+    /// </summary>
+    public string MockAuthPass {
+      get {
+        return _MockAuthPass;
+      }
+      set {
+        _MockAuthPass = value;
+      }
+    }
+
+    /// <summary>
+    /// True if the local mock should be used (setting 'MockToLocalDir' is not empty).
+    /// </summary>
+    public bool IsMockMode {
+      get {
+        return !string.IsNullOrWhiteSpace(_MockToLocalDir);
+      }
+    }
+
   }
 
 }
