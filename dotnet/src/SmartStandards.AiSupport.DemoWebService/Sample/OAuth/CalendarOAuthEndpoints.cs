@@ -12,11 +12,30 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
   /// <summary>
   /// In-memory registry of OAuth clients (filled via RFC 7591 dynamic client registration, as used by MCP clients
   /// like ChatGPT, Claude or the MCP Inspector). Only public clients (PKCE, no secret) are supported.
-  /// LIMITATION: registrations are lost on restart (clients then register again).
+  /// Without 'AttachPersistence' registrations are lost on restart (clients then register again).
   /// </summary>
   public sealed class CalendarOAuthClientRegistry {
 
+    private const string _PersistenceSectionName = "clients";
+
     private readonly ConcurrentDictionary<string, string[]> _RedirectUrisByClientId = new ConcurrentDictionary<string, string[]>(StringComparer.Ordinal);
+    private CalendarOAuthStatePersistence _Persistence;
+
+    /// <summary>
+    /// Restores the persisted registrations and writes every subsequent registration into the given persistence.
+    /// </summary>
+    public void AttachPersistence(CalendarOAuthStatePersistence persistence) {
+      if (persistence == null) {
+        throw new ArgumentNullException(nameof(persistence));
+      }
+      JObject clients = persistence.Load(_PersistenceSectionName) as JObject;
+      if (clients != null) {
+        foreach (JProperty client in clients.Properties()) {
+          _RedirectUrisByClientId[client.Name] = CalendarOAuthStatePersistence.ToStringArray(client.Value);
+        }
+      }
+      _Persistence = persistence;
+    }
 
     /// <summary>
     /// Registers a new public client and returns its generated client id.
@@ -32,7 +51,25 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
       }
       string clientId = "mcp-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
       _RedirectUrisByClientId[clientId] = redirectUris;
+      this.Persist();
       return clientId;
+    }
+
+    /// <summary>
+    /// Writes a snapshot of all registrations (if a persistence is attached).
+    /// </summary>
+    private void Persist() {
+      CalendarOAuthStatePersistence persistence = _Persistence;
+      if (persistence == null) {
+        return;
+      }
+      persistence.Save(_PersistenceSectionName, () => {
+        JObject clients = new JObject();
+        foreach (KeyValuePair<string, string[]> entry in _RedirectUrisByClientId) {
+          clients[entry.Key] = CalendarOAuthStatePersistence.ToJArray(entry.Value);
+        }
+        return clients;
+      });
     }
 
     /// <summary>

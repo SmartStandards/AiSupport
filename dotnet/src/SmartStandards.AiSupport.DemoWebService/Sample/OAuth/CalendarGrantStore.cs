@@ -1,4 +1,5 @@
 using AI.SmartStandards.DemoWebService.Sample.Calendar;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -10,7 +11,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
   /// <summary>
   /// In-memory store for short-lived access tokens which carry (server-side only) the CalDAV credentials of their subject.
   /// Raw tokens are never stored: the dictionary key is the SHA-256 hash of the token.
-  /// LIMITATION: all grants are lost on restart (clients then receive HTTP 401 and have to refresh or log in again).
+  /// Without 'AttachPersistence' all grants are lost on restart (clients then receive HTTP 401 and have to refresh or log in again).
   /// </summary>
   public sealed class CalendarGrantStore {
 
@@ -19,8 +20,11 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
     /// </summary>
     public const string CalendarScope = "calendar";
 
+    private const string _PersistenceSectionName = "accessGrants";
+
     private readonly ConcurrentDictionary<string, CalendarGrant> _GrantsByTokenHash;
     private readonly Func<DateTime> _UtcNow;
+    private CalendarOAuthStatePersistence _Persistence;
 
     public CalendarGrantStore() : this(null) {
     }
@@ -39,7 +43,37 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
     }
 
     /// <summary>
-    /// Issues a new random access token for the given subject and returns it (the only place where the raw token exists).
+    /// Restores the persisted (not yet expired) grants and writes every subsequent change into the given persistence.
+    /// Only token hashes are persisted - never raw tokens.
+    /// </summary>
+    public void AttachPersistence(CalendarOAuthStatePersistence persistence) {
+      if (persistence == null) {
+        throw new ArgumentNullException(nameof(persistence));
+      }
+      DateTime now = _UtcNow();
+      JArray entries = persistence.Load(_PersistenceSectionName) as JArray;
+      if (entries != null) {
+        foreach (JToken token in entries) {
+          JObject entry = (JObject)token;
+          DateTime expiresUtc = CalendarOAuthStatePersistence.FromUnixMilliseconds(entry["exp"]);
+          if (expiresUtc <= now) {
+            continue;
+          }
+          CalendarGrant grant = new CalendarGrant(
+            entry.Value<string>("sub"),
+            CalendarOAuthStatePersistence.ReadCredentials(entry),
+            CalendarOAuthStatePersistence.ToStringArray(entry["scopes"]),
+            entry.Value<string>("resource"),
+            expiresUtc
+          );
+          _GrantsByTokenHash[entry.Value<string>("hash")] = grant;
+        }
+      }
+      _Persistence = persistence;
+    }
+
+    /// <summary>
+    /// Issues a new random access token
     /// </summary>
     public string IssueAccessToken(string subject, CalDavCredentials credentials, string[] scopes, string resource, TimeSpan lifetime) {
       if (string.IsNullOrWhiteSpace(subject)) {
@@ -60,6 +94,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
       }
       CalendarGrant grant = new CalendarGrant(subject, credentials, grantedScopes, resource, _UtcNow().Add(lifetime));
       _GrantsByTokenHash[HashToken(token)] = grant;
+      this.Persist();
       return token;
     }
 
@@ -77,7 +112,9 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
         return CalendarTokenState.Unknown;
       }
       if (found.ExpiresUtc <= _UtcNow()) {
-        _GrantsByTokenHash.TryRemove(HashToken(token), out found);
+        if (_GrantsByTokenHash.TryRemove(HashToken(token), out found)) {
+          this.Persist();
+        }
         return CalendarTokenState.Expired;
       }
       grant = found;
@@ -93,7 +130,11 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
         return false;
       }
       CalendarGrant removed;
-      return _GrantsByTokenHash.TryRemove(HashToken(token), out removed);
+      bool wasRemoved = _GrantsByTokenHash.TryRemove(HashToken(token), out removed);
+      if (wasRemoved) {
+        this.Persist();
+      }
+      return wasRemoved;
     }
 
     /// <summary>
@@ -108,6 +149,9 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
             count++;
           }
         }
+      }
+      if (count > 0) {
+        this.Persist();
       }
       return count;
     }
@@ -134,6 +178,30 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
           _GrantsByTokenHash.TryRemove(entry.Key, out removed);
         }
       }
+    }
+
+    /// <summary>
+    /// Writes a snapshot of all grants (if a persistence is attached).
+    /// </summary>
+    private void Persist() {
+      CalendarOAuthStatePersistence persistence = _Persistence;
+      if (persistence == null) {
+        return;
+      }
+      persistence.Save(_PersistenceSectionName, () => {
+        JArray entries = new JArray();
+        foreach (KeyValuePair<string, CalendarGrant> entry in _GrantsByTokenHash) {
+          JObject item = new JObject();
+          item["hash"] = entry.Key;
+          item["sub"] = entry.Value.Subject;
+          CalendarOAuthStatePersistence.WriteCredentials(item, entry.Value.Credentials);
+          item["scopes"] = CalendarOAuthStatePersistence.ToJArray(entry.Value.Scopes);
+          item["resource"] = entry.Value.Resource;
+          item["exp"] = CalendarOAuthStatePersistence.ToUnixMilliseconds(entry.Value.ExpiresUtc);
+          entries.Add(item);
+        }
+        return entries;
+      });
     }
 
     private static string CreateRandomToken() {

@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Web.UJMW;
 
@@ -48,6 +49,8 @@ namespace AI.SmartStandards {
       _Services.AddSingleton<McpToolCatalog>();
       _Services.AddSingleton<McpToolInvoker>();
       _Services.AddSingleton<McpProtocolHandler>();
+      //required by the browser login (protected client binding cookie)
+      _Services.AddDataProtection();
       _Services.AddSingleton<McpBrowserLoginHandler>();
       _Services.AddSingleton<McpIndexPageRenderer>();
     }

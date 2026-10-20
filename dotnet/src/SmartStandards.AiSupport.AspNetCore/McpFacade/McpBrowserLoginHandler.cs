@@ -1,4 +1,5 @@
 using Logging.SmartStandards.CopyForAI.SmartStandards;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -31,6 +32,7 @@ namespace AI.SmartStandards {
     private const string _RefreshTokenCookieName = "mcp_refresh_token";
     private const string _ClientCookieName = "mcp_login_client";
     private const string _TraceCookieName = "mcp_login_trace";
+    private const string _RefreshAttemptedItemKey = "McpBrowserLogin.RefreshAttempted";
 
     private const string _ClientName = "SmartStandards MCP Browser Login";
 
@@ -46,14 +48,16 @@ namespace AI.SmartStandards {
     };
 
     private readonly IOptions<McpFacadeOptions> _Options;
+    private readonly IDataProtector _ClientCookieProtector;
     private readonly ConcurrentDictionary<string, PendingLogin> _PendingLoginsByState;
-    private readonly ConcurrentDictionary<string, ClientBinding> _ClientsByKey;
     private readonly ConcurrentDictionary<string, StoredTrace> _TracesByKey;
 
-    public McpBrowserLoginHandler(IOptions<McpFacadeOptions> options) {
+    public McpBrowserLoginHandler(IOptions<McpFacadeOptions> options, IDataProtectionProvider dataProtectionProvider) {
       _Options = options;
+      //the client binding (client_id, token endpoint, resource) is stored as protected cookie, so that
+      //it survives server restarts and cannot be manipulated (e.g. to redirect the refresh token to another endpoint)
+      _ClientCookieProtector = dataProtectionProvider.CreateProtector("AI.SmartStandards.McpBrowserLoginHandler.ClientBinding.v1");
       _PendingLoginsByState = new ConcurrentDictionary<string, PendingLogin>(StringComparer.Ordinal);
-      _ClientsByKey = new ConcurrentDictionary<string, ClientBinding>(StringComparer.Ordinal);
       _TracesByKey = new ConcurrentDictionary<string, StoredTrace>(StringComparer.Ordinal);
     }
 
@@ -333,9 +337,9 @@ namespace AI.SmartStandards {
         return;
       }
 
-      string clientKey = CreateRandomBase64Url(24);
-      _ClientsByKey[clientKey] = new ClientBinding(pending.ClientId, pending.TokenEndpoint, pending.Resource, DateTime.UtcNow.Add(_ClientLifetime));
-      SetCookie(context, _ClientCookieName, clientKey, DateTime.UtcNow.Add(_ClientLifetime));
+      DateTime clientExpiresUtc = DateTime.UtcNow.Add(_ClientLifetime);
+      ClientBinding client = new ClientBinding(pending.ClientId, pending.TokenEndpoint, pending.Resource, clientExpiresUtc);
+      SetCookie(context, _ClientCookieName, this.ProtectClientBinding(client), clientExpiresUtc);
       this.StoreTokenCookies(context, tokens);
 
       result.AddInfo("8. Done", "The tokens have been stored as HttpOnly cookies (path " + GetCookiePath(context.Request) + ").");
@@ -355,7 +359,7 @@ namespace AI.SmartStandards {
       }
       ClientBinding client = this.GetClientBinding(context);
       if (client == null) {
-        result.AddError("Refresh", "The client registration of the browser login is unknown (e.g. after a server restart) - please log in again.");
+        result.AddError("Refresh", "The client registration cookie of the browser login is missing, expired or invalid (e.g. changed data protection keys) - please log in again.");
         this.DeleteLoginCookies(context);
         return null;
       }
@@ -365,6 +369,7 @@ namespace AI.SmartStandards {
       form["refresh_token"] = refreshToken;
       form["client_id"] = client.ClientId;
       form["resource"] = client.Resource;
+      context.Items[_RefreshAttemptedItemKey] = true;
 
       JObject tokens = this.PostTokenRequest(client.TokenEndpoint, form, "Token request (grant_type=refresh_token)", result);
       if (tokens == null) {
@@ -467,6 +472,34 @@ namespace AI.SmartStandards {
     #region " Cookies "
 
     /// <summary>
+    /// Called after the access token from the cookie was REJECTED by the request authenticator
+    /// (e.g. unknown after a server restart without persistence, or revoked). Uses the refresh token cookie
+    /// once and applies the new access token as 'Authorization' header. Returns true if the request should be
+    /// authenticated again (the previous rejection response headers have been reset).
+    /// </summary>
+    public bool TryRecoverRejectedCookieToken(HttpContext context, McpBrowserLoginResult result) {
+      if (!result.TokenFromCookie || !result.HasRefreshToken) {
+        return false;
+      }
+      if (context.Items.ContainsKey(_RefreshAttemptedItemKey)) {
+        //the refresh token cookie of THIS request was already redeemed (rotation) - reusing it would revoke the token family
+        return false;
+      }
+      result.AddWarning("Access token", "The access token from the cookie was rejected by the MCP endpoint - trying the refresh token.");
+      string accessToken = this.TryRefresh(context, result);
+      result.HasRefreshToken = (accessToken != null);
+      if (accessToken == null) {
+        result.TokenFromCookie = false;
+        context.Request.Headers.Remove("Authorization");
+        return false;
+      }
+      context.Response.StatusCode = StatusCodes.Status200OK;
+      context.Response.Headers.Remove("WWW-Authenticate");
+      context.Request.Headers.Authorization = "Bearer " + accessToken;
+      return true;
+    }
+
+    /// <summary>
     /// Applies the access token cookie as 'Authorization' header of the current GET request
     /// (if there is no explicit header). If the access token cookie expired, the refresh token is used.
     /// </summary>
@@ -508,30 +541,51 @@ namespace AI.SmartStandards {
     }
 
     private void DeleteLoginCookies(HttpContext context) {
-      string clientKey = context.Request.Cookies[_ClientCookieName];
-      if (!string.IsNullOrEmpty(clientKey)) {
-        ClientBinding removed;
-        _ClientsByKey.TryRemove(clientKey, out removed);
-      }
       DeleteCookie(context, _AccessTokenCookieName);
       DeleteCookie(context, _RefreshTokenCookieName);
       DeleteCookie(context, _ClientCookieName);
       DeleteCookie(context, _StateCookieName);
     }
 
+    /// <summary>
+    /// Serializes and protects (encrypts + signs) the client binding for the client cookie.
+    /// </summary>
+    private string ProtectClientBinding(ClientBinding client) {
+      JObject content = new JObject();
+      content["client_id"] = client.ClientId;
+      content["token_endpoint"] = client.TokenEndpoint;
+      content["resource"] = client.Resource;
+      content["exp"] = new DateTimeOffset(client.ExpiresUtc, TimeSpan.Zero).ToUnixTimeSeconds();
+      return _ClientCookieProtector.Protect(content.ToString(Formatting.None));
+    }
+
+    /// <summary>
+    /// Restores the client binding from the protected client cookie (null if missing, invalid or expired).
+    /// </summary>
     private ClientBinding GetClientBinding(HttpContext context) {
-      string clientKey = context.Request.Cookies[_ClientCookieName];
-      if (string.IsNullOrEmpty(clientKey)) {
+      string protectedContent = context.Request.Cookies[_ClientCookieName];
+      if (string.IsNullOrEmpty(protectedContent)) {
         return null;
       }
-      ClientBinding client;
-      if (!_ClientsByKey.TryGetValue(clientKey, out client)) {
+      JObject content;
+      try {
+        content = JObject.Parse(_ClientCookieProtector.Unprotect(protectedContent));
+      }
+      catch (CryptographicException ex) {
+        DevLogger.LogError(ex);
         return null;
       }
-      if (client.ExpiresUtc <= DateTime.UtcNow) {
+      catch (JsonException ex) {
+        DevLogger.LogError(ex);
         return null;
       }
-      return client;
+      DateTime expiresUtc = DateTimeOffset.FromUnixTimeSeconds(content.Value<long>("exp")).UtcDateTime;
+      if (expiresUtc <= DateTime.UtcNow) {
+        return null;
+      }
+      return new ClientBinding(
+        content.Value<string>("client_id"), content.Value<string>("token_endpoint"), content.Value<string>("resource"), expiresUtc
+      );
     }
 
     private static void SetCookie(HttpContext context, string name, string value, DateTime expiresUtc) {
@@ -592,12 +646,6 @@ namespace AI.SmartStandards {
         if (entry.Value.ExpiresUtc <= now) {
           StoredTrace removed;
           _TracesByKey.TryRemove(entry.Key, out removed);
-        }
-      }
-      foreach (KeyValuePair<string, ClientBinding> entry in _ClientsByKey) {
-        if (entry.Value.ExpiresUtc <= now) {
-          ClientBinding removed;
-          _ClientsByKey.TryRemove(entry.Key, out removed);
         }
       }
     }

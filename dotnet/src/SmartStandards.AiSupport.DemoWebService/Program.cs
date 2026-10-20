@@ -133,12 +133,28 @@ namespace AI.SmartStandards.DemoWebService {
       }
 
       //OAuth authorization server (login = calendar credentials, code flow + PKCE, rotating refresh tokens)
-      services.AddSingleton<CalendarOAuthClientRegistry>();
-      services.AddSingleton<IOAuthService>((sp) => new CalendarOAuthService(
-        _CalendarGrantStore,
-        sp.GetRequiredService<ICalDavCredentialValidator>(),
-        sp.GetRequiredService<CalendarOAuthClientRegistry>()
-      ));
+      CalendarOAuthClientRegistry clientRegistry = new CalendarOAuthClientRegistry();
+      //optional: encrypted persistence of grants + client registrations (logins survive a restart)
+      string oAuthPersistDir = config.GetValue<string>("OAuth:PersistToDir");
+      CalendarOAuthStatePersistence oAuthPersistence = null;
+      if (!string.IsNullOrWhiteSpace(oAuthPersistDir)) {
+        oAuthPersistence = new CalendarOAuthStatePersistence(oAuthPersistDir);
+        _CalendarGrantStore.AttachPersistence(oAuthPersistence);
+        clientRegistry.AttachPersistence(oAuthPersistence);
+        DevLogger.LogInformation("OAuth state is persisted (encrypted) into '" + oAuthPersistence.FilePath + "'.");
+      }
+      services.AddSingleton(clientRegistry);
+      services.AddSingleton<IOAuthService>((sp) => {
+        CalendarOAuthService oAuthService = new CalendarOAuthService(
+          _CalendarGrantStore,
+          sp.GetRequiredService<ICalDavCredentialValidator>(),
+          clientRegistry
+        );
+        if (oAuthPersistence != null) {
+          oAuthService.AttachPersistence(oAuthPersistence);
+        }
+        return oAuthService;
+      });
       services.AddSingleton<IAuthPageBuilder>(new DefaultAuthPageBuilder("Calendar Login", "/", "/"));
       services.AddOAuthServerController();
 

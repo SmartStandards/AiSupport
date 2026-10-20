@@ -1,4 +1,5 @@
 using AI.SmartStandards.DemoWebService.Sample.Calendar;
+using Newtonsoft.Json.Linq;
 using Security.AccessTokenHandling;
 using Security.AccessTokenHandling.OAuth;
 using Security.AccessTokenHandling.OAuth.Server;
@@ -15,9 +16,12 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
   /// Login = CalDAV credentials, validated against the calendar backend (real CalDAV server or local mock).
   /// Supported: authorization code flow with mandatory PKCE (S256), one-time codes, rotating refresh tokens
   /// with reuse detection. NOT supported: implicit flow, client credentials, Windows pass-through.
-  /// LIMITATION: all state is held in-memory and lost on restart (clients have to log in again).
+  /// Without 'AttachPersistence' all state is held in-memory and lost on restart (clients have to log in again).
+  /// With persistence, refresh grants survive a restart (login sessions and codes stay in-memory - they live only minutes).
   /// </summary>
   public sealed class CalendarOAuthService : IOAuthService {
+
+    private const string _PersistenceSectionName = "refreshGrants";
 
     private static readonly TimeSpan _SessionLifetime = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan _CodeLifetime = TimeSpan.FromMinutes(1);
@@ -33,6 +37,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
     private readonly ConcurrentDictionary<string, PendingCode> _CodesByHash = new ConcurrentDictionary<string, PendingCode>(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RefreshGrant> _RefreshGrantsByHash = new ConcurrentDictionary<string, RefreshGrant>(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _ConsumedRefreshHashesToFamily = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+    private CalendarOAuthStatePersistence _Persistence;
 
     public CalendarOAuthService(
       CalendarGrantStore grantStore, ICalDavCredentialValidator credentialValidator, CalendarOAuthClientRegistry clientRegistry
@@ -65,6 +70,79 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
         _UtcNow = utcNow;
       }
     }
+
+    #region " Persistence "
+
+    /// <summary>
+    /// Restores the persisted (not yet expired) refresh grants including the reuse-detection state and writes
+    /// every subsequent change into the given persistence. Only token hashes are persisted - never raw tokens.
+    /// </summary>
+    public void AttachPersistence(CalendarOAuthStatePersistence persistence) {
+      if (persistence == null) {
+        throw new ArgumentNullException(nameof(persistence));
+      }
+      DateTime now = _UtcNow();
+      JObject section = persistence.Load(_PersistenceSectionName) as JObject;
+      if (section != null) {
+        JArray grants = section["grants"] as JArray;
+        if (grants != null) {
+          foreach (JToken token in grants) {
+            JObject entry = (JObject)token;
+            DateTime expiresUtc = CalendarOAuthStatePersistence.FromUnixMilliseconds(entry["exp"]);
+            if (expiresUtc <= now) {
+              continue;
+            }
+            _RefreshGrantsByHash[entry.Value<string>("hash")] = new RefreshGrant(
+              entry.Value<string>("client"),
+              CalendarOAuthStatePersistence.ReadCredentials(entry),
+              CalendarOAuthStatePersistence.ToStringArray(entry["scopes"]),
+              entry.Value<string>("family"),
+              expiresUtc
+            );
+          }
+        }
+        JObject consumed = section["consumed"] as JObject;
+        if (consumed != null) {
+          foreach (JProperty entry in consumed.Properties()) {
+            _ConsumedRefreshHashesToFamily[entry.Name] = entry.Value.ToString();
+          }
+        }
+      }
+      _Persistence = persistence;
+    }
+
+    /// <summary>
+    /// Writes a snapshot of all refresh grants and consumed refresh token hashes (if a persistence is attached).
+    /// </summary>
+    private void Persist() {
+      CalendarOAuthStatePersistence persistence = _Persistence;
+      if (persistence == null) {
+        return;
+      }
+      persistence.Save(_PersistenceSectionName, () => {
+        JArray grants = new JArray();
+        foreach (KeyValuePair<string, RefreshGrant> entry in _RefreshGrantsByHash) {
+          JObject item = new JObject();
+          item["hash"] = entry.Key;
+          item["client"] = entry.Value.ClientId;
+          CalendarOAuthStatePersistence.WriteCredentials(item, entry.Value.Credentials);
+          item["scopes"] = CalendarOAuthStatePersistence.ToJArray(entry.Value.Scopes);
+          item["family"] = entry.Value.FamilyId;
+          item["exp"] = CalendarOAuthStatePersistence.ToUnixMilliseconds(entry.Value.ExpiresUtc);
+          grants.Add(item);
+        }
+        JObject consumed = new JObject();
+        foreach (KeyValuePair<string, string> entry in _ConsumedRefreshHashesToFamily) {
+          consumed[entry.Key] = entry.Value;
+        }
+        JObject section = new JObject();
+        section["grants"] = grants;
+        section["consumed"] = consumed;
+        return section;
+      });
+    }
+
+    #endregion
 
     #region " Login (Step 1) "
 
@@ -208,6 +286,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
       }
       _ConsumedRefreshHashesToFamily[hash] = grant.FamilyId;
       if (grant.ExpiresUtc <= _UtcNow()) {
+        this.Persist();
         return TokenIssuingResult.FromError("invalid_grant", "The refresh token expired.");
       }
       return this.IssueTokens(grant.ClientId, grant.Credentials, grant.Scopes, grant.FamilyId);
@@ -275,6 +354,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
       _RefreshGrantsByHash[HashToken(refreshToken)] = new RefreshGrant(
         clientId, credentials, scopes, familyId, _UtcNow().Add(_RefreshTokenLifetime)
       );
+      this.Persist();
       TokenIssuingResult result = new TokenIssuingResult();
       result.access_token = accessToken;
       result.token_type = "Bearer";
@@ -293,6 +373,7 @@ namespace AI.SmartStandards.DemoWebService.Sample.OAuth {
           }
         }
       }
+      this.Persist();
     }
 
     private bool TryGetSession(string clientId, string sessionId, bool consume, out LoginSession session) {

@@ -49,6 +49,9 @@ namespace AI.SmartStandards {
             return Task.CompletedTask;
           }
           bool authenticated = Authenticate(context, options.Value);
+          if (!authenticated && browserLogin.TryRecoverRejectedCookieToken(context, login)) {
+            authenticated = Authenticate(context, options.Value);
+          }
           return renderer.HandleBrowserLoginAsync(context, login, authenticated);
         }
       ).WithDisplayName("SmartStandards AiSupport MCP Facade (Tool Overview)");
