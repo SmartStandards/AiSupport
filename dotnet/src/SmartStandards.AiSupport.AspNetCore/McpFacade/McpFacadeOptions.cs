@@ -14,6 +14,8 @@ namespace AI.SmartStandards {
     private readonly List<string> _IncludedApiGroups;
     private Func<HttpContext, bool> _RequestAuthenticator;
     private bool _EnableBrowserLogin;
+    private bool _SkipRequestAuthenticatorForLocalhost;
+    private bool _EnableDiagnosticTracing;
 
     public McpFacadeOptions() {
       _EndpointPattern = "/mcp";
@@ -24,6 +26,39 @@ namespace AI.SmartStandards {
       _IncludedApiGroups = new List<string>();
       _RequestAuthenticator = null;
       _EnableBrowserLogin = false;
+      _SkipRequestAuthenticatorForLocalhost = false;
+      _EnableDiagnosticTracing = false;
+    }
+
+    /// <summary>
+    /// Enables metadata-only DevLogger trace events for MCP request, authentication and tool execution phases.
+    /// Events use the range 75300-75399 and include correlation, elapsed time and status, but no tokens,
+    /// cookies, query strings, request/response bodies or tool arguments. The logging sink must accept Trace.
+    /// Default: false.
+    /// </summary>
+    public bool EnableDiagnosticTracing {
+      get {
+        return _EnableDiagnosticTracing;
+      }
+      set {
+        _EnableDiagnosticTracing = value;
+      }
+    }
+
+    /// <summary>
+    /// If true, the 'RequestAuthenticator' is NOT executed for requests from a loopback address (localhost),
+    /// so that local MCP clients can connect without the OAuth flow (DEVELOPMENT/DIAGNOSTICS).
+    /// NOTE: the target authorization of the invoked actions stays active anyway. Do not enable this behind
+    /// a reverse proxy running on the same machine, because then every remote request appears as loopback.
+    /// Default: false.
+    /// </summary>
+    public bool SkipRequestAuthenticatorForLocalhost {
+      get {
+        return _SkipRequestAuthenticatorForLocalhost;
+      }
+      set {
+        _SkipRequestAuthenticatorForLocalhost = value;
+      }
     }
 
     /// <summary>
@@ -49,7 +84,10 @@ namespace AI.SmartStandards {
     /// Optional authentication hook which is executed for every MCP request BEFORE any JSON-RPC processing.
     /// It must return true to continue. If it returns false, it is responsible for having written the
     /// HTTP rejection (e.g. status 401 including a 'WWW-Authenticate' challenge, or 403) and the request ends there.
-    /// If null (default), no pre-authentication happens (target authorization of the invoked actions stays active anyway).
+    /// If null (default), the requirements of the published operations are resolved via AuthTokenHandling (UC-4
+    /// 'EndpointAuthResolver') and the request is validated via 'AccessTokenValidator' (inactive, if no token source
+    /// is registered or all published operations are anonymous). The target authorization of the invoked actions
+    /// stays active anyway.
     /// </summary>
     public Func<HttpContext, bool> RequestAuthenticator {
       get {

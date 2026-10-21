@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
@@ -26,10 +27,14 @@ namespace AI.SmartStandards {
 
     public async Task HandleAsync(HttpContext context) {
       JObject request;
+      McpDiagnosticTrace.Write(context, 2097980883290334320L, MyLogEventKind.McpRequestBodyReading);
       try {
         request = await this.ReadRequestAsync(context).ConfigureAwait(false);
+        McpDiagnosticTrace.Write(context, 2097980883290734594L, MyLogEventKind.McpRequestBodyRead);
       }
       catch (Exception ex) {
+        McpDiagnosticTrace.Write(context, 2097980883291225216L, MyLogEventKind.McpProtocolFailure,
+          "category=parse; exceptionType=" + ex.GetType().Name);
         JObject parseError = this.CreateErrorResponse(null, -32700, "Invalid JSON-RPC request: " + ex.Message);
         await this.WriteJsonAsync(context, StatusCodes.Status400BadRequest, parseError).ConfigureAwait(false);
         return;
@@ -38,11 +43,14 @@ namespace AI.SmartStandards {
       JToken id = request["id"];
       if (id == null) {
         context.Response.StatusCode = StatusCodes.Status202Accepted;
+        McpDiagnosticTrace.Write(context, 2097980883291613178L, MyLogEventKind.McpNotificationAccepted);
         return;
       }
 
       string method = request.Value<string>("method");
       if (string.IsNullOrWhiteSpace(method)) {
+        McpDiagnosticTrace.Write(context, 2097980883292461984L, MyLogEventKind.McpProtocolFailure,
+          "category=missing-method");
         JObject methodError = this.CreateErrorResponse(id, -32600, "JSON-RPC method is missing.");
         await this.WriteJsonAsync(context, StatusCodes.Status400BadRequest, methodError).ConfigureAwait(false);
         return;
@@ -52,13 +60,27 @@ namespace AI.SmartStandards {
         JObject response = await this.DispatchAsync(context, id, method, request["params"] as JObject).ConfigureAwait(false);
         await this.WriteJsonAsync(context, StatusCodes.Status200OK, response).ConfigureAwait(false);
       }
+      catch (McpAuthenticationRequiredException ex) {
+        McpDiagnosticTrace.Write(context, 2097980883293126188L, MyLogEventKind.McpProtocolFailure,
+          "category=target-authentication");
+        //real HTTP 401 + challenge, so that MCP clients start (or refresh) the OAuth flow
+        McpAuthenticationGate.WriteRejection(context, StatusCodes.Status401Unauthorized, ex.ChallengeHeaders);
+      }
       catch (Exception ex) {
+        McpDiagnosticTrace.Write(context, 2097980883293295728L, MyLogEventKind.McpProtocolFailure,
+          "category=dispatch; exceptionType=" + ex.GetType().Name);
         JObject errorResponse = this.CreateErrorResponse(id, -32603, ex.Message);
         await this.WriteJsonAsync(context, StatusCodes.Status500InternalServerError, errorResponse).ConfigureAwait(false);
       }
     }
 
     private async Task<JObject> DispatchAsync(HttpContext context, JToken id, string method, JObject parameters) {
+      string diagnosticMethod = "unsupported";
+      if (method == "initialize" || method == "tools/list" || method == "tools/call") {
+        diagnosticMethod = method;
+      }
+      McpDiagnosticTrace.Write(context, 2097980883294147268L, MyLogEventKind.McpProtocolDispatch,
+        "method=" + diagnosticMethod);
       if (string.Equals(method, "initialize", StringComparison.Ordinal)) {
         return this.CreateInitializeResponse(id, parameters);
       }
@@ -127,6 +149,8 @@ namespace AI.SmartStandards {
         return this.CreateErrorResponse(id, -32602, "Unknown MCP tool '" + toolName + "'.");
       }
 
+      McpDiagnosticTrace.Write(context, 2097980883294570950L, MyLogEventKind.McpToolResolved,
+        "tool=" + tool.Name);
       McpToolCallResult callResult = await _ToolInvoker.InvokeAsync(context, tool, arguments).ConfigureAwait(false);
 
       JObject result = new JObject();
@@ -184,8 +208,31 @@ namespace AI.SmartStandards {
     private async Task WriteJsonAsync(HttpContext context, int statusCode, JObject response) {
       context.Response.StatusCode = statusCode;
       context.Response.ContentType = "application/json";
+      McpDiagnosticTrace.Write(context, 2097980883295056931L, MyLogEventKind.McpResponseWriting);
       string json = response.ToString(Formatting.None);
       await context.Response.WriteAsync(json).ConfigureAwait(false);
+      McpDiagnosticTrace.Write(context, 2097980883295481295L, MyLogEventKind.McpResponseWritten);
+    }
+
+  }
+
+  /// <summary>
+  /// Thrown if an invoked target action answered with HTTP 401: the MCP request is then rejected with a real
+  /// HTTP 401 (incl. the challenge headers of the target), instead of an MCP 'isError' result.
+  /// </summary>
+  internal sealed class McpAuthenticationRequiredException : Exception {
+
+    private readonly KeyValuePair<string, string>[] _ChallengeHeaders;
+
+    public McpAuthenticationRequiredException(KeyValuePair<string, string>[] challengeHeaders)
+      : base("The target operation requires authentication.") {
+      _ChallengeHeaders = challengeHeaders;
+    }
+
+    public KeyValuePair<string, string>[] ChallengeHeaders {
+      get {
+        return _ChallengeHeaders;
+      }
     }
 
   }

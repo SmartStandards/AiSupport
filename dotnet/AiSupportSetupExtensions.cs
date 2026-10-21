@@ -1,0 +1,1 @@
+﻿C:\Users\TOBIA571\.nuget\packages\smartstandards.authtokenhandling\6.0.0-develop

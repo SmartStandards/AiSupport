@@ -36,6 +36,11 @@ metadata:
   (`return null`). Keep this in mind when relying on its error behavior. Improving it is part of the harness idea.
 - `DynamicAiServiceFactory`: only `ImplementationMode.PureAiCommunication` works. `AiGeneratedInmemoryCode` throws `NotImplementedException`.
 - Tests against real providers are marked `[Ignore]` and need API keys.
+- MCP diagnostics are opt-in via `McpFacadeOptions.EnableDiagnosticTracing` (demo: `Mcp:EnableDiagnosticTracing`).
+  `McpDiagnosticTrace` uses DevLogger Trace events in the user-approved `MyLogEventKind` range **75300-75399**.
+  Never log tokens, cookies, payloads, query strings, arbitrary client method names/IDs or exception messages there.
+  Correlation IDs are server-generated; elapsed times are cumulative. The logging sink must accept Trace (0).
+  See `doc/3-quickstart.md` for activation and phase interpretation. OAuth endpoints belong to AuthTokenHandling.
 - `.github/copilot-instructions.md` in `dotnet/` only contains generic Azure rules, not project rules.
 
 ## Related skills

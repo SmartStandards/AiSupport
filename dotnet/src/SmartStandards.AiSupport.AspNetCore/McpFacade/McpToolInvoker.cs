@@ -31,13 +31,17 @@ namespace AI.SmartStandards {
     }
 
     public async Task<McpToolCallResult> InvokeAsync(HttpContext outerContext, McpToolDefinition tool, JObject arguments) {
+      McpDiagnosticTrace.Write(outerContext, 2097980883295868220L, MyLogEventKind.McpToolPreparing);
       try {
         using (IServiceScope scope = _ScopeFactory.CreateScope()) {
           DefaultHttpContext targetContext = this.CreateTargetContext(outerContext, scope.ServiceProvider, tool, arguments);
           RouteData routeData = this.CreateRouteData(tool, arguments);
           ActionContext actionContext = new ActionContext(targetContext, routeData, tool.ApiDescription.ActionDescriptor, new ModelStateDictionary());
 
+          McpDiagnosticTrace.Write(outerContext, 2097980883296400211L, MyLogEventKind.McpTargetAuthorizationStarted);
           bool authorized = await this.AuthorizeAsync(scope.ServiceProvider, targetContext, tool.ApiDescription.ActionDescriptor).ConfigureAwait(false);
+          McpDiagnosticTrace.Write(outerContext, 2097980883297159212L, MyLogEventKind.McpTargetAuthorizationCompleted,
+            "authorized=" + authorized);
           if (!authorized) {
             JObject authorizationFailure = new JObject();
             authorizationFailure["statusCode"] = StatusCodes.Status403Forbidden;
@@ -51,11 +55,25 @@ namespace AI.SmartStandards {
             throw new InvalidOperationException("No ASP.NET Core action invoker could be created for MCP tool '" + tool.Name + "'.");
           }
 
+          McpDiagnosticTrace.Write(outerContext, 2097980883297427665L, MyLogEventKind.McpTargetInvocationStarted);
           await actionInvoker.InvokeAsync().ConfigureAwait(false);
-          return await this.CreateResultAsync(targetContext).ConfigureAwait(false);
+          McpDiagnosticTrace.Write(outerContext, 2097980883298070243L, MyLogEventKind.McpTargetInvocationCompleted,
+            "targetStatus=" + targetContext.Response.StatusCode);
+          McpDiagnosticTrace.Write(outerContext, 2097980883298778128L, MyLogEventKind.McpToolResultReading);
+          McpToolCallResult result = await this.CreateResultAsync(targetContext).ConfigureAwait(false);
+          McpDiagnosticTrace.Write(outerContext, 2097980883298954907L, MyLogEventKind.McpToolCompleted,
+            "isError=" + result.IsError);
+          return result;
         }
       }
+      catch (McpAuthenticationRequiredException) {
+        McpDiagnosticTrace.Write(outerContext, 2097980883299896246L, MyLogEventKind.McpToolFailure,
+          "category=target-authentication; targetStatus=401");
+        throw;
+      }
       catch (Exception ex) {
+        McpDiagnosticTrace.Write(outerContext, 2097980883300245784L, MyLogEventKind.McpToolFailure,
+          "category=execution; exceptionType=" + UnwrapException(ex).GetType().Name);
         string message = CreateAgentMessage(UnwrapException(ex));
         JObject error = new JObject();
         error["message"] = message;
@@ -265,6 +283,16 @@ namespace AI.SmartStandards {
       string text = responseBody;
       if (string.IsNullOrWhiteSpace(text)) {
         text = "HTTP " + targetContext.Response.StatusCode;
+      }
+      if (targetContext.Response.StatusCode == StatusCodes.Status401Unauthorized) {
+        //the target requires (re-)authentication: propagated as real HTTP 401 incl. challenge (OAuth discovery)
+        List<KeyValuePair<string, string>> challengeHeaders = new List<KeyValuePair<string, string>>();
+        foreach (KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues> header in targetContext.Response.Headers) {
+          if (string.Equals(header.Key, "WWW-Authenticate", StringComparison.OrdinalIgnoreCase)) {
+            challengeHeaders.Add(new KeyValuePair<string, string>(header.Key, header.Value.ToString()));
+          }
+        }
+        throw new McpAuthenticationRequiredException(challengeHeaders.ToArray());
       }
       if (isError) {
         string message = ExtractErrorMessage(structuredContent, responseBody, targetContext.Response.StatusCode);

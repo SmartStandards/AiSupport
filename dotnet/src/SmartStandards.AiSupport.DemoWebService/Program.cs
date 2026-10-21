@@ -1,4 +1,4 @@
-using AI.SmartStandards.DemoWebService.Sample.Calendar;
+﻿using AI.SmartStandards.DemoWebService.Sample.Calendar;
 using AI.SmartStandards.DemoWebService.Sample.OAuth;
 using CyclicTriggering;
 using KnowledgeManagement.SmartStandards;
@@ -17,11 +17,17 @@ namespace AI.SmartStandards.DemoWebService {
 
   public static partial class Program {
 
-    private static readonly CalendarGrantStore _CalendarGrantStore = new CalendarGrantStore();
+    /// <summary>
+    /// The scope that is required for the calendar tools.
+    /// </summary>
+    private const string _CalendarScope = "calendar";
 
-    private static readonly CalendarRequestAuthenticator _CalendarAuthenticator = new CalendarRequestAuthenticator(
-      _CalendarGrantStore, "/.well-known/oauth-protected-resource/mcp"
-    );
+    /// <summary>
+    /// The API group (= logical name for the AccessTokenManager) of the calendar sample.
+    /// </summary>
+    private const string _CalendarApiGroup = "Calendar-Demo";
+
+    private static IServiceProvider _ServiceProvider;
 
     static partial void OnConfigureServices(IServiceCollection services, IConfiguration config) {
 
@@ -33,36 +39,28 @@ namespace AI.SmartStandards.DemoWebService {
 
       UjmwHostConfiguration.EnableApiGroupNameFallback = true;
 
-      UjmwHostConfiguration.AuthHeaderEvaluator = (
-        (string rawAuthHeader, Type contractType, MethodInfo targetContractMethod, string callingMachine, ref int httpReturnCode, ref string failedReason) => {
-         
-          if(contractType == typeof(ICyclicTriggerReceiver)) {
+      UjmwHostConfiguration.SetAuthHeaderEvaluator(
+        (
+          string rawAuthHeader, Type contractType, MethodInfo targetContractMethod, string apiGroupName, string callingMachine,
+          ref int httpReturnCode, ref string failedReason, ref KeyValuePair<string, string>[] responseHeaders
+        ) => {
+
+          if (contractType == typeof(ICyclicTriggerReceiver)) {
             return true;
           }
 
-          //calendar sample: requires a valid access token with scope 'calendar' (no bypass)
-          if (contractType == typeof(ICalendarAccess)) {
-            CalendarGrant grant;
-            int statusCode;
-            string error;
-            string errorDescription;
-            if (_CalendarAuthenticator.TryAuthorize(rawAuthHeader, out grant, out statusCode, out error, out errorDescription)) {
-              return true;
-            }
-            httpReturnCode = statusCode;
-            failedReason = errorDescription;
-            return false;
-          }
-
-          //in this demo - any auth header is ok - but there must be one ;-)
-          if (string.IsNullOrWhiteSpace(rawAuthHeader)) {
-            httpReturnCode = 403;
-            failedReason = "This demo requires at least ANY string as authheader!";
-            return false;
-          }
-          return true;
+          //everything else is validated by AuthTokenHandling (token source, required scopes, 401 challenge)
+          return AccessTokenValidator.TryValidateHttpAuthHeader(
+            rawAuthHeader, contractType, targetContractMethod, apiGroupName, callingMachine,
+            ref httpReturnCode, ref failedReason, ref responseHeaders
+          );
         }
       );
+
+      //token validation via the AccessTokenManager (the Cheap OAuth Server registers itself as token source 'default');
+      //the calendar API group requires the scope 'calendar' (prefixed with the configured API permission prefix)
+      AccessTokenValidator.ConfigureTokenValidationViaAccessTokenManager();
+      AccessTokenManager.RequireScope(_CalendarScope, _CalendarApiGroup);
 
       #region " Knowledge WIKI " 
 
@@ -108,9 +106,7 @@ namespace AI.SmartStandards.DemoWebService {
 
       services.AddHttpContextAccessor();
 
-      services.AddSingleton(_CalendarGrantStore);
-      services.AddSingleton(_CalendarAuthenticator);
-      services.AddSingleton<ICalDavCredentialSource, AccessTokenCalDavCredentialSource>();
+      services.AddSingleton<ICalDavCredentialSource, CheapOAuthCalDavCredentialSource>();
 
       if (calDavOptions.IsMockMode) {
         //LOCAL TESTING ONLY: persists into 'CalDav:MockToLocalDir' and accepts only 'MockAuthUser'/'MockAuthPass'
@@ -132,36 +128,20 @@ namespace AI.SmartStandards.DemoWebService {
         services.AddSingleton<ICalDavCredentialValidator>((sp) => sp.GetRequiredService<CalDavCalendarAccess>());
       }
 
-      //OAuth authorization server (login = calendar credentials, code flow + PKCE, rotating refresh tokens)
-      CalendarOAuthClientRegistry clientRegistry = new CalendarOAuthClientRegistry();
-      //optional: encrypted persistence of grants + client registrations (logins survive a restart)
-      string oAuthPersistDir = config.GetValue<string>("OAuth:PersistToDir");
-      CalendarOAuthStatePersistence oAuthPersistence = null;
-      if (!string.IsNullOrWhiteSpace(oAuthPersistDir)) {
-        oAuthPersistence = new CalendarOAuthStatePersistence(oAuthPersistDir);
-        _CalendarGrantStore.AttachPersistence(oAuthPersistence);
-        clientRegistry.AttachPersistence(oAuthPersistence);
-        DevLogger.LogInformation("OAuth state is persisted (encrypted) into '" + oAuthPersistence.FilePath + "'.");
-      }
-      services.AddSingleton(clientRegistry);
-      services.AddSingleton<IOAuthService>((sp) => {
-        CalendarOAuthService oAuthService = new CalendarOAuthService(
-          _CalendarGrantStore,
-          sp.GetRequiredService<ICalDavCredentialValidator>(),
-          clientRegistry
-        );
-        if (oAuthPersistence != null) {
-          oAuthService.AttachPersistence(oAuthPersistence);
-        }
-        return oAuthService;
-      });
-      services.AddSingleton<IAuthPageBuilder>(new DefaultAuthPageBuilder("Calendar Login", "/", "/"));
-      services.AddOAuthServerController();
+      //login page of the Cheap OAuth Server = calendar credentials
+      CalDavCheapOAuthLoginValidator loginValidator = new CalDavCheapOAuthLoginValidator(
+        () => _ServiceProvider.GetRequiredService<ICalDavCredentialValidator>(),
+        new string[] { _CalendarScope }
+      );
 
-      //RFC 9728 discovery for the MCP resource ('/.well-known/oauth-protected-resource/mcp')
-      services.AddWellKnownOAuthProtectedResourceEndpoint((o) => {
-        o.ScopesSupported = new string[] { CalendarGrantStore.CalendarScope };
-        o.AuthorizationServers = new string[] { "/" };
+      //OAuth authorization server (login = calendar credentials, code flow + PKCE, rotating refresh tokens,
+      //dynamic client registration, RFC 8414 + RFC 9728 discovery) - provided completely by AuthTokenHandling
+      services.AddCheapOAuthServer((o) => {
+        o.PersistToDir = config.GetValue<string>("OAuth:PersistToDir");
+        o.ScopesSupported = new string[] { _CalendarScope };
+        o.LoginPageTitle = "Calendar Login";
+        //the CalDAV credentials are retained in the grant (required server-side for the backend calls)
+        o.ValidateLogin = loginValidator.ValidateLogin;
       });
 
       services.AddDynamicUjmwControllers((r) => {
@@ -170,7 +150,7 @@ namespace AI.SmartStandards.DemoWebService {
           options.ControllerRoute = "calendar";
           options.EnableRequestSidechannel = false;
           options.EnableResponseSidechannel = false;
-          options.ApiGroupName = "Calendar-Demo";
+          options.ApiGroupName = _CalendarApiGroup;
         });
 
       });
@@ -179,13 +159,15 @@ namespace AI.SmartStandards.DemoWebService {
         ai.AddMcpFacade((mcp) => {
           mcp.EndpointPattern = "/mcp";
           mcp.ServerName = "SmartStandards.AiSupport.DemoWebService";
+          mcp.EnableDiagnosticTracing = config.GetValue<bool>("Mcp:EnableDiagnosticTracing");
           //mcp.IncludeOperation("calendar_list_calendars", "POST", "calendar/GetCalendars");
           //mcp.IncludeOperation("calendar_list_events", "POST", "calendar/GetEvents");
-          mcp.IncludeOperationsFromApiGroup("Calendar-Demo");
-          //authentication BEFORE any JSON-RPC processing (real HTTP 401 + Bearer challenge)
-          mcp.RequestAuthenticator = _CalendarAuthenticator.Authenticate;
+          mcp.IncludeOperationsFromApiGroup(_CalendarApiGroup);
           //DEVELOPMENT ONLY: GET '/mcp?login' runs the OAuth flow like an MCP client and stores the tokens as cookies
           mcp.EnableBrowserLogin = !config.GetValue<bool>("ProdMode");
+          //DEVELOPMENT ONLY: local MCP clients (localhost) can connect without the OAuth flow
+          //mcp.SkipRequestAuthenticatorForLocalhost = false; !config.GetValue<bool>("ProdMode");
+          //no 'RequestAuthenticator': the MCP endpoint is protected via AuthTokenHandling (UC-4) like the published operations
         });
       });
 
@@ -206,6 +188,8 @@ namespace AI.SmartStandards.DemoWebService {
       WebApplication app, IConfiguration config, IServiceProvider services,
       IWebHostEnvironment environment, IHostApplicationLifetime lifetime
     ) {
+
+      _ServiceProvider = services;
 
       app.UseAmbientFieldAdapterMiddleware();
 
@@ -237,9 +221,8 @@ namespace AI.SmartStandards.DemoWebService {
       app.UseAuthorization();
 
       app.UseEndpoints((endpoints) => {
-        endpoints.MapControllers();
+        endpoints.MapControllers(); //incl. OAuth endpoints + discovery (Cheap OAuth Server)
         endpoints.MapAiSupportMcpFacade();
-        endpoints.MapCalendarOAuthEndpoints();
       });
 
       int tid = Thread.CurrentThread.ManagedThreadId;

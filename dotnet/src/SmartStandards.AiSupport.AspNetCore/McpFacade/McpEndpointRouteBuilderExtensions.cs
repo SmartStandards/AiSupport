@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Builder;
+﻿using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,6 +23,7 @@ namespace AI.SmartStandards {
       group.MapPost(
         string.Empty,
         (HttpContext context, McpProtocolHandler handler) => {
+          McpDiagnosticTrace.BeginRequest(context, options.Value.EnableDiagnosticTracing);
           if (!Authenticate(context, options.Value)) {
             return Task.CompletedTask;
           }
@@ -33,6 +34,7 @@ namespace AI.SmartStandards {
       group.MapGet(
         string.Empty,
         (HttpContext context, McpIndexPageRenderer renderer, McpBrowserLoginHandler browserLogin) => {
+          McpDiagnosticTrace.BeginRequest(context, options.Value.EnableDiagnosticTracing);
           bool useBrowserLogin = (
             browserLogin.IsEnabled && options.Value.EnableHumanReadableIndex && !renderer.IsEventStreamRequest(context)
           );
@@ -44,7 +46,10 @@ namespace AI.SmartStandards {
           }
 
           //browser login (GET only): may redirect, or applies the token cookie as 'Authorization' header of this request
+          McpDiagnosticTrace.Write(context, 2097980883287729013L, MyLogEventKind.McpBrowserLoginStarted);
           McpBrowserLoginResult login = browserLogin.Process(context);
+          McpDiagnosticTrace.Write(context, 2097980883288338324L, MyLogEventKind.McpBrowserLoginCompleted,
+            "responseWritten=" + login.ResponseWritten);
           if (login.ResponseWritten) {
             return Task.CompletedTask;
           }
@@ -60,12 +65,21 @@ namespace AI.SmartStandards {
     }
 
     /// <summary>
-    /// Executes the optional request authenticator (before any JSON-RPC processing).
+    /// Executes the request authenticator (before any JSON-RPC processing): the configured
+    /// 'McpFacadeOptions.RequestAuthenticator' or - by default - the 'McpAuthenticationGate' (AuthTokenHandling).
     /// Returns false if the request was rejected (the authenticator has written the HTTP response).
     /// </summary>
     private static bool Authenticate(HttpContext context, McpFacadeOptions options) {
+      McpDiagnosticTrace.Write(context, 2097980883288497973L, MyLogEventKind.McpAuthenticationStarted,
+        "customAuthenticator=" + (options.RequestAuthenticator != null));
       Func<HttpContext, bool> authenticator = options.RequestAuthenticator;
       if (authenticator == null) {
+        McpAuthenticationGate gate = context.RequestServices.GetRequiredService<McpAuthenticationGate>();
+        authenticator = gate.Authenticate;
+      }
+      if (options.SkipRequestAuthenticatorForLocalhost && IsLocalRequest(context)) {
+        McpDiagnosticTrace.Write(context, 2097980883289095566L, MyLogEventKind.McpAuthenticationBypassed,
+          "reason=localhost");
         return true;
       }
       bool authenticated = authenticator.Invoke(context);
@@ -73,7 +87,20 @@ namespace AI.SmartStandards {
         //fail closed, if the authenticator forgot to set a rejection status
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
       }
+      McpDiagnosticTrace.Write(context, 2097980883289848947L, MyLogEventKind.McpAuthenticationCompleted,
+        "authenticated=" + authenticated + "; challengePresent=" + context.Response.Headers.ContainsKey("WWW-Authenticate"));
       return authenticated;
+    }
+
+    /// <summary>
+    /// True, if the request was sent from a loopback address (localhost).
+    /// </summary>
+    private static bool IsLocalRequest(HttpContext context) {
+      System.Net.IPAddress remoteIpAddress = context.Connection.RemoteIpAddress;
+      if (remoteIpAddress == null) {
+        return false;
+      }
+      return System.Net.IPAddress.IsLoopback(remoteIpAddress);
     }
 
   }

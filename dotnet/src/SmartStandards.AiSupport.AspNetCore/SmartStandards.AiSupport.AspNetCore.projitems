@@ -10,7 +10,10 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)AiSupportSetupExtensions.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\CheapOAuthMcpAuthenticator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpAuthenticationGate.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpBrowserLoginHandler.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpDiagnosticTrace.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpEndpointRouteBuilderExtensions.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpFacadeOptions.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpDocumentationProvider.cs" />
@@ -19,5 +22,8 @@
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpProtocolHandler.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpToolCatalog.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)McpFacade\McpToolInvoker.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)AiSupportSetup.tmp.txt" />
   </ItemGroup>
 </Project>

@@ -71,7 +71,9 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 
-    <PackageReference Include="UJMW.DynamicController" Version="5.6.3" />
+    <PackageReference Include="UJMW.DynamicController" Version="5.7.0-develop" />
+    <PackageReference Include="SmartStandards.AuthTokenHandling" Version="6.0.2-develop" />
+    <PackageReference Include="SmartStandards.AuthTokenHandling.MvcSupport" Version="6.0.2-develop" />
 
   </ItemGroup>
 
