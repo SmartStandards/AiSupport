@@ -12,6 +12,15 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.2
+released **2026-10-21**, including:
+ - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
+ - MCP Server working (with AuthTokenHandling)
+ - MCP via Cal-Demo works
+ - added PCKE OAuth authentication for MCP Endpoint
+
+
+
 ## v 0.1.1
 released **2026-10-19**, including:
  - Added own MCP Endpoint for ASP.net core webapi (and a demo - calendar access sample)
