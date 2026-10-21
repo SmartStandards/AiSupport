@@ -12,6 +12,16 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.1
+released **2026-10-19**, including:
+ - Added own MCP Endpoint for ASP.net core webapi (and a demo - calendar access sample)
+ - docs: specify generic MCP facade and OAuth CalDAV demo epic
+ - docs: rename core docs to numbered names, translate docs and readme to English
+ - docs: restructure documentation per ai-cowork-process, add harness skills
+ - added ai skill
+
+
+
 ## v 0.1.0
 released **2026-09-18**, including:
  - moved KnowledgeManagement out to separate packages
