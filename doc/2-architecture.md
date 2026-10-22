@@ -67,6 +67,13 @@ Agent-facing quality rules of the facade:
 - Failures are returned as `isError` results with a single plain `message`; exception types, parameter names and
   stack traces are never sent to the agent (they are logged on the server instead).
 - The facade is intentionally stateless: no `Mcp-Session-Id` is issued, every request is self-contained.
+- The UJMW side channel (`_` property of the request envelope) stays fully transparent: it is offered as a flat
+  string-to-string dictionary (keys may use dot notation such as `Tenant.Id`, values are always strings) and passed
+  through unchanged, and response side channel values reach the agent unchanged as well.
+  Hosts can explain individual fields via `McpFacadeOptions.AddSideChannelFieldDescription("Foo.Bar", "...")`, but
+  unregistered fields remain allowed, because neither the host nor the contract author has to know what is tunneled
+  agnostically. Side channel values only select a scope; whether it may be entered is always decided server-side
+  against the access token.
 
 ## Architecture decisions
 

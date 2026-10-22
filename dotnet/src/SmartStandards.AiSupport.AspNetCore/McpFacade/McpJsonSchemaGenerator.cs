@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
@@ -13,10 +14,25 @@ namespace AI.SmartStandards {
 
   public sealed class McpJsonSchemaGenerator {
 
+    /// <summary>
+    /// Name of the UJMW side channel property within request/response envelopes.
+    /// </summary>
+    private const string _SideChannelPropertyName = "_";
+
+    private const string _SideChannelDescription =
+      "Optional side channel for ambient/contextual values which are tunneled agnostically to the service. " +
+      "It is a flat dictionary (string -> string): keys are field names which may use dot notation " +
+      "(e.g. 'Tenant.Id'), values must always be strings (no numbers, booleans, objects, arrays or null). " +
+      "The values only select a scope (e.g. a tenant); whether it may be entered is decided by the server against " +
+      "the access token. Provide values when instructed by the user or by external guidance. Unknown keys are " +
+      "passed through unchanged.";
+
     private readonly McpDocumentationProvider _DocumentationProvider;
+    private readonly IOptions<McpFacadeOptions> _Options;
 
     public McpJsonSchemaGenerator() {
       _DocumentationProvider = null;
+      _Options = null;
     }
 
     /// <summary>
@@ -24,6 +40,16 @@ namespace AI.SmartStandards {
     /// </summary>
     public McpJsonSchemaGenerator(McpDocumentationProvider documentationProvider) {
       _DocumentationProvider = documentationProvider;
+      _Options = null;
+    }
+
+    /// <summary>
+    /// Creates a generator that additionally emits the registered side channel field descriptions
+    /// (see McpFacadeOptions.AddSideChannelFieldDescription).
+    /// </summary>
+    public McpJsonSchemaGenerator(McpDocumentationProvider documentationProvider, IOptions<McpFacadeOptions> options) {
+      _DocumentationProvider = documentationProvider;
+      _Options = options;
     }
 
     public JObject GenerateInputSchema(ApiDescription apiDescription) {
@@ -184,7 +210,13 @@ namespace AI.SmartStandards {
         }
 
         string propertyName = this.GetJsonPropertyName(property);
-        JObject propertySchema = this.GenerateSchema(property.PropertyType, visitedTypes);
+        JObject propertySchema;
+        if (string.Equals(propertyName, _SideChannelPropertyName, StringComparison.Ordinal)) {
+          propertySchema = this.GenerateSideChannelSchema();
+        }
+        else {
+          propertySchema = this.GenerateSchema(property.PropertyType, visitedTypes);
+        }
         if (_DocumentationProvider != null) {
           string propertyDescription = _DocumentationProvider.GetPropertySummary(property);
           if (!string.IsNullOrWhiteSpace(propertyDescription)) {
@@ -204,6 +236,39 @@ namespace AI.SmartStandards {
       objectSchema["additionalProperties"] = false;
       visitedTypes.Remove(effectiveType);
       return objectSchema;
+    }
+
+    /// <summary>
+    /// Generates the schema of the UJMW side channel ('_'): a flat string-to-string dictionary (JSON Schema has no
+    /// dictionary type, so it is expressed as object with 'additionalProperties' of type string). Keys may use dot
+    /// notation. Registered fields are listed with their semantic description, but any other key stays allowed, so
+    /// that the channel remains fully transparent.
+    /// </summary>
+    private JObject GenerateSideChannelSchema() {
+      JObject sideChannelSchema = new JObject();
+      sideChannelSchema["type"] = "object";
+      sideChannelSchema["description"] = _SideChannelDescription;
+
+      JObject keySchema = new JObject();
+      keySchema["type"] = "string";
+      keySchema["minLength"] = 1;
+      sideChannelSchema["propertyNames"] = keySchema;
+
+      JObject fieldProperties = new JObject();
+      if (_Options != null && _Options.Value != null) {
+        foreach (KeyValuePair<string, string> fieldDescription in _Options.Value.GetSideChannelFieldDescriptions()) {
+          JObject fieldSchema = new JObject();
+          fieldSchema["type"] = "string";
+          fieldSchema["description"] = fieldDescription.Value;
+          fieldProperties[fieldDescription.Key] = fieldSchema;
+        }
+      }
+      sideChannelSchema["properties"] = fieldProperties;
+
+      JObject additionalFieldSchema = new JObject();
+      additionalFieldSchema["type"] = "string";
+      sideChannelSchema["additionalProperties"] = additionalFieldSchema;
+      return sideChannelSchema;
     }
 
     private bool ShouldSkipParameter(ApiParameterDescription parameter) {

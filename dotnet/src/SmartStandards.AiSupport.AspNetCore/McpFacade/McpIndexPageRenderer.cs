@@ -181,16 +181,25 @@ namespace AI.SmartStandards {
     }
 
     /// <summary>
-    /// Renders the top-level properties of an input schema as list (name, type, required flag, description).
+    /// Renders the properties of an input schema as list (name, type, required flag, description). Nested object
+    /// properties (e.g. the described fields of the UJMW side channel '_') are rendered as nested lists.
     /// </summary>
     private string RenderArguments(JObject inputSchema) {
       JObject properties = inputSchema["properties"] as JObject;
       if (properties == null || !properties.HasValues) {
         return "<span class=\"muted\">(none)</span>";
       }
+      return this.RenderProperties(inputSchema, 0);
+    }
+
+    /// <summary>
+    /// Renders the properties of an object schema as list, recursing into nested object schemas (limited depth).
+    /// </summary>
+    private string RenderProperties(JObject objectSchema, int depth) {
+      JObject properties = objectSchema["properties"] as JObject;
 
       HashSet<string> required = new HashSet<string>(StringComparer.Ordinal);
-      JArray requiredArray = inputSchema["required"] as JArray;
+      JArray requiredArray = objectSchema["required"] as JArray;
       if (requiredArray != null) {
         foreach (JToken entry in requiredArray) {
           required.Add(entry.ToString());
@@ -211,6 +220,10 @@ namespace AI.SmartStandards {
           string description = propertySchema.Value<string>("description");
           if (!string.IsNullOrWhiteSpace(description)) {
             html.Append(" &ndash; ").Append(Encode(description));
+          }
+          JObject nestedProperties = propertySchema["properties"] as JObject;
+          if (nestedProperties != null && nestedProperties.HasValues && depth < 3) {
+            html.Append(this.RenderProperties(propertySchema, depth + 1));
           }
         }
         html.Append("</li>");
@@ -246,6 +259,10 @@ namespace AI.SmartStandards {
       JObject items = schema["items"] as JObject;
       if (items != null) {
         typeText = typeText + " of " + DescribeType(items);
+      }
+      JObject additionalProperties = schema["additionalProperties"] as JObject;
+      if (additionalProperties != null) {
+        typeText = "dictionary of " + DescribeType(additionalProperties);
       }
       return typeText;
     }

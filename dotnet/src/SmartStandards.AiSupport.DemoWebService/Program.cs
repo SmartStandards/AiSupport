@@ -148,10 +148,22 @@ namespace AI.SmartStandards.DemoWebService {
 
         r.AddControllerFor<ICalendarAccess>((options) => {
           options.ControllerRoute = "calendar";
-          options.EnableRequestSidechannel = false;
+          options.EnableRequestSidechannel = true;
           options.EnableResponseSidechannel = false;
           options.ApiGroupName = _CalendarApiGroup;
         });
+
+      });
+
+      UjmwHostConfiguration.ConfigureRequestSidechannel((c,cfg) => {
+
+        cfg.AcceptUjmwUnderlineProperty();
+        cfg.AcceptNoChannelProvided();
+        cfg.ProcessDataVia((m,kvps) => {
+          DevLogger.LogInformation("INCOMMING SIDECHANNEL");
+          foreach (var kvp in kvps) DevLogger.LogInformation($"{kvp.Key}: {kvp.Value}");
+        });
+
 
       });
 
@@ -159,6 +171,9 @@ namespace AI.SmartStandards.DemoWebService {
         ai.AddMcpFacade((mcp) => {
           mcp.EndpointPattern = "/mcp";
           mcp.ServerName = "SmartStandards.AiSupport.DemoWebService";
+          mcp.AddSideChannelFieldDescription("Tenant","the current Tenant ID");
+          mcp.AddSideChannelFieldDescription("Legitimation.Salt", "For elevation of permissions - a Salt the ai will generate new for each request");
+          mcp.AddSideChannelFieldDescription("Legitimation.Hash", "For elevation of permissions - a MD5 from '<salt><sharedsecret-provided-by-user>'");
           mcp.EnableDiagnosticTracing = config.GetValue<bool>("Mcp:EnableDiagnosticTracing");
           //mcp.IncludeOperation("calendar_list_calendars", "POST", "calendar/GetCalendars");
           //mcp.IncludeOperation("calendar_list_events", "POST", "calendar/GetEvents");

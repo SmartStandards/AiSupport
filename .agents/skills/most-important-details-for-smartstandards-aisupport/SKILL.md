@@ -41,6 +41,10 @@ metadata:
   Never log tokens, cookies, payloads, query strings, arbitrary client method names/IDs or exception messages there.
   Correlation IDs are server-generated; elapsed times are cumulative. The logging sink must accept Trace (0).
   See `doc/3-quickstart.md` for activation and phase interpretation. OAuth endpoints belong to AuthTokenHandling.
+- The UJMW side channel (`_`) must stay fully transparent in the MCP facade (flat string-to-string dictionary, keys may
+  use dot notation, values are always strings; passthrough in both
+  directions, no filtering). Values select a scope; authorization is decided server-side against the token. Field
+  semantics are only added via `McpFacadeOptions.AddSideChannelFieldDescription`.
 - `.github/copilot-instructions.md` in `dotnet/` only contains generic Azure rules, not project rules.
 
 ## Related skills

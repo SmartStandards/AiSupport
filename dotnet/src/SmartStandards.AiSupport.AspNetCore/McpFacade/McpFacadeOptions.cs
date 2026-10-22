@@ -16,6 +16,7 @@ namespace AI.SmartStandards {
     private bool _EnableBrowserLogin;
     private bool _SkipRequestAuthenticatorForLocalhost;
     private bool _EnableDiagnosticTracing;
+    private readonly List<KeyValuePair<string, string>> _SideChannelFieldDescriptions;
 
     public McpFacadeOptions() {
       _EndpointPattern = "/mcp";
@@ -28,6 +29,38 @@ namespace AI.SmartStandards {
       _EnableBrowserLogin = false;
       _SkipRequestAuthenticatorForLocalhost = false;
       _EnableDiagnosticTracing = false;
+      _SideChannelFieldDescriptions = new List<KeyValuePair<string, string>>();
+    }
+
+    /// <summary>
+    /// Registers a semantic description for a field of the UJMW side channel (the '_' property of the request envelope),
+    /// so that the field is explained to the agent in the tool input schema (e.g. 'Tenant.Id').
+    /// The side channel always stays fully transparent: unregistered fields are still offered and passed through
+    /// unchanged, because neither the host nor the contract author has to know what is tunneled agnostically.
+    /// The values only select a scope - whether it may be entered is decided server-side against the access token.
+    /// Registering the same field name again replaces its description.
+    /// </summary>
+    public void AddSideChannelFieldDescription(string fieldName, string description) {
+      if (string.IsNullOrWhiteSpace(fieldName)) {
+        throw new ArgumentException("The side channel field name must not be empty.", nameof(fieldName));
+      }
+      if (string.IsNullOrWhiteSpace(description)) {
+        throw new ArgumentException("The side channel field description must not be empty.", nameof(description));
+      }
+      for (int i = 0; i < _SideChannelFieldDescriptions.Count; i++) {
+        if (string.Equals(_SideChannelFieldDescriptions[i].Key, fieldName, StringComparison.Ordinal)) {
+          _SideChannelFieldDescriptions[i] = new KeyValuePair<string, string>(fieldName, description);
+          return;
+        }
+      }
+      _SideChannelFieldDescriptions.Add(new KeyValuePair<string, string>(fieldName, description));
+    }
+
+    /// <summary>
+    /// Returns the registered side channel field descriptions in registration order.
+    /// </summary>
+    public KeyValuePair<string, string>[] GetSideChannelFieldDescriptions() {
+      return _SideChannelFieldDescriptions.ToArray();
     }
 
     /// <summary>
