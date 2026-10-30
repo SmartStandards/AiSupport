@@ -12,6 +12,14 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.3
+released **2026-10-30**, including:
+ - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
+ - Package Updates
+ - sidechannel in mcp workiing
+
+
+
 ## v 0.1.2
 released **2026-10-21**, including:
  - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
