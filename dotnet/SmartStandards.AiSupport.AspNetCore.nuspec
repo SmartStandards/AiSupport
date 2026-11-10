@@ -23,6 +23,8 @@
         "dependencySync": {
           "addMissing":true, "updateExisting":true, "allowDowngrades":true, "removeOrphaned":false,
           "constraintLevel":"SEM-SAFE",
+          "blacklist": [
+          ],
           "sources": [         
             { "origin":"src\\SmartStandards.AiSupport.AspNetCore.net10.0\\SmartStandards.AiSupport.AspNetCore.net10.0.csproj", "targetFramework":"=" }
           ]
