@@ -12,6 +12,13 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.7
+released **2026-11-16**, including:
+ - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
+ - L2 Harness (Skills & Tools)
+
+
+
 ## v 0.1.6
 released **2026-11-16**, including:
  - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
