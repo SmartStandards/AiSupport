@@ -12,6 +12,12 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.5
+released **2026-11-16**, including:
+ - ChatClient PoC
+
+
+
 ## v 0.1.4
 released **2026-11-10**, including:
  - Package Updates

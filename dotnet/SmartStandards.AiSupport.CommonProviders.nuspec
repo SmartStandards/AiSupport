@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
   <metadata>
     <id>SmartStandards.AiSupport.CommonProviders</id>
-    <version>0.1.4</version>
+    <version>0.1.5</version>
     <title>SmartStandards.AiSupport.CommonProviders</title>
     <authors>SmartStandards</authors>
     <owners>(public domain)</owners>
@@ -33,13 +33,13 @@
         }
       } -->
       <group targetFramework="net8.0">
-        <dependency id="SmartStandards.AiSupport" version="[0.1.4]" />
+        <dependency id="SmartStandards.AiSupport" version="[0.1.5]" />
         <dependency id="LibGit2Sharp" version="[0.32.0,2.0)" />
         <dependency id="Newtonsoft.Json" version="[13.0.4,14.0)" />
         <dependency id="UJMW.DynamicClient" version="[5.8.0,6.0)" />
       </group>
       <group targetFramework="net10.0">
-        <dependency id="SmartStandards.AiSupport" version="[0.1.4]" />
+        <dependency id="SmartStandards.AiSupport" version="[0.1.5]" />
         <dependency id="LibGit2Sharp" version="[0.32.0,2.0)" />
         <dependency id="Newtonsoft.Json" version="[13.0.4,14.0)" />
         <dependency id="UJMW.DynamicClient" version="[5.8.0,6.0)" />
