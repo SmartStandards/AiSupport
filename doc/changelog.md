@@ -12,6 +12,13 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.6
+released **2026-11-16**, including:
+ - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
+ - Added GitHubCopilot-Provider
+
+
+
 ## v 0.1.5
 released **2026-11-16**, including:
  - ChatClient PoC
