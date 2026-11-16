@@ -53,6 +53,16 @@
       <div id="apiKeyState" class="muted"></div>
       <div class="capabilities-title">Native provider features</div>
       <div id="capabilityList" class="capability-list"></div>
+      <label>Theme
+        <select id="selTheme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+      <div class="user-instructions-row">
+        <span>User instructions <span id="userInstructionsState" class="muted"></span></span>
+        <button id="btnUserInstructions" title="Edit the instructions which the model must follow (skill 'mustread-user-instructions')">Edit...</button>
+      </div>
       <div class="dialog-actions">
         <button id="btnDeleteKey">Delete API key</button>
         <span class="spacer"></span>
@@ -60,6 +70,19 @@
         <button id="btnSettingsSave" class="primary">Save</button>
       </div>
       <div class="muted small">The API key is stored locally within the roaming profile of the current user.</div>
+    </div>
+  </div>
+
+  <div id="userInstructionsDialog" class="dialog-backdrop" hidden>
+    <div class="dialog wide">
+      <h2>User instructions</h2>
+      <div class="muted small">These instructions are provided to the model as mandatory skill <code>mustread-user-instructions</code> and must be followed for every task.</div>
+      <textarea id="txtUserInstructions" rows="14" spellcheck="false" placeholder="For example: Always answer in German. Prefer explicit types over var."></textarea>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button id="btnUserInstructionsCancel">Cancel</button>
+        <button id="btnUserInstructionsSave" class="primary">Save</button>
+      </div>
     </div>
   </div>
 

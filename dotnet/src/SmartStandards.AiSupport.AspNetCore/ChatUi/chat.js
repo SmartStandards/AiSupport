@@ -14,7 +14,9 @@
     busy: false,
     currentOperation: null,
     providers: [],
-    settings: null
+    settings: null,
+    theme: "light",
+    userInstructions: ""
   };
 
   const el = (id) => document.getElementById(id);
@@ -322,6 +324,9 @@
         el("chatTitle").textContent = current.name;
       }
 
+      // the model may have switched the theme via the internal tool 'ui_set_theme'
+      await loadTheme();
+
     } catch (e) {
       showError(e);
     } finally {
@@ -512,6 +517,9 @@
     select.value = current;
     fillSettingsDialog(current);
 
+    el("selTheme").value = state.theme;
+    renderUserInstructionsState();
+
     el("settingsDialog").hidden = false;
     el("txtApiKey").focus();
   }
@@ -519,6 +527,8 @@
   function closeSettings() {
     el("settingsDialog").hidden = true;
     el("txtApiKey").value = "";
+    // revert a theme preview which was not saved
+    document.body.classList.toggle("dark", state.theme === "dark");
   }
 
   async function saveSettings() {
@@ -533,6 +543,9 @@
         providerName: providerName,
         disabledCapabilityNames: collectDisabledCapabilities()
       });
+      const theme = el("selTheme").value;
+      await call(settingsUrl, "SaveUiTheme", { themeName: theme });
+      applyTheme(theme);
       closeSettings();
       await loadSettings();
     } catch (e) {
@@ -554,6 +567,70 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Theme (light/dark) - persisted via the settings service, also switchable by the model ('ui_set_theme')
+  // ---------------------------------------------------------------------------
+
+  function applyTheme(theme) {
+    state.theme = (theme === "dark") ? "dark" : "light";
+    document.body.classList.toggle("dark", state.theme === "dark");
+    try {
+      localStorage.setItem("aiChatTheme", state.theme);
+    } catch (e) {
+      // storage not available: the theme is still applied
+    }
+  }
+
+  async function loadTheme() {
+    try {
+      applyTheme(await call(settingsUrl, "GetUiTheme", {}));
+    } catch (e) {
+      // older servers do not know the operation: keep the current theme
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // User instructions (provided to the model as mandatory skill 'mustread-user-instructions')
+  // ---------------------------------------------------------------------------
+
+  async function loadUserInstructions() {
+    try {
+      state.userInstructions = (await call(settingsUrl, "GetUserInstructions", {})) || "";
+    } catch (e) {
+      state.userInstructions = "";
+    }
+    renderUserInstructionsState();
+  }
+
+  function renderUserInstructionsState() {
+    const text = state.userInstructions || "";
+    if (text.trim().length === 0) {
+      el("userInstructionsState").textContent = "(none)";
+    } else {
+      el("userInstructionsState").textContent = "(" + text.length + " characters)";
+    }
+  }
+
+  function openUserInstructions() {
+    el("txtUserInstructions").value = state.userInstructions || "";
+    el("userInstructionsDialog").hidden = false;
+    el("txtUserInstructions").focus();
+  }
+
+  function closeUserInstructions() {
+    el("userInstructionsDialog").hidden = true;
+  }
+
+  async function saveUserInstructions() {
+    try {
+      await call(settingsUrl, "SaveUserInstructions", { userInstructions: el("txtUserInstructions").value });
+      closeUserInstructions();
+      await loadUserInstructions();
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Wiring
   // ---------------------------------------------------------------------------
 
@@ -569,6 +646,10 @@
     el("btnSettingsSave").addEventListener("click", saveSettings);
     el("btnDeleteKey").addEventListener("click", deleteApiKey);
     el("selProvider").addEventListener("change", () => fillSettingsDialog(el("selProvider").value));
+    el("selTheme").addEventListener("change", () => document.body.classList.toggle("dark", el("selTheme").value === "dark"));
+    el("btnUserInstructions").addEventListener("click", openUserInstructions);
+    el("btnUserInstructionsCancel").addEventListener("click", closeUserInstructions);
+    el("btnUserInstructionsSave").addEventListener("click", saveUserInstructions);
 
     el("txtMessage").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -579,10 +660,18 @@
   }
 
   async function init() {
+    // apply the last known theme immediately (avoids flickering), the server value follows
+    try {
+      applyTheme(localStorage.getItem("aiChatTheme"));
+    } catch (e) {
+      applyTheme("light");
+    }
     wire();
     updateHeaderButtons();
     try {
+      await loadTheme();
       await loadSettings();
+      await loadUserInstructions();
       await loadChatList();
       if (!state.settings || !state.settings.isReady) {
         openSettings();

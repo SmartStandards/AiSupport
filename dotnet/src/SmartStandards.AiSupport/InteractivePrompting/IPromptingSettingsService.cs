@@ -66,6 +66,62 @@ namespace AI.SmartStandards.InteractivePrompting {
 #endif
     void SaveDisabledCapabilities(string providerName, string[] disabledCapabilityNames);
 
+    /// <summary>
+    /// Returns the (global) user instructions, which are provided to the model as the mandatory skill
+    /// 'mustread-user-instructions' (empty string if none were deposited).
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    string GetUserInstructions();
+
+    /// <summary>
+    /// Saves the (global) user instructions. An empty value removes them.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    void SaveUserInstructions(string userInstructions);
+
+    /// <summary>
+    /// Returns the current UI theme (see 'UiThemeNames').
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    string GetUiTheme();
+
+    /// <summary>
+    /// Saves the UI theme (see 'UiThemeNames'). Unknown values are treated as 'light'.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    void SaveUiTheme(string themeName);
+
+  }
+
+  /// <summary>
+  /// Well-known names of the UI themes.
+  /// </summary>
+  public static class UiThemeNames {
+
+    public const string Light = "light";
+
+    public const string Dark = "dark";
+
+    /// <summary>
+    /// Returns the normalized theme name ('dark' or 'light'; unknown values fall back to 'light').
+    /// </summary>
+    public static string Normalize(string themeName) {
+
+      if (themeName != null && string.Equals(themeName.Trim(), Dark, StringComparison.OrdinalIgnoreCase)) {
+        return Dark;
+      }
+
+      return Light;
+    }
+
   }
 
   /// <summary>

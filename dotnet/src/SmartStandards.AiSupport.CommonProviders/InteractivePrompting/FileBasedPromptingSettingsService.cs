@@ -355,6 +355,73 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     }
 
+    /// <summary>
+    /// Returns the (global) user instructions (empty string if none were deposited).
+    /// </summary>
+    public string GetUserInstructions() {
+
+      lock (_SyncRoot) {
+
+        PersistedSettings persisted = this.ReadSettings();
+
+        if (persisted.UserInstructions == null) {
+          return string.Empty;
+        }
+
+        return persisted.UserInstructions;
+      }
+
+    }
+
+    /// <summary>
+    /// Saves the (global) user instructions. An empty value removes them.
+    /// </summary>
+    public void SaveUserInstructions(string userInstructions) {
+
+      lock (_SyncRoot) {
+
+        PersistedSettings persisted = this.ReadSettings();
+
+        if (string.IsNullOrWhiteSpace(userInstructions)) {
+          persisted.UserInstructions = null;
+        }
+        else {
+          persisted.UserInstructions = userInstructions.Trim();
+        }
+
+        this.WriteSettings(persisted);
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the current UI theme ('light' or 'dark').
+    /// </summary>
+    public string GetUiTheme() {
+
+      lock (_SyncRoot) {
+
+        PersistedSettings persisted = this.ReadSettings();
+
+        return UiThemeNames.Normalize(persisted.UiTheme);
+      }
+
+    }
+
+    /// <summary>
+    /// Saves the UI theme. Unknown values are treated as 'light'.
+    /// </summary>
+    public void SaveUiTheme(string themeName) {
+
+      lock (_SyncRoot) {
+
+        PersistedSettings persisted = this.ReadSettings();
+        persisted.UiTheme = UiThemeNames.Normalize(themeName);
+        this.WriteSettings(persisted);
+      }
+
+    }
+
     private static string[] GetDisabledCapabilitiesOf(PersistedSettings persisted, string providerName) {
 
       foreach (KeyValuePair<string, string[]> entry in persisted.DisabledCapabilities) {
@@ -523,6 +590,26 @@ namespace AI.SmartStandards.InteractivePrompting {
       private Dictionary<string, string> _Models = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
       private Dictionary<string, string> _ApiKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
       private Dictionary<string, string[]> _DisabledCapabilities = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+      private string _UserInstructions;
+      private string _UiTheme;
+
+      public string UserInstructions {
+        get {
+          return _UserInstructions;
+        }
+        set {
+          _UserInstructions = value;
+        }
+      }
+
+      public string UiTheme {
+        get {
+          return _UiTheme;
+        }
+        set {
+          _UiTheme = value;
+        }
+      }
 
       public Dictionary<string, string[]> DisabledCapabilities {
         get {

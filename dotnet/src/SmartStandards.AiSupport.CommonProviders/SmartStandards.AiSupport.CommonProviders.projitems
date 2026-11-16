@@ -12,6 +12,10 @@
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\CheapPromptingUIBackend.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\FileBasedPromtingSessionStore.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\FileBasedPromptingSettingsService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\Harness\HarnessSkill.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\Harness\HarnessToolbox.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\Harness\IHarnessTool.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\Harness\SetUiThemeTool.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedCodeArtifactMap.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedPromtLibrary.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\GitHubCopilotAcpSession.cs" />

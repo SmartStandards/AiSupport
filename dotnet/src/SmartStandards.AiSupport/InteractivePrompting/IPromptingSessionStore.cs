@@ -72,6 +72,7 @@ namespace AI.SmartStandards.InteractivePrompting {
     private int _ContextStoreCoveredMessageCount;
     private string _ContextBaseline;
     private int _ContextBaselineCoveredMessageCount;
+    private string _HarnessPromptFingerprint;
 
     public string Id {
       get {
@@ -158,6 +159,19 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
       set {
         _ContextBaselineCoveredMessageCount = value;
+      }
+    }
+
+    /// <summary>
+    /// Fingerprint of the hidden harness prompt (skills/tools) which is contained in the provider-side context
+    /// ('ContextStore'). If the current harness prompt differs, it is sent again (null = not sent yet).
+    /// </summary>
+    public string HarnessPromptFingerprint {
+      get {
+        return _HarnessPromptFingerprint;
+      }
+      set {
+        _HarnessPromptFingerprint = value;
       }
     }
 

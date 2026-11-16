@@ -1,3 +1,4 @@
+using AI.SmartStandards.InteractivePrompting.Harness;
 using AI.SmartStandards.LowLevelPrompting;
 using System;
 using System.Collections.Generic;
@@ -29,6 +30,15 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     private const string _BaselineIntroduction = "Summary of the previous conversation (context baseline):";
 
+    /// <summary>
+    /// Maximum number of tool round trips per user message (protection against endless tool loops).
+    /// </summary>
+    public const int MaxToolRoundTrips = 5;
+
+    private const string _ToolLoopLimitAnswer = "(The tool loop was aborted after the maximum number of tool calls.)";
+
+    private readonly HarnessToolbox _Toolbox;
+
     private readonly IPromptingSessionStore _Store;
 
     private readonly Func<ICommonLLM> _LLMFactory;
@@ -49,6 +59,21 @@ namespace AI.SmartStandards.InteractivePrompting {
     public CheapPromptingUIBackend(
       IPromptingSessionStore store, Func<ICommonLLM> llmFactory,
       Func<string> assistantNameGetter = null, string userName = null
+    ) : this(store, llmFactory, null, assistantNameGetter, userName) {
+    }
+
+    /// <summary>
+    /// Creates the backend with a harness toolbox, which provides skills (for example the mandatory
+    /// 'mustread-user-instructions') and in-process tools to the model via the hidden harness prompt.
+    /// </summary>
+    /// <param name="store">Persistence for the chat sessions.</param>
+    /// <param name="llmFactory">Is called for every LLM interaction (allows to change the settings at runtime).</param>
+    /// <param name="toolbox">Skills and tools for the model (optional).</param>
+    /// <param name="assistantNameGetter">Returns the author name for LLM answers (optional).</param>
+    /// <param name="userName">Author name for user messages (optional, default: current user).</param>
+    public CheapPromptingUIBackend(
+      IPromptingSessionStore store, Func<ICommonLLM> llmFactory, HarnessToolbox toolbox,
+      Func<string> assistantNameGetter = null, string userName = null
     ) {
 
       if (store == null) {
@@ -61,6 +86,7 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       _Store = store;
       _LLMFactory = llmFactory;
+      _Toolbox = toolbox;
       _AssistantNameGetter = assistantNameGetter;
 
       if (string.IsNullOrWhiteSpace(userName)) {
@@ -225,12 +251,29 @@ namespace AI.SmartStandards.InteractivePrompting {
       string contextStore = session.ContextStore;
       string answer = null;
 
+      //the hidden harness prompt (pinned skills, skill catalog, tools) is evaluated for every turn,
+      //so that changed user instructions are effective immediately
+      string harnessPrompt = null;
+      string harnessFingerprint = null;
+
+      if (_Toolbox != null) {
+        harnessPrompt = _Toolbox.BuildHarnessPrompt();
+        harnessFingerprint = _Toolbox.BuildHarnessPromptFingerprint();
+      }
+
       if (contextStore != null) {
 
-        ChatTurn[] newTurns = BuildTurns(session.Messages.Skip(session.ContextStoreCoveredMessageCount));
+        List<ChatTurn> newTurns = new List<ChatTurn>();
+
+        //the provider-side context does not yet know the current harness prompt
+        if (harnessPrompt != null && harnessFingerprint != session.HarnessPromptFingerprint) {
+          newTurns.Add(new ChatTurn(ChatRoles.System, harnessPrompt));
+        }
+
+        newTurns.AddRange(BuildTurns(session.Messages.Skip(session.ContextStoreCoveredMessageCount)));
 
         try {
-          answer = InvokeChatApi(llm, newTurns, ref contextStore, cancellationToken);
+          answer = this.InvokeWithToolLoop(llm, newTurns.ToArray(), ref contextStore, cancellationToken);
         }
         catch (ContextStoreInvalidException) {
           //the provider-side context has expired: retry once using the self-maintained context
@@ -240,8 +283,8 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
 
       if (contextStore == null && answer == null) {
-        ChatTurn[] allTurns = BuildSelfMaintainedContext(session);
-        answer = InvokeChatApi(llm, allTurns, ref contextStore, cancellationToken);
+        ChatTurn[] allTurns = BuildSelfMaintainedContext(session, harnessPrompt);
+        answer = this.InvokeWithToolLoop(llm, allTurns, ref contextStore, cancellationToken);
       }
 
       ChatMessage assistantMessage = this.CreateMessage(ChatRoles.Assistant, this.GetAssistantName(), answer);
@@ -256,9 +299,11 @@ namespace AI.SmartStandards.InteractivePrompting {
 
         if (contextStore == null) {
           current.ContextStoreCoveredMessageCount = 0;
+          current.HarnessPromptFingerprint = null;
         }
         else {
           current.ContextStoreCoveredMessageCount = current.Messages.Length;
+          current.HarnessPromptFingerprint = harnessFingerprint;
         }
 
         _Store.SaveSession(current);
@@ -298,6 +343,7 @@ namespace AI.SmartStandards.InteractivePrompting {
         //the provider-side context would still contain the full history
         current.ContextStore = null;
         current.ContextStoreCoveredMessageCount = 0;
+        current.HarnessPromptFingerprint = null;
 
         _Store.SaveSession(current);
       }
@@ -310,7 +356,19 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     internal static ChatTurn[] BuildSelfMaintainedContext(ChatSession session) {
 
+      return BuildSelfMaintainedContext(session, null);
+    }
+
+    /// <summary>
+    /// Builds the self-maintained context, starting with the hidden harness prompt (if not null).
+    /// </summary>
+    internal static ChatTurn[] BuildSelfMaintainedContext(ChatSession session, string harnessPrompt) {
+
       List<ChatTurn> turns = new List<ChatTurn>();
+
+      if (harnessPrompt != null) {
+        turns.Add(new ChatTurn(ChatRoles.System, harnessPrompt));
+      }
 
       if (string.IsNullOrWhiteSpace(session.ContextBaseline)) {
         turns.AddRange(BuildTurns(session.Messages));
@@ -326,6 +384,58 @@ namespace AI.SmartStandards.InteractivePrompting {
     private static ChatTurn[] BuildTurns(IEnumerable<ChatMessage> messages) {
 
       return messages.Select((m) => new ChatTurn(m.Role, m.Content)).ToArray();
+    }
+
+    /// <summary>
+    /// Invokes the LLM and executes requested harness tools (text protocol) until the model answers without
+    /// tool calls. The intermediate tool exchange is not persisted as chat message (it is part of the
+    /// provider-side context only, if there is one).
+    /// </summary>
+    private string InvokeWithToolLoop(
+      ICommonLLM llm, ChatTurn[] turns, ref string contextStore, CancellationToken cancellationToken
+    ) {
+
+      string answer = InvokeChatApi(llm, turns, ref contextStore, cancellationToken);
+
+      if (_Toolbox == null) {
+        return answer;
+      }
+
+      List<ChatTurn> conversation = new List<ChatTurn>(turns);
+
+      for (int roundTrip = 1; roundTrip <= MaxToolRoundTrips; roundTrip++) {
+
+        HarnessToolCall[] calls = HarnessToolbox.ParseToolCalls(answer);
+
+        if (calls.Length == 0) {
+          return answer;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string toolResponses = _Toolbox.ExecuteToolCalls(calls);
+        ChatTurn toolResponseTurn = new ChatTurn(ChatRoles.User, toolResponses);
+
+        conversation.Add(new ChatTurn(ChatRoles.Assistant, answer));
+        conversation.Add(toolResponseTurn);
+
+        if (contextStore != null) {
+          //the provider already knows the conversation including the tool call
+          answer = InvokeChatApi(llm, new ChatTurn[] { toolResponseTurn }, ref contextStore, cancellationToken);
+        }
+        else {
+          answer = InvokeChatApi(llm, conversation.ToArray(), ref contextStore, cancellationToken);
+        }
+
+      }
+
+      string remainingText = HarnessToolbox.RemoveToolCalls(answer);
+
+      if (string.IsNullOrWhiteSpace(remainingText)) {
+        return _ToolLoopLimitAnswer;
+      }
+
+      return remainingText;
     }
 
     /// <summary>

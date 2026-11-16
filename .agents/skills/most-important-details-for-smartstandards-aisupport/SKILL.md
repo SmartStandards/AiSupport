@@ -16,6 +16,7 @@ metadata:
   container (Level-2 AI harness as section 1, MCP facade epic as section 3) until it is migrated into epics. Binding
   harness decisions are mirrored in the skill `ai-harness-development`.
 - Chat middle layer, `contextStore` convention and PoC chat client: [epic-interactive-prompting.md](../../../doc/epics/epic-interactive-prompting.md)
+- Providing skills and tools (native first, Layer-2 proxy as fallback, approvals): [epic-skills-and-tools.md](../../../doc/epics/epic-skills-and-tools.md)
   (concept, not yet an active requirement).
 
 ## Code structure

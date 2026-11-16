@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 
 namespace AI.SmartStandards.LowLevelPrompting {
@@ -73,6 +74,9 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
     /// <summary>
     /// Ignores the given messages and returns a random generic phrase. No provider-side context is used.
+    /// Exception (for offline tests of the harness tool loop): if the harness announced the tool 'ui_set_theme'
+    /// and the last user message asks for 'dark mode' or 'light mode', the mock calls this tool, and it confirms
+    /// a following tool response.
     /// </summary>
     public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
 
@@ -82,10 +86,53 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       contextStore = null;
 
+      string scriptedAnswer = BuildScriptedThemeAnswer(newMessages);
+
+      if (scriptedAnswer != null) {
+        return scriptedAnswer;
+      }
+
       lock (_RandomSyncRoot) {
         return _Phrases[_Random.Next(_Phrases.Length)];
       }
 
+    }
+
+    private static string BuildScriptedThemeAnswer(ChatTurn[] messages) {
+
+      if (messages == null || messages.Length == 0) {
+        return null;
+      }
+
+      bool themeToolAnnounced = messages.Any(
+        (m) => m.Role == "system" && m.Content != null && m.Content.Contains("\"ui_set_theme\"")
+      );
+
+      if (!themeToolAnnounced) {
+        return null;
+      }
+
+      string lastContent = messages[messages.Length - 1].Content;
+
+      if (lastContent == null) {
+        return null;
+      }
+
+      if (lastContent.Contains("<tool_response>")) {
+        return "Erledigt! Das UI-Theme wurde umgeschaltet.";
+      }
+
+      string lowerContent = lastContent.ToLowerInvariant();
+
+      if (lowerContent.Contains("dark mode") || lowerContent.Contains("darkmode")) {
+        return "<tool_call>\n{\"name\": \"ui_set_theme\", \"arguments\": {\"theme\": \"dark\"}}\n</tool_call>";
+      }
+
+      if (lowerContent.Contains("light mode") || lowerContent.Contains("lightmode")) {
+        return "<tool_call>\n{\"name\": \"ui_set_theme\", \"arguments\": {\"theme\": \"light\"}}\n</tool_call>";
+      }
+
+      return null;
     }
 
     public string CallWebSearchApi(string prompt, object inputData = null) {

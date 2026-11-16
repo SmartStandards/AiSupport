@@ -31,6 +31,20 @@ return final text + usage/cost + session id
 - Claude Code: one async generator `while(true)` is the only code path that talks to the model, runs tools, manages context and
   recovers from errors. It returns a typed terminal state. Its dependencies (model caller, compactor, id generator) are injected for tests. *(unofficial)*
 
+## Skills and the hidden catalog prompt
+
+- Format: Agent Skills open standard (`SKILL.md` = front matter `name`, `description` + body; `scripts/`, `references/`,
+  `assets/`). Progressive disclosure: catalog (name + description) up front, body on activation, files on demand.
+- Claude Code: catalog inside the description of the tool `Skill` (`<available_skills>`); activation = tool call; the body
+  is injected as a hidden meta user message that stays in the history; the UI shows a status line only.
+- Codex / Copilot: skills section (name, description, path) in the instructions; the model reads `SKILL.md` with its own
+  file tool. User-side mentions (`$skill`, `/skill`) are UI shortcuts, not the model protocol.
+- Common rule: activation by the model is a **tool call**, never a slash command. Loaded content stays pinned in the history.
+- Models without native function calling: de-facto norm is the Hermes/ChatML format (`<tools>` JSON schemas in the system
+  prompt, `<tool_call>{"name":..,"arguments":{..}}</tool_call>`, reply `<tool_response>`), used by Qwen/Hermes/Ollama templates.
+  Our Layer-2 harness uses it as canonical text protocol; `/REQUESTSKILL` and `/USETOOL` are tolerated aliases only.
+- Details and verification status: `doc/epics/epic-skills-and-tools.md`, section 4.6. *(verify before implementing)*
+
 ## Prompt layout and caching
 
 Order from stable to volatile: harness system prompt → tool definitions → project context (`CLAUDE.md`, `AGENTS.md`,

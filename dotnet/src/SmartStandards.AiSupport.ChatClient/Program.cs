@@ -1,4 +1,5 @@
 using AI.SmartStandards.InteractivePrompting;
+using AI.SmartStandards.InteractivePrompting.Harness;
 using AI.SmartStandards.LowLevelPrompting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -78,10 +79,17 @@ namespace AI.SmartStandards.ChatClient {
 
       FileBasedPromptingSessionStore sessionStore = new FileBasedPromptingSessionStore(chatsDirectory);
 
+      //skills and tools for the model: the user instructions (settings) as mandatory skill
+      //and the internal test tool which switches the UI theme
+      HarnessToolbox toolbox = new HarnessToolbox();
+      toolbox.AddSkill(HarnessSkill.CreateUserInstructionsSkill(() => settingsService.GetUserInstructions()));
+      toolbox.AddTool(new SetUiThemeTool(settingsService));
+
       //the LLM is created per call, so that changed settings are effective immediately
       CheapPromptingUIBackend backend = new CheapPromptingUIBackend(
         sessionStore,
         () => settingsService.CreateConfiguredLLM(),
+        toolbox,
         () => settingsService.GetConfiguredLLMDisplayName(),
         Environment.UserName
       );
