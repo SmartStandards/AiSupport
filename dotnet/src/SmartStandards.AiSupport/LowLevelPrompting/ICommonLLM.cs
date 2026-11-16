@@ -32,6 +32,18 @@ namespace AI.SmartStandards.LowLevelPrompting {
 #endif
     byte[] CallImageGeneratorApi(string prompt);
 
+    /// <summary>
+    /// Sends chat messages to the LLM and returns the answer.
+    /// 'contextStore' is an opaque value owned by the provider: if it holds a value (returned by a previous call),
+    /// 'newMessages' must contain ONLY the messages which were added since that call. If it is null, 'newMessages'
+    /// must contain the complete (self-maintained) context. After the call, 'contextStore' contains the value which
+    /// must be passed in the next call (or null, if the provider does not support provider-side context).
+    /// </summary>
+#if NET_FX
+  [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    string CallChatApi(ChatTurn[] newMessages, ref string contextStore);
+
   }
 
 }

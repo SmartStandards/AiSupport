@@ -12,8 +12,11 @@ metadata:
 - Human-readable docs follow the ai-cowork-process structure: `readme.md`, `doc/1-requirements.md`, `doc/2-architecture.md`,
   `doc/3-quickstart.md`, `doc/ideas.md`. Links must stay relative. README and all `doc/` files are written in English.
 - `doc/changelog.md` and `doc/versioninfo.json` are maintained by the build/versioning pipeline. **Never edit them.**
-- Future concepts go into `doc/ideas.md`, never into extra ad-hoc files under `doc/`. The Level-2 AI harness concept lives
-  there as section 1. Its binding decisions are mirrored in the skill `ai-harness-development`.
+- Future concepts go into epics: `doc/epics/epic-<title>.md` (ai-cowork-process). `doc/ideas.md` is the legacy
+  container (Level-2 AI harness as section 1, MCP facade epic as section 3) until it is migrated into epics. Binding
+  harness decisions are mirrored in the skill `ai-harness-development`.
+- Chat middle layer, `contextStore` convention and PoC chat client: [epic-interactive-prompting.md](../../../doc/epics/epic-interactive-prompting.md)
+  (concept, not yet an active requirement).
 
 ## Code structure
 
@@ -51,3 +54,5 @@ metadata:
 
 - `ai-harness-development`: binding design rules and protocol knowledge for LLM connectors, the tool-call handshake and CLI proxies.
 - `include-additional-mandatory-skills`: additional knowledge sources.
+- `asp-engine-webview-coupling` (AI-SKILLS-SMART): procedure for WebView2 desktop utilities with an in-memory ASP.NET Core
+  engine, embedded UI resources, dual hosting and UJMW long-running operations (used by the PoC chat client).

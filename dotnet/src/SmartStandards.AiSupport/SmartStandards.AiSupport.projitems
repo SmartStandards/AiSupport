@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
@@ -10,6 +10,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingUIBackend.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingSettingsService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\ChatTurn.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\ContextStoreInvalidException.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\ICommonLLM.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\ICodeArtifactMap.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingSessionStore.cs" />
@@ -18,6 +21,8 @@
   <ItemGroup>
     <Folder Include="$(MSBuildThisFileDirectory)LowLevelPrompting\" />
     <Folder Include="$(MSBuildThisFileDirectory)KnowledgeAccess\" />
-    <Folder Include="$(MSBuildThisFileDirectory)InteractivePrompting\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)InteractivePrompting\_probe.txt" />
   </ItemGroup>
 </Project>

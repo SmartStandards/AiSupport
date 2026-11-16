@@ -37,3 +37,4 @@ int result = tool.SquareTheDifference(3, 7);
 - [Quickstart](doc/3-quickstart.md)
 - [Changelog](doc/changelog.md)
 - [Ideas and future directions](doc/ideas.md) (including the Level-2 AI harness)
+- [Epics](doc/epics/) (e.g. [Interactive Prompting](doc/epics/epic-interactive-prompting.md))

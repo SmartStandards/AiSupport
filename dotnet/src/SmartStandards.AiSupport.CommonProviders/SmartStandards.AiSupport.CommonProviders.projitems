@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
@@ -11,9 +11,11 @@
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\CheapPromptingUIBackend.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\FileBasedPromtingSessionStore.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\FileBasedPromptingSettingsService.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedCodeArtifactMap.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)KnowledgeAccess\FileBasedPromtLibrary.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\OpenAiLLMConnector.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\StupidMockLLM.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)UjmwSupport\DynamicAiServiceFactory.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)[Helpers]\XmlCommentAccessExtensions.cs" />
   </ItemGroup>

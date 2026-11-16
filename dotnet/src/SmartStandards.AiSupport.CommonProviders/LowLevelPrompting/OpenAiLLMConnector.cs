@@ -17,7 +17,16 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
   public class OpenAiLLMConnector : ICommonLLM {
 
+    /// <summary>
+    /// The model which is used for 'CallChatApi' if no other model was specified.
+    /// </summary>
+    public const string DefaultChatModel = "gpt-4o";
+
+    private const string _ResponsesEndpoint = "https://api.openai.com/v1/responses";
+
     private string _OpenAiApiKey = null;
+
+    private string _ChatModel = DefaultChatModel;
 
     public OpenAiLLMConnector(string openAiApiKey) {
 
@@ -28,6 +37,189 @@ namespace AI.SmartStandards.LowLevelPrompting {
       }
 
     }
+
+    /// <summary>
+    /// Creates a connector which uses the given model for 'CallChatApi'.
+    /// </summary>
+    public OpenAiLLMConnector(string openAiApiKey, string chatModel) : this(openAiApiKey) {
+
+      if (!string.IsNullOrWhiteSpace(chatModel)) {
+        _ChatModel = chatModel;
+      }
+
+    }
+
+    public string ChatModel {
+      get {
+        return _ChatModel;
+      }
+    }
+
+    #region " Chat (Responses API) "
+
+    /// <summary>
+    /// Sends chat messages via the OpenAI Responses API. The 'contextStore' holds the id of the last response
+    /// ('previous_response_id'), so that only the new messages need to be transferred.
+    /// </summary>
+    public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+
+      if (newMessages == null || newMessages.Length == 0) {
+        throw new ArgumentNullException(nameof(newMessages));
+      }
+
+      JArray input = new JArray();
+
+      foreach (ChatTurn turn in newMessages) {
+
+        string role = turn.Role;
+
+        if (string.IsNullOrWhiteSpace(role)) {
+          role = "user";
+        }
+
+        JObject inputMessage = new JObject();
+        inputMessage["role"] = role;
+        inputMessage["content"] = turn.Content ?? string.Empty;
+        input.Add(inputMessage);
+
+      }
+
+      JObject requestBody = new JObject();
+      requestBody["model"] = _ChatModel;
+      requestBody["input"] = input;
+      requestBody["store"] = true;
+
+      if (!string.IsNullOrWhiteSpace(contextStore)) {
+        requestBody["previous_response_id"] = contextStore;
+      }
+
+      string jsonBody = requestBody.ToString(Formatting.None);
+
+      HttpResponseMessage response;
+      string responseContent;
+
+      using (HttpClient client = new HttpClient()) {
+
+        client.Timeout = TimeSpan.FromSeconds(240);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _OpenAiApiKey);
+
+        StringContent content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        response = client.PostAsync(_ResponsesEndpoint, content).Result;
+        responseContent = response.Content.ReadAsStringAsync().Result;
+
+      }
+
+      JObject parsed = TryParseJsonObject(responseContent);
+
+      if (!response.IsSuccessStatusCode) {
+
+        string errorMessage = GetErrorMessage(parsed, responseContent);
+        string errorCode = GetErrorCode(parsed);
+
+        bool previousResponseInvalid = (
+          !string.IsNullOrWhiteSpace(contextStore) &&
+          (
+            errorCode.IndexOf("previous_response", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            errorMessage.IndexOf("previous response", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            errorMessage.IndexOf("previous_response", StringComparison.OrdinalIgnoreCase) >= 0
+          )
+        );
+
+        if (previousResponseInvalid) {
+          throw new ContextStoreInvalidException($"OpenAI rejected the previous response id: {errorMessage}");
+        }
+
+        throw new InvalidOperationException($"OpenAI request failed (HTTP {(int)response.StatusCode}): {errorMessage}");
+      }
+
+      if (parsed == null) {
+        throw new InvalidOperationException("OpenAI returned an invalid (non-JSON) response.");
+      }
+
+      StringBuilder answer = new StringBuilder();
+      JArray output = parsed["output"] as JArray;
+
+      if (output != null) {
+
+        foreach (JToken outputItem in output) {
+
+          if ((string)outputItem["type"] != "message") {
+            continue;
+          }
+
+          JArray contentArray = outputItem["content"] as JArray;
+
+          if (contentArray == null) {
+            continue;
+          }
+
+          foreach (JToken contentItem in contentArray) {
+
+            string contentType = (string)contentItem["type"];
+
+            if (contentType == "output_text") {
+              answer.Append((string)contentItem["text"]);
+            }
+            else if (contentType == "refusal") {
+              answer.Append((string)contentItem["refusal"]);
+            }
+
+          }
+
+        }
+
+      }
+
+      contextStore = (string)parsed["id"];
+
+      return answer.ToString();
+    }
+
+    private static JObject TryParseJsonObject(string json) {
+
+      if (string.IsNullOrWhiteSpace(json)) {
+        return null;
+      }
+
+      try {
+        return JObject.Parse(json);
+      }
+      catch (JsonReaderException) {
+        return null;
+      }
+
+    }
+
+    private static string GetErrorMessage(JObject parsed, string rawContent) {
+
+      if (parsed != null && parsed["error"] is JObject) {
+        string message = (string)parsed["error"]["message"];
+        if (!string.IsNullOrWhiteSpace(message)) {
+          return message;
+        }
+      }
+
+      if (rawContent == null) {
+        return string.Empty;
+      }
+
+      return rawContent;
+    }
+
+    private static string GetErrorCode(JObject parsed) {
+
+      if (parsed != null && parsed["error"] is JObject) {
+        string code = (string)parsed["error"]["code"];
+        if (code != null) {
+          return code;
+        }
+      }
+
+      return string.Empty;
+    }
+
+    #endregion
 
     #region " PoC "
 

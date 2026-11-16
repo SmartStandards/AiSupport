@@ -1,0 +1,64 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>SmartStandards.AiSupport.ChatClient</AssemblyName>
+    <RootNamespace>AI.SmartStandards.ChatClient</RootNamespace>
+    <Title>SmartStandards AI Chat Client</Title>
+    <ApplicationIcon>chart_radar.ico</ApplicationIcon>
+    <IsPublishable>False</IsPublishable>
+    <IsPackable>False</IsPackable>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>false</Deterministic>
+    <NoWarn>$(NoWarn);1701;1702;1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <OutputPath>..\..\dist\ChatClient</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="chart_radar.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3967.48" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="SmartStandards.Logging" Version="3.4.4" />
+    <PackageReference Include="UJMW.DynamicController" Version="5.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SmartStandards.AiSupport.net10.0\SmartStandards.AiSupport.net10.0.csproj" />
+    <ProjectReference Include="..\SmartStandards.AiSupport.CommonProviders.net10.0\SmartStandards.AiSupport.CommonProviders.net10.0.csproj" />
+    <ProjectReference Include="..\SmartStandards.AiSupport.AspNetCore.net10.0\SmartStandards.AiSupport.AspNetCore.net10.0.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="WebViewAspNetCoreAdapter.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>WebViewAspNetCoreAdapter.tt</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="WebViewAspNetCoreAdapter.tt">
+      <Generator>TextTemplatingFileGenerator</Generator>
+      <LastGenOutput>WebViewAspNetCoreAdapter.cs</LastGenOutput>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
+  </ItemGroup>
+
+</Project>

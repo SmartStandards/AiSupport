@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI Chat</title>
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <button id="btnNewChat" class="primary" title="Start a new chat">+ New chat</button>
+      <button id="btnSettings" title="Settings">&#9881;</button>
+    </div>
+    <ul id="chatList"></ul>
+    <div id="providerInfo" class="muted"></div>
+  </aside>
+
+  <main id="main">
+    <header id="chatHeader">
+      <span id="chatTitle">AI Chat</span>
+      <span class="header-actions">
+        <button id="btnRename" title="Rename chat" disabled>Rename</button>
+        <button id="btnCompress" title="Compress the chat context" disabled>Compress</button>
+        <button id="btnDelete" title="Delete chat" disabled>Delete</button>
+      </span>
+    </header>
+
+    <section id="messages"></section>
+
+    <footer id="composer">
+      <textarea id="txtMessage" rows="3" placeholder="Type a message... (Enter = send, Shift+Enter = new line)"></textarea>
+      <div class="composer-actions">
+        <button id="btnSend" class="primary">Send</button>
+        <button id="btnCancel" hidden>Cancel</button>
+      </div>
+      <div id="status" class="muted"></div>
+    </footer>
+  </main>
+
+  <div id="settingsDialog" class="dialog-backdrop" hidden>
+    <div class="dialog">
+      <h2>Settings</h2>
+      <label>LLM provider
+        <select id="selProvider"></select>
+      </label>
+      <label>Model
+        <input id="txtModel" type="text" placeholder="(default)">
+      </label>
+      <label>API key (PAT)
+        <input id="txtApiKey" type="password" autocomplete="off" placeholder="(unchanged)">
+      </label>
+      <div id="apiKeyState" class="muted"></div>
+      <div class="dialog-actions">
+        <button id="btnDeleteKey">Delete API key</button>
+        <span class="spacer"></span>
+        <button id="btnSettingsCancel">Cancel</button>
+        <button id="btnSettingsSave" class="primary">Save</button>
+      </div>
+      <div class="muted small">The API key is stored locally within the roaming profile of the current user.</div>
+    </div>
+  </div>
+
+  <script src="chat.js"></script>
+</body>
+</html>
