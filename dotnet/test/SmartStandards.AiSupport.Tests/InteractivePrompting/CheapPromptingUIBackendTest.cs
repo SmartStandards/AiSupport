@@ -171,6 +171,41 @@ namespace AI.SmartStandards.InteractivePrompting {
     }
 
     [TestMethod()]
+    public void GitHubCopilotCli_IsRegisteredAndBuildsPrompts() {
+
+      FileBasedPromptingSettingsService service = new FileBasedPromptingSettingsService(Path.Combine(_TempDirectory, "settings.json"));
+
+      service.SaveSettings(GitHubCopilotCliConnector.ProviderName, "", null);
+
+      Assert.IsTrue(service.GetSettings().IsReady);
+      Assert.IsInstanceOfType(service.CreateConfiguredLLM(), typeof(GitHubCopilotCliConnector));
+
+      //a single user turn is passed unchanged
+      ChatTurn[] single = new ChatTurn[] { new ChatTurn(ChatRoles.User, "Hi") };
+      Assert.AreEqual("Hi", GitHubCopilotCliConnector.BuildPrompt(single));
+
+      //a conversation is rendered as transcript
+      ChatTurn[] conversation = new ChatTurn[] {
+        new ChatTurn(ChatRoles.User, "A"),
+        new ChatTurn(ChatRoles.Assistant, "B"),
+        new ChatTurn(ChatRoles.User, "C")
+      };
+      string prompt = GitHubCopilotCliConnector.BuildPrompt(conversation);
+      StringAssert.Contains(prompt, "[ASSISTANT]" + Environment.NewLine + "B");
+      Assert.IsTrue(prompt.EndsWith("[USER]" + Environment.NewLine + "C"));
+
+      //command line quoting (CommandLineToArgvW rules)
+      Assert.AreEqual("\"a b\"", GitHubCopilotCliConnector.QuoteArgument("a b"));
+      Assert.AreEqual("\"say \\\"hi\\\"\"", GitHubCopilotCliConnector.QuoteArgument("say \"hi\""));
+      Assert.AreEqual("\"C:\\dir\\\\\"", GitHubCopilotCliConnector.QuoteArgument("C:\\dir\\"));
+
+      //authentication errors are detected (to trigger the interactive login)
+      Assert.IsTrue(GitHubCopilotCliConnector.IsAuthenticationError("Error: No authentication information found."));
+      Assert.IsFalse(GitHubCopilotCliConnector.IsAuthenticationError("Error: model 'xyz' is not available"));
+
+    }
+
+    [TestMethod()]
     public void SettingsService_PersistsApiKeyWithoutExposingIt() {
 
       string settingsFile = Path.Combine(_TempDirectory, "settings.json");

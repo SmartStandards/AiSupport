@@ -432,6 +432,70 @@
     } else {
       el("apiKeyState").textContent = "No API key stored for this provider.";
     }
+
+    renderCapabilities(providerName);
+  }
+
+  // Renders one switch per capability (opt-out of native provider features). Unavailable features are shown
+  // with an X: the Layer-2 harness emulates them (or they are simply not supported).
+  async function renderCapabilities(providerName) {
+    const container = el("capabilityList");
+    container.innerHTML = "";
+    const provider = findProvider(providerName);
+    const capabilities = (provider && Array.isArray(provider.capabilities)) ? provider.capabilities : [];
+
+    if (capabilities.length === 0) {
+      container.textContent = "(no information)";
+      return;
+    }
+
+    let disabled = [];
+    try {
+      disabled = (await call(settingsUrl, "GetDisabledCapabilities", { providerName: providerName })) || [];
+    } catch (e) {
+      disabled = [];
+    }
+
+    if (el("selProvider").value !== providerName) {
+      return;
+    }
+
+    capabilities.forEach((c) => {
+      const row = document.createElement("label");
+      row.className = "capability" + (c.isAvailable ? "" : " unavailable");
+      row.title = c.description || "";
+
+      if (c.isAvailable) {
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.className = "switch";
+        input.dataset.capability = c.name;
+        input.checked = !disabled.some((d) => (d || "").toLowerCase() === (c.name || "").toLowerCase());
+        row.appendChild(input);
+      } else {
+        const x = document.createElement("span");
+        x.className = "capability-x";
+        x.textContent = "\u2716";
+        x.title = "Not available for this provider";
+        row.appendChild(x);
+      }
+
+      const text = document.createElement("span");
+      text.textContent = c.displayName || c.name;
+      row.appendChild(text);
+
+      container.appendChild(row);
+    });
+  }
+
+  function collectDisabledCapabilities() {
+    const result = [];
+    el("capabilityList").querySelectorAll("input[data-capability]").forEach((input) => {
+      if (!input.checked) {
+        result.push(input.dataset.capability);
+      }
+    });
+    return result;
   }
 
   function openSettings() {
@@ -459,10 +523,15 @@
 
   async function saveSettings() {
     try {
+      const providerName = el("selProvider").value;
       await call(settingsUrl, "SaveSettings", {
-        providerName: el("selProvider").value,
+        providerName: providerName,
         model: el("txtModel").value.trim(),
         apiKey: el("txtApiKey").value.trim()
+      });
+      await call(settingsUrl, "SaveDisabledCapabilities", {
+        providerName: providerName,
+        disabledCapabilityNames: collectDisabledCapabilities()
       });
       closeSettings();
       await loadSettings();

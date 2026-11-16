@@ -47,6 +47,21 @@ Detail references of this skill (load on demand):
    - Fix the delegation **before the first turn** (prompt caching; many harnesses load tools at startup only).
    - Policy delegation never swallows cases: whatever the rules don't cover still arrives as a `HostRequest`.
 6. **The Level-2 harness is stackable.** It may itself be exposed as `IConversationalLLM` or as an MCP server later.
+7. **Native first, emulation only as fallback.** The name "Level-2 harness" is deliberate: it *can* emulate base features
+   (context/history, sessions, tool loop, approvals) when a provider lacks them, but it must **not** replace features that an
+   underlying SDK/harness already provides. If a connector can go through an SDK/harness that supports a feature natively
+   (e.g. Copilot ACP sessions, OpenAI `previous_response_id`), the connector **must** use the native feature.
+   - Every provider describes its native features as **capabilities** (`LLMProviderInfo.Capabilities`, each with
+     `IsAvailable`). The list always contains all known capability names, so a UI can render every feature.
+   - Available capabilities are **opt-out** per provider (persisted, e.g. `IPromptingSettingsService.SaveDisabledCapabilities`).
+     UI convention: a switch for available features, an X for unavailable ones. An opt-out switches the connector to the
+     Level-2 emulation of that feature; it never breaks the chat.
+   - Current capability names: `ProviderSideContext` (provider holds the conversation), `PersistentSession` (one long-running
+     inner harness instance per chat), `SessionResume` (an ended session can be restored by its id).
+8. **Sessions are disposable, the outer history is the truth.** One inner-harness instance per chat; idle instances may be
+   terminated at any time. Recovery order: (1) running instance, (2) native resume with the session id persisted in the
+   `contextStore` (ACP `session/load`), (3) `ContextStoreInvalidException` → the Level-2 harness rebuilds the context from the
+   persisted outer chat history (optionally a compressed baseline). Never lose a turn because an inner session died.
 
 ## Invariants every connector/orchestrator must enforce
 
@@ -70,6 +85,11 @@ Detail references of this skill (load on demand):
 |---|---|---|---|
 | `ClaudeCliProxy` | Bridge MCP server that blocks until `SubmitResponses`, **and** the Agent-SDK control protocol in .NET (`control_request` `can_use_tool` / SDK MCP tunneling) | `--mcp-config` | `--allowedTools`, `--disallowedTools`, `--permission-mode` |
 | `CopilotCliProxy` | ACP client (`copilot --acp`), `session/request_permission`, bridge MCP server | ACP `session/new.mcpServers` | `--available-tools`/`--excluded-tools` (global per process), `--allow-tool`/`--deny-tool` |
+
+Implemented chat-only slice: `GitHubCopilotCliConnector` (session mode, one `copilot --acp` process per chat, pool with idle
+reaper, `contextStore = "copilot-acp:<sessionId>"`, resume via `session/load` if `agentCapabilities.loadSession`, permission
+requests are refused) on top of `GitHubCopilotAcpSession` (transport-agnostic ACP client, testable with pipes). Prompt mode
+(`copilot -p`) remains as fallback when `ProviderSideContext` is opted out.
 | `OpenAiLLMConnector` | Responses API function calling | remote MCP tool of the API (public servers only, no LAN) | – |
 | Local mini LLM | Ollama native `/api/chat` tool calling | – | – |
 

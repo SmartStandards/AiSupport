@@ -11,6 +11,9 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
     public const string ProviderName = "StupidMock";
 
+    /// <summary>
+    /// 30 verschiedene Phrasen, die den neutzer in den Wahnsinn treiben ;-)
+    /// </summary>
     private static readonly string[] _Phrases = new string[] {
       "Aha, interessant - fahre fort.",
       "Kannst du mir mehr darüber berichten?",
@@ -18,7 +21,35 @@ namespace AI.SmartStandards.LowLevelPrompting {
       "Hmm, verstehe. Und was bedeutet das für dich?",
       "Das klingt spannend - erzähl weiter.",
       "Wie bist du darauf gekommen?",
-      "Okay... und dann?"
+      "Okay... und dann?",
+      "dum di dum di dum...    ich muss weg...",
+      "Ich bin mir nicht sicher, ob ich das verstehe. Kannst du es anders erklären?",
+      "Interessant. Was ist deine Meinung dazu?",
+      "schönes Wetter heute oder?",
+      "sorry - hab gepennt... nochmal bitte!",
+      "Ah. Ja. Genau. Was meinst du?",
+      "Knampf!",
+      "O2 can do!",
+      "BerechneSollStundePrüf!",
+      "Draußen ist's dunkler als montags!",
+      "Die Lösung könnte sein: KATZENVIDEOS!",
+      "Das kommt ganz darauf an. Worauf eigentlich?",
+      "Warte kurz, ich muss erst mal zustimmend nicken.",
+      "Hast du dazu ein Beispiel? Am besten eins mit Enten.",
+      "Moment... ich lade gerade meine spontane Reaktion.",
+      "Das ist bestimmt wichtig. Sag es noch mal mit Ausrufezeichen.",
+      "Was würde ein Toaster dazu sagen?",
+      "Verstehe. Und wie kam der Pinguin ins Spiel?",
+      "Können wir kurz so tun, als hätte ich aufgepasst?",
+      "Das war jetzt entweder sehr schlau oder noch nicht lang genug.",
+      "Ja, das sehe ich ähnlich. Was sehen wir denn?",
+      "Einen Moment bitte. Mein Gedanke ist gerade unter den Tisch gerollt.",
+      "Spannend. Ich setze mal ein virtuelles Lesezeichen.",
+      "Hm. Ich bräuchte dazu mehr Kontext. Oder einen Keks.",
+      "Ich habe darüber nachgedacht und festgestellt, dass ich noch darüber nachdenke.",
+      "Klingt plausibel. Kannst du es zur Sicherheit noch mal flüstern?",
+      "Das erinnert mich an etwas. Sobald ich weiß, woran, sage ich Bescheid.",
+      "Okay. An dieser Stelle würde ich jetzt bedeutungsvoll aus dem Fenster schauen."
     };
 
     private static readonly object _RandomSyncRoot = new object();

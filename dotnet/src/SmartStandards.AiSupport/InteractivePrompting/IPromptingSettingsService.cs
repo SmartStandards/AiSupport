@@ -49,6 +49,111 @@ namespace AI.SmartStandards.InteractivePrompting {
 #endif
     void DeleteApiKey(string providerName);
 
+    /// <summary>
+    /// Returns the names of the capabilities which were disabled (opted out) by the user for the given provider.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    string[] GetDisabledCapabilities(string providerName);
+
+    /// <summary>
+    /// Saves the names of the capabilities which should be disabled (opted out) for the given provider.
+    /// Unknown or unavailable capability names are ignored.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    void SaveDisabledCapabilities(string providerName, string[] disabledCapabilityNames);
+
+  }
+
+  /// <summary>
+  /// Well-known names of optional provider capabilities. A capability means that the provider (or the SDK/harness
+  /// behind it) can do something natively, which the Level-2 harness would otherwise have to emulate.
+  /// </summary>
+  public static class LLMCapabilityNames {
+
+    /// <summary>
+    /// The provider keeps the conversation context on its side and returns a 'contextStore' value, so that only
+    /// new messages are transferred. If disabled (or unavailable), the harness sends its self-maintained context.
+    /// </summary>
+    public const string ProviderSideContext = "ProviderSideContext";
+
+    /// <summary>
+    /// The provider keeps a live session (for example a running CLI process) per chat between the turns.
+    /// If disabled (or unavailable), a fresh session/process is used per turn.
+    /// </summary>
+    public const string PersistentSession = "PersistentSession";
+
+    /// <summary>
+    /// The provider can restore an ended session by its id (for example after an idle shutdown or an application
+    /// restart). If disabled (or unavailable), the harness restores the context from the outer chat history.
+    /// </summary>
+    public const string SessionResume = "SessionResume";
+
+    /// <summary>
+    /// Returns all well-known capability names (in display order).
+    /// </summary>
+    public static string[] GetAll() {
+
+      return new string[] { ProviderSideContext, PersistentSession, SessionResume };
+    }
+
+  }
+
+  /// <summary>
+  /// Describes one optional capability of a provider.
+  /// </summary>
+  public class LLMCapabilityInfo {
+
+    private string _Name;
+    private string _DisplayName;
+    private string _Description;
+    private bool _IsAvailable;
+
+    /// <summary>
+    /// Technical name (see 'LLMCapabilityNames').
+    /// </summary>
+    public string Name {
+      get {
+        return _Name;
+      }
+      set {
+        _Name = value;
+      }
+    }
+
+    public string DisplayName {
+      get {
+        return _DisplayName;
+      }
+      set {
+        _DisplayName = value;
+      }
+    }
+
+    public string Description {
+      get {
+        return _Description;
+      }
+      set {
+        _Description = value;
+      }
+    }
+
+    /// <summary>
+    /// True if the provider supports this capability natively (only then it can be opted out).
+    /// </summary>
+    public bool IsAvailable {
+      get {
+        return _IsAvailable;
+      }
+      set {
+        _IsAvailable = value;
+      }
+    }
+
   }
 
   public class LLMProviderInfo {
@@ -57,6 +162,19 @@ namespace AI.SmartStandards.InteractivePrompting {
     private string _DisplayName;
     private string _DefaultModel;
     private bool _RequiresApiKey;
+    private LLMCapabilityInfo[] _Capabilities = new LLMCapabilityInfo[0];
+
+    /// <summary>
+    /// All well-known capabilities, each flagged whether the provider supports it natively.
+    /// </summary>
+    public LLMCapabilityInfo[] Capabilities {
+      get {
+        return _Capabilities;
+      }
+      set {
+        _Capabilities = value;
+      }
+    }
 
     /// <summary>
     /// Technical name (for example 'OpenAI').

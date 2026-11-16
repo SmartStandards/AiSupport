@@ -22,6 +22,7 @@ instead of concrete LLM providers, chat front ends or storage.
 | `IPromptingUIBackend` | Backend for chat front ends: chat history, create, rename and delete chats, send messages (file attachments planned). |
 | `IPromptingSessionStore` | Persistence of prompting sessions; basis for an adapter between `IPromptingUIBackend` and `ICommonLLM`. |
 | `IPromtLibrary` | Management of reusable prompts. |
+| `IPromptingSettingsService` | Selection of the LLM provider/model, storage of API keys (never returned) and per-provider opt-outs of native provider capabilities. |
 | `ICodeArtifactMap` | Semantic description of code artifacts and components per repository URL. |
 
 Access to knowledge stores (`IKnowledgeRepository`) has moved to the separate `SmartStandards.KnowledgeManagement*`
@@ -33,6 +34,34 @@ packages and is only consumed here.
 - File-based implementations of the session store, prompt library and code artifact map, plus a simple prompting UI backend.
 - `DynamicAiServiceFactory`: creates a runtime implementation for any .NET interface whose method calls are delegated
   to an `ICommonLLM` (pure AI communication; AI-generated code is prepared but not yet implemented).
+- `GitHubCopilotCliConnector` as a chat provider on top of the locally installed GitHub Copilot CLI (see below).
+
+### Provider capabilities and the Level-2 harness
+
+The middle layer (`CheapPromptingUIBackend`, later the Level-2 harness) can **emulate** base features such as conversation
+context, but it must not replace features which an underlying SDK/harness already provides natively.
+
+| Id | Requirement |
+|---|---|
+| CAP-1 | If a connector can use an SDK/harness that supports a feature natively, the native feature is preferred. The Level-2 emulation is only a fallback. |
+| CAP-2 | Every provider describes its native features via `LLMProviderInfo.Capabilities`. The list contains all known capability names (`LLMCapabilityNames`) with `IsAvailable`, so that clients can render every feature. |
+| CAP-3 | Available capabilities can be opted out per provider (`GetDisabledCapabilities` / `SaveDisabledCapabilities`, persisted with the settings). Unknown or unavailable names are ignored. |
+| CAP-4 | An opt-out switches the connector to the Level-2 emulation of the feature; the chat must keep working. |
+| CAP-5 | The chat UI shows a switch for every available capability and an X for every unavailable one. |
+| CAP-6 | Capability names: `ProviderSideContext` (the provider holds the conversation; only new messages are sent), `PersistentSession` (one long-running inner harness instance per chat), `SessionResume` (an ended session can be restored by its id). |
+
+### GitHub Copilot CLI session mode
+
+| Id | Requirement |
+|---|---|
+| COP-1 | By default, every chat uses its own long-running `copilot --acp` process (Agent Client Protocol over stdio) with one native session. Only the new messages of a turn are sent. |
+| COP-2 | The id of the native session is persisted as `contextStore` (`copilot-acp:<sessionId>`) with the chat, so it survives restarts of the host. |
+| COP-3 | Processes which are idle longer than `SessionIdleTimeout` (default 15 minutes) are terminated; all processes are terminated when the host exits. |
+| COP-4 | If the process of a chat has ended, the session is restored via `session/load` with the persisted id, provided that the CLI advertises `loadSession` and `SessionResume` is not opted out. |
+| COP-5 | If the session cannot be continued (no resume support, unknown id, process died during the turn), the connector raises `ContextStoreInvalidException` and the middle layer rebuilds the context from the persisted outer chat history. No turn may be lost. |
+| COP-6 | The CLI acts as pure chat model: it runs in an empty scratch directory, no file system/terminal capabilities are advertised and every permission request is refused. |
+| COP-7 | Missing authentication opens the interactive login once (desktop processes only) and the turn is retried once. A GitHub token from the settings is passed as `COPILOT_GITHUB_TOKEN`. |
+| COP-8 | If `ProviderSideContext` is opted out, the prompt mode (`copilot -p`, one process per turn, full self-maintained context) is used. If `PersistentSession` is opted out, the process ends after every turn (the session is resumed or rebuilt in the next turn). |
 
 ### Hosting (package `SmartStandards.AiSupport.AspNetCore`)
 
@@ -54,5 +83,6 @@ packages and is only consumed here.
 - No chat user interface of its own; only the backend is provided.
 - Knowledge stores (`IKnowledgeRepository` and its providers) are no longer part of this repository.
 - The **Level-2 AI harness** (tool-calling handshake, CLI proxies, local LLM, MCP client work) is not an active
-  requirement yet. See [ideas.md](ideas.md).
+  requirement yet, except for the chat-only slice described above (provider capabilities, Copilot session mode).
+  See [ideas.md](ideas.md).
 - The full OAuth/CalDAV MCP demo scenario is not part of the first reusable facade slice yet.

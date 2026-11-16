@@ -55,6 +55,22 @@ namespace AI.SmartStandards.LowLevelPrompting {
       }
     }
 
+    private bool _UseProviderSideContext = true;
+
+    /// <summary>
+    /// If true (default), the server-side conversation state ('previous_response_id') is used.
+    /// If false (capability opted out), 'contextStore' is always returned as null, so that the caller
+    /// sends its self-maintained context.
+    /// </summary>
+    public bool UseProviderSideContext {
+      get {
+        return _UseProviderSideContext;
+      }
+      set {
+        _UseProviderSideContext = value;
+      }
+    }
+
     #region " Chat (Responses API) "
 
     /// <summary>
@@ -65,6 +81,10 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       if (newMessages == null || newMessages.Length == 0) {
         throw new ArgumentNullException(nameof(newMessages));
+      }
+
+      if (!this.UseProviderSideContext) {
+        contextStore = null;
       }
 
       JArray input = new JArray();
@@ -87,7 +107,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
       JObject requestBody = new JObject();
       requestBody["model"] = _ChatModel;
       requestBody["input"] = input;
-      requestBody["store"] = true;
+      requestBody["store"] = this.UseProviderSideContext;
 
       if (!string.IsNullOrWhiteSpace(contextStore)) {
         requestBody["previous_response_id"] = contextStore;
@@ -171,7 +191,12 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       }
 
-      contextStore = (string)parsed["id"];
+      if (this.UseProviderSideContext) {
+        contextStore = (string)parsed["id"];
+      }
+      else {
+        contextStore = null;
+      }
 
       return answer.ToString();
     }
