@@ -61,6 +61,14 @@ context, but it must not replace features which an underlying SDK/harness alread
 | APR-1 | Calls of sources with level `RequiresConfirmation` pause the turn until the user answers: `Deny` (rejection result, source hidden for this chat), `AllowOnce`, `AllowForChat` (persisted with the chat, revocable). Unanswered requests are denied after a timeout; cancelling the turn denies as well. |
 | GRD-1 | The OOB tools enforce allow-lists independently of the approval: `allowedPaths` (RO/RW, recursive, normalized), `allowedDomains` (exact host or `*.domain`), `allowedCommands` (literal, wildcard or `regex:` over the full command line). A miss asks the user (`Deny`, `AllowOnce`, `AllowPermanently` = append to the global allow-list). |
 | AUD-1 | Every requested tool call is written into the audit log of the chat (timestamp, source, tool, masked/truncated argument summary, decision, duration, success/error, result size; max. 500 entries). |
+| PRG-3 | Tools can report their own progress (status text, current item, total items). It is forwarded through the progress callback of the running `SendMessage` turn. The shell tool reports its last non-empty output line; UJMW contract tools receive an injected `Action<string, int, int>` for such parameters (never visible to the model). Failures of the progress sink never fail the tool call. |
+| SKM-6 | Selecting the skill source level `InitializeAtStart` immediately shows a warning (higher token usage in every context), globally and in the chat details. |
+| SKM-9 | Skill sources have a freely selectable label (`SetSkillSourceDisplayName`); an empty value restores the derived default label. Built-in sources cannot be renamed. |
+| CHD-3 | The chat details dialog is split into the tabs **General** (name, provider, model, context state, compress), **Security** (per-chat skill and tool source levels) and **Audit log**. |
+| CHD-8 | Every tool source in the chat details shows a log icon (grey = unused in this chat, blue = used); a click opens the audit log filtered to this source. |
+| CTL-1 | Control messages caused by changes in the chat details are visible immediately after saving (the chat is reloaded). |
+| UIC-2 | The allow-lists of the built-in tools (`allowedPaths`, `allowedDomains`, `allowedCommands`) are maintained in fixed editors; a raw JSON editor stays available. Unknown properties of the settings object are preserved. |
+| UPS-1 | User instructions changed by the model (`preferences_update`) are visible in the settings without restart; changes in the settings reach running chats with their next turn (the harness prompt fingerprint is re-evaluated per turn). |
 
 ### GitHub Copilot CLI session mode
 

@@ -63,6 +63,13 @@ Detail references of this skill (load on demand):
    terminated at any time. Recovery order: (1) running instance, (2) native resume with the session id persisted in the
    `contextStore` (ACP `session/load`), (3) `ContextStoreInvalidException` → the Level-2 harness rebuilds the context from the
    persisted outer chat history (optionally a compressed baseline). Never lose a turn because an inner session died.
+9. **Tool DLLs are referenced in place, never uploaded/copied.** Foreign tool assemblies (UJMW contract interfaces, foreign
+   tool providers) are registered by their **original location** (local or UNC path), like skill file references. That
+   original directory **must be probed whenever dependencies are resolved** - in `AssemblyLoadContext.Resolving` of the
+   tool load context **and** in `AppDomain.CurrentDomain.AssemblyResolve` - so that sub-references of the tool DLL load.
+   A missing/unreadable DLL marks the source as broken (reason shown), the registration is kept. Keep the process-wide
+   `AssemblyResolve` handler narrow (only answer for names found in registered tool directories) to avoid hijacking
+   unrelated resolutions. An upload path may remain only for remote UIs that cannot reference files.
 
 ## Invariants every connector/orchestrator must enforce
 
@@ -139,5 +146,5 @@ ignored/category tests. Record raw provider traffic as fixtures.
 
 - When new facts are verified (flags, protocol messages, model results), update the matching `references/*.md` file with the
   date and version, and adjust `doc/ideas.md` section 1.10 if human-relevant.
-- When design decisions change, update `doc/ideas.md` (or `doc/1-requirements.md`/`doc/2-architecture.md` once implemented) **and** the "Binding design decisions" section here in the same change.
+(or `doc/requirements.md`/`doc/architecture.md` once implemented)
 - Mark unverified or reverse-engineered facts as *(unofficial)*. Never silently turn them into rules.

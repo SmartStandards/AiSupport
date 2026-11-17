@@ -1,8 +1,8 @@
 # Ideas and Future Directions
 
 > The content of this document is **not an active requirement**. An idea is implemented only after explicit
-> developer commitment. It then moves into [1-requirements.md](1-requirements.md) as a requirement and structurally into
-> [2-architecture.md](2-architecture.md).
+> developer commitment. It then moves into [requirements.md](requirements.md) as a requirement and structurally into
+> [architecture.md](architecture.md).
 >
 > **Design decisions** already made within an idea (marked as "decided") become binding as soon as the idea is implemented.
 
@@ -451,7 +451,7 @@ important findings for humans:
 
 Status: first reusable facade slice implemented; OAuth/CalDAV demo and product-interoperability hardening remain open.
 This epic is independent of the Level-2 harness and MCP-client work above. Implemented slices must keep
-[1-requirements.md](1-requirements.md), [2-architecture.md](2-architecture.md) and [3-quickstart.md](3-quickstart.md)
+[requirements.md](requirements.md), [architecture.md](architecture.md) and [quickstart.md](quickstart.md)
 in sync.
 
 ### 3.1 Outcome and ownership

@@ -90,6 +90,11 @@ During a turn, `CheapPromptingUIBackend` creates a `HarnessScope` with the per-c
 (silent pause). Guards (`HarnessGuards`) run inside the OOB tools and reach the requester through the thread-static
 `HarnessToolContext`, which the toolbox sets around `IHarnessTool.Invoke`, so the tool signature stays unchanged.
 
+Tool progress (PRG-3) uses the same ambient context: `HarnessToolContext.ReportProgress` prefixes the status text with
+the tool name and calls `HarnessScope.ToolProgressReporter`, which `CheapPromptingUIBackend` binds to the `onProgress`
+callback of the running `SendMessage` operation (delivered to the UI by UJMW polling). Callbacks on foreign threads
+(process output events, UJMW long-running callbacks) capture the context before and restore it around the report.
+
 ## Architecture decisions
 
 - **Remotability over convenience:** contracts stay synchronous and DTO-based so that UJMW and WCF can transport them.

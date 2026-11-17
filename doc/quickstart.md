@@ -57,6 +57,17 @@ extensionService.SaveToolProviderSettings(
 
 All built-in sources start with level `RequiresConfirmation`: the chat UI shows an approval card for every call
 (`Deny`, `Allow once`, `Allow for this chat`) and a guard card if a path, domain or command is not on the allow-list.
+In the chat UI, the allow-lists are maintained in **Settings - Tools - Settings** of the respective source (fixed
+editors, "Edit as JSON" as fallback).
+
+A UJMW contract method used as tool can report progress by declaring an `Action<string, int, int>` parameter
+(status text, current item, total items). The harness injects it and hides it from the model:
+
+```csharp
+public interface IReportGenerator {
+  string CreateReport(string topic, Action<string, int, int> onProgress);
+}
+```
 
 ## Expose selected controller actions as MCP tools
 

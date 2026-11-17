@@ -1,7 +1,7 @@
 # Epic: Interactive Prompting (Chat Middle Layer and PoC Chat Client)
 
 > Status: **concept, not yet an active requirement.** Nothing in this epic is implemented automatically. Accepted parts
-> move into [1-requirements.md](../1-requirements.md) and are planned as concrete steps before implementation.
+> move into [requirements.md](../requirements.md) and
 
 ## 1. Abstract and motivation
 

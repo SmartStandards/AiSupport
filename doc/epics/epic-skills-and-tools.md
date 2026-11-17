@@ -1,7 +1,7 @@
 # Epic: Providing Skills and Tools to the Model (Native First, Layer-2 Proxy as Fallback)
 
 > Status: **concept, not yet an active requirement.** Nothing in this epic is implemented automatically. Accepted parts
-> move into [1-requirements.md](../1-requirements.md) and are planned as concrete steps before implementation.
+> move into [requirements.md](../requirements.md) and
 > Builds on [epic-interactive-prompting.md](epic-interactive-prompting.md) (middle layer, `contextStore`) and on the
 > provider capabilities (CAP-1..6) and the Copilot session mode (COP-1..8) in the requirements.
 

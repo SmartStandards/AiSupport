@@ -9,8 +9,8 @@ metadata:
 
 ## Documentation layout
 
-- Human-readable docs follow the ai-cowork-process structure: `readme.md`, `doc/1-requirements.md`, `doc/2-architecture.md`,
-  `doc/3-quickstart.md`, `doc/ideas.md`. Links must stay relative. README and all `doc/` files are written in English.
+`readme.md`, `doc/requirements.md`, `doc/architecture.md`,
+  `doc/quickstart.md`, `doc/ideas.md`. File names carry no numeric prefixes. Links
 - `doc/changelog.md` and `doc/versioninfo.json` are maintained by the build/versioning pipeline. **Never edit them.**
 - Future concepts go into epics: `doc/epics/epic-<title>.md` (ai-cowork-process). `doc/ideas.md` is the legacy
   container (Level-2 AI harness as section 1, MCP facade epic as section 3) until it is migrated into epics. Binding
@@ -21,6 +21,25 @@ metadata:
 - Prompting UI iteration 2 (skill/tool management tabs, tool provider model, OOB tools with guards, chat details dialog,
   approvals, audit log, progress delegate in `CallChatApi`): [epic-prompting-ui-iteration-2.md](../../../doc/epics/epic-prompting-ui-iteration-2.md)
   (concept, not yet an active requirement).
+- Prompting UI iteration 3 (harness profiles in the client; server-side DI factory catalogs, multi-hosting per URL
+  profile, profile authorization, tool DLLs referenced in place): [epic-prompting-ui-iteration-3.md](../../../doc/epics/epic-prompting-ui-iteration-3.md)
+  (concept; client part first, server part to be discussed).
+
+## Chat UI implementation notes
+
+- Tool progress (PRG-3): `HarnessScope.ToolProgressReporter` (optional) <- `HarnessToolContext.ReportProgress`. Code
+  running on foreign threads must capture `HarnessToolContext.Current` first and restore it (see shell output events
+  and `ContractMethodHarnessTool.CreateProgressForwarder`). `Action<string,int,int>` contract parameters are injected
+  and excluded from the tool schema.
+- `chat.js` has no build step; validate with `node --check`. Details dialog tab ids: `detailsTabGeneral`,
+  `detailsTabSecurity`, `detailsTabAudit`. Allow-list editors are driven by `allowListDefinitions` and keep unknown
+  settings properties.
+- User instructions are re-read by the UI after every turn (tool edits); running chats pick up UI edits through the
+  per-turn harness prompt fingerprint - no dirty flag needed.
+- Tool DLLs: binding rule "referenced in place" (skill `ai-harness-development`, decision 9). Current state still
+  deviates: `UploadToolAssembly` copies to `ToolAssemblies\<AssemblyId>\` and `ContractInterfaceToolProvider.LoadAssembly`
+  only probes that copy folder via `AssemblyLoadContext.Resolving`; there is no `AppDomain.AssemblyResolve` handler yet.
+  Fix planned in [epic-prompting-ui-iteration-3.md](../../../doc/epics/epic-prompting-ui-iteration-3.md) (TDL-1..4).
 
 ## Code structure
 
@@ -50,7 +69,7 @@ metadata:
   `McpDiagnosticTrace` uses DevLogger Trace events in the sub-range **75300-75339**.
   Never log tokens, cookies, payloads, query strings, arbitrary client method names/IDs or exception messages there.
   Correlation IDs are server-generated; elapsed times are cumulative. The logging sink must accept Trace (0).
-  See `doc/3-quickstart.md` for activation and phase interpretation. OAuth endpoints belong to AuthTokenHandling.
+  See `doc/quickstart.md` for activation
 - The UJMW side channel (`_`) must stay fully transparent in the MCP facade (flat string-to-string dictionary, keys may
   use dot notation, values are always strings; passthrough in both
   directions, no filtering). Values select a scope; authorization is decided server-side against the token. Field

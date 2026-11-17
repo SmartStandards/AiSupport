@@ -1,7 +1,7 @@
 # Epic: Prompting UI Iteration 2 (Skill and Tool Management, Chat Details, Approvals, Progress)
 
 > Status: **concept, not yet an active requirement.** Nothing in this epic is implemented automatically. Accepted parts
-> move into [1-requirements.md](../1-requirements.md) and are planned as concrete steps before implementation.
+> move into [requirements.md](../requirements.md) and
 > Builds on [epic-interactive-prompting.md](epic-interactive-prompting.md) (middle layer, `contextStore`, PoC chat
 > client) and [epic-skills-and-tools.md](epic-skills-and-tools.md) (source kinds, catalog, native vs. proxy path,
 > text protocol, approval vocabulary). Where this epic and the skills/tools epic overlap, this epic describes the **UI
@@ -9,8 +9,12 @@
 >
 > Implementation progress: approvals (3.3), audit log, tool provider model incl. MCP and UJMW contract sources (3.2),
 > OOB tools with guards (3.4) and the pause/resume Variant A (3.5) are implemented and documented in
-> [1-requirements.md](../1-requirements.md) (TLM/OOB/APR/GRD/AUD) and [2-architecture.md](../2-architecture.md).
-> Open: sandboxed settings detail tabs (3.2.1), Variant B for providers without `PausableToolCalls`.
+> [requirements.md](../requirements.md) (TLM/OOB/APR/GRD/AUD) and [architecture.md](../architecture.md).
+> Also implemented: CHD-3 (tabbed details dialog), CHD-8 (per-source audit icon and filter), SKM-6 warning, immediate
+> display of control messages (3.8), PRG-3 (tool progress), editable skill source labels and fixed allow-list editors
+> for the built-in tools (UIC-2, instead of sandboxed detail tabs).
+> Open: sandboxed settings detail tabs for foreign providers (3.2.1, UIC-1), Variant B for providers without
+> `PausableToolCalls`. Follow-up: [epic-prompting-ui-iteration-3.md](epic-prompting-ui-iteration-3.md).
 
 ## 1. Abstract and motivation
 
