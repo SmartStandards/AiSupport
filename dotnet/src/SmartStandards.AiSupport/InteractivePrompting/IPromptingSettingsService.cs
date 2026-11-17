@@ -149,11 +149,19 @@ namespace AI.SmartStandards.InteractivePrompting {
     public const string SessionResume = "SessionResume";
 
     /// <summary>
+    /// The provider (or its inner harness) can keep a pending tool call open for an arbitrary time, so that the
+    /// harness can silently wait for an interactive approval of the user (Variant A). If disabled (or unavailable),
+    /// the harness answers immediately with a 'permission is being requested' notice and continues with a control
+    /// message after the decision (Variant B).
+    /// </summary>
+    public const string PausableToolCalls = "PausableToolCalls";
+
+    /// <summary>
     /// Returns all well-known capability names (in display order).
     /// </summary>
     public static string[] GetAll() {
 
-      return new string[] { ProviderSideContext, PersistentSession, SessionResume };
+      return new string[] { ProviderSideContext, PersistentSession, SessionResume, PausableToolCalls };
     }
 
   }
@@ -219,6 +227,7 @@ namespace AI.SmartStandards.InteractivePrompting {
     private string _DefaultModel;
     private bool _RequiresApiKey;
     private LLMCapabilityInfo[] _Capabilities = new LLMCapabilityInfo[0];
+    private string[] _KnownModels = new string[0];
 
     /// <summary>
     /// All well-known capabilities, each flagged whether the provider supports it natively.
@@ -268,6 +277,19 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
       set {
         _RequiresApiKey = value;
+      }
+    }
+
+    /// <summary>
+    /// Optional list of model names known to the provider (offered in the model combo box, free text remains
+    /// possible). Empty if the provider does not deliver such a list.
+    /// </summary>
+    public string[] KnownModels {
+      get {
+        return _KnownModels;
+      }
+      set {
+        _KnownModels = value;
       }
     }
 

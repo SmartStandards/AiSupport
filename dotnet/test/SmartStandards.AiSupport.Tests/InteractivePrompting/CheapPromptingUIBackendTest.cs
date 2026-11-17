@@ -209,15 +209,23 @@ namespace AI.SmartStandards.InteractivePrompting {
     public void SettingsService_PersistsApiKeyWithoutExposingIt() {
 
       string settingsFile = Path.Combine(_TempDirectory, "settings.json");
+      KeyFileSecretProtector protector = new KeyFileSecretProtector(Path.Combine(_TempDirectory, "local", "secrets.key"));
 
       FileBasedPromptingSettingsService service = new FileBasedPromptingSettingsService(settingsFile);
+      service.SecretProtector = protector;
 
       Assert.IsFalse(service.GetSettings().IsReady);
       Assert.ThrowsExactly<InvalidOperationException>(() => service.CreateConfiguredLLM());
 
       service.SaveSettings("OpenAI", "", "sk-test-1234567890");
 
+      //the API key is encrypted at rest
+      string settingsJson = File.ReadAllText(settingsFile);
+      Assert.IsFalse(settingsJson.Contains("sk-test-1234567890"));
+      Assert.IsTrue(settingsJson.Contains("enc1:"));
+
       FileBasedPromptingSettingsService reloaded = new FileBasedPromptingSettingsService(settingsFile);
+      reloaded.SecretProtector = protector;
       PromptingSettingsInfo info = reloaded.GetSettings();
 
       Assert.IsTrue(info.IsReady);
@@ -230,9 +238,140 @@ namespace AI.SmartStandards.InteractivePrompting {
       reloaded.SaveSettings("OpenAI", "gpt-4.1", null);
       Assert.IsTrue(reloaded.GetSettings().HasApiKey);
       Assert.AreEqual("gpt-4.1", reloaded.GetSettings().Model);
+      Assert.IsFalse(File.ReadAllText(settingsFile).Contains("sk-test-1234567890"));
+
+      //another key cannot read it (treated as missing)
+      FileBasedPromptingSettingsService otherKey = new FileBasedPromptingSettingsService(settingsFile);
+      otherKey.SecretProtector = new KeyFileSecretProtector(Path.Combine(_TempDirectory, "other.key"));
+      Assert.IsFalse(otherKey.GetSettings().HasApiKey);
 
       reloaded.DeleteApiKey("OpenAI");
       Assert.IsFalse(reloaded.GetSettings().HasApiKey);
+
+    }
+
+    [TestMethod()]
+    public void SettingsService_AcceptsLegacyPlainTextApiKeyAndProtectsItOnNextWrite() {
+
+      string settingsFile = Path.Combine(_TempDirectory, "settings.json");
+      Directory.CreateDirectory(_TempDirectory);
+      File.WriteAllText(settingsFile, "{ \"ProviderName\": \"OpenAI\", \"ApiKeys\": { \"OpenAI\": \"sk-legacy-1234567890\" } }");
+
+      FileBasedPromptingSettingsService service = new FileBasedPromptingSettingsService(settingsFile);
+      service.SecretProtector = new KeyFileSecretProtector(Path.Combine(_TempDirectory, "local", "secrets.key"));
+
+      Assert.IsTrue(service.GetSettings().HasApiKey);
+      Assert.AreEqual("sk-...7890", service.GetSettings().ApiKeyHint);
+
+      service.SaveSettings("OpenAI", "gpt-4.1", null);
+
+      Assert.IsFalse(File.ReadAllText(settingsFile).Contains("sk-legacy-1234567890"));
+      Assert.IsTrue(service.GetSettings().HasApiKey);
+
+    }
+
+    [TestMethod()]
+    public void PerChatProvider_SnapshotAtCreationAndSwitchResetsProviderContext() {
+
+      FakeChatLLMFactory factory = new FakeChatLLMFactory();
+      FileBasedPromptingSessionStore store = new FileBasedPromptingSessionStore(Path.Combine(_TempDirectory, "Chats"));
+      CheapPromptingUIBackend backend = new CheapPromptingUIBackend(store, factory, null, () => "Fake", "Tester");
+
+      string chatId = backend.BeginNewChat("Test");
+
+      //snapshot of the defaults
+      ChatDetails details = backend.GetChatDetails(chatId);
+      Assert.AreEqual("ProvA", details.ProviderName);
+      Assert.AreEqual("model-a", details.Model);
+
+      //a later change of the default does not affect the existing chat
+      factory.DefaultProviderName = "ProvB";
+      Assert.AreEqual("ProvA", backend.GetChatDetails(chatId).ProviderName);
+
+      ChatMessage answer1 = backend.SendMessage(CancellationToken.None, chatId, "A");
+      Assert.AreEqual("ProvA model-a", answer1.Author);
+      Assert.IsNotNull(store.LoadSession(chatId).ContextStore);
+
+      //switch the provider: the provider-side context is discarded
+      backend.SetChatProvider(chatId, "ProvB", "");
+
+      ChatSession switched = store.LoadSession(chatId);
+      Assert.IsNull(switched.ContextStore);
+      Assert.AreEqual(0, switched.ContextStoreCoveredMessageCount);
+      Assert.AreEqual("model-b", switched.Model);
+
+      ChatMessage answer2 = backend.SendMessage(CancellationToken.None, chatId, "B");
+      Assert.AreEqual("ProvB model-b", answer2.Author);
+
+      //the new provider gets the full rebuilt history: A, answer(A), B
+      FakeLLM llmB = factory.CreatedLLMs["ProvB"];
+      Assert.AreEqual(3, llmB.Calls[0].Length);
+      Assert.IsNull(llmB.ContextStoresReceived[0]);
+
+      //a model change only (same provider) keeps the provider-side context
+      backend.SetChatProvider(chatId, "ProvB", "model-b2");
+      Assert.IsNotNull(store.LoadSession(chatId).ContextStore);
+      Assert.AreEqual("model-b2", backend.GetChatDetails(chatId).Model);
+
+      Assert.ThrowsExactly<ArgumentException>(() => backend.SetChatProvider(chatId, "Unknown", null));
+
+    }
+
+    [TestMethod()]
+    public void SettingsService_CreatesLLMForExplicitProvider() {
+
+      FileBasedPromptingSettingsService service = new FileBasedPromptingSettingsService(Path.Combine(_TempDirectory, "settings.json"));
+
+      service.SaveSettings(StupidMockLLM.ProviderName, "", null);
+
+      IChatLLMFactory factory = service;
+
+      Assert.AreEqual(StupidMockLLM.ProviderName, factory.GetDefaultProviderName());
+      Assert.IsTrue(factory.IsKnownProvider(GitHubCopilotCliConnector.ProviderName));
+      Assert.IsFalse(factory.IsKnownProvider("Unknown"));
+      Assert.IsInstanceOfType(factory.CreateLLM(GitHubCopilotCliConnector.ProviderName, null), typeof(GitHubCopilotCliConnector));
+      Assert.IsInstanceOfType(factory.CreateLLM(null, null), typeof(StupidMockLLM));
+
+    }
+
+    [TestMethod()]
+    public void SessionStore_LoadsLegacySessionFileWithoutIteration2Fields() {
+
+      string chatsDirectory = Path.Combine(_TempDirectory, "Chats");
+      Directory.CreateDirectory(chatsDirectory);
+      File.WriteAllText(
+        Path.Combine(chatsDirectory, "legacy1.json"),
+        "{ \"Id\": \"legacy1\", \"Name\": \"Old\", \"Messages\": [ { \"Role\": \"user\", \"Content\": \"Hi\" } ] }"
+      );
+
+      FileBasedPromptingSessionStore store = new FileBasedPromptingSessionStore(chatsDirectory);
+      ChatSession session = store.LoadSession("legacy1");
+
+      Assert.IsNull(session.ProviderName);
+      Assert.IsNotNull(session.SkillLevelOverrides);
+      Assert.IsNotNull(session.ToolLevelOverrides);
+      Assert.AreEqual(0, session.ChatApprovals.Length);
+      Assert.AreEqual(0, session.ToolAuditLog.Length);
+      Assert.IsNull(session.Messages[0].Kind);
+
+    }
+
+    [TestMethod()]
+    public void SendMessage_ReportsProgressViaCallback() {
+
+      FakeLLM llm = new FakeLLM(false);
+      CheapPromptingUIBackend backend = this.CreateBackend(llm);
+
+      string chatId = backend.BeginNewChat("Test");
+
+      List<string> progressTexts = new List<string>();
+      ChatMessage answer = backend.SendMessage(
+        CancellationToken.None, chatId, "A", (text, current, max) => progressTexts.Add(text)
+      );
+
+      Assert.AreEqual("echo: A", answer.Content);
+      Assert.IsTrue(progressTexts.Count > 0);
+      StringAssert.StartsWith(progressTexts[0], "waiting for ");
 
     }
 
@@ -241,6 +380,65 @@ namespace AI.SmartStandards.InteractivePrompting {
       FileBasedPromptingSessionStore store = new FileBasedPromptingSessionStore(Path.Combine(_TempDirectory, "Chats"));
 
       return new CheapPromptingUIBackend(store, () => llm, () => "Fake", "Tester");
+    }
+
+    /// <summary>
+    /// Fake factory with the providers 'ProvA' and 'ProvB' (one FakeLLM with provider-side context per provider).
+    /// </summary>
+    private sealed class FakeChatLLMFactory : IChatLLMFactory {
+
+      private string _DefaultProviderName = "ProvA";
+      private readonly Dictionary<string, FakeLLM> _CreatedLLMs = new Dictionary<string, FakeLLM>();
+
+      public string DefaultProviderName {
+        get {
+          return _DefaultProviderName;
+        }
+        set {
+          _DefaultProviderName = value;
+        }
+      }
+
+      public Dictionary<string, FakeLLM> CreatedLLMs {
+        get {
+          return _CreatedLLMs;
+        }
+      }
+
+      public string GetDefaultProviderName() {
+        return _DefaultProviderName;
+      }
+
+      public string GetDefaultModel(string providerName) {
+
+        if (providerName == "ProvA") {
+          return "model-a";
+        }
+
+        if (providerName == "ProvB") {
+          return "model-b";
+        }
+
+        return null;
+      }
+
+      public bool IsKnownProvider(string providerName) {
+        return providerName == "ProvA" || providerName == "ProvB";
+      }
+
+      public ICommonLLM CreateLLM(string providerName, string model) {
+
+        if (string.IsNullOrWhiteSpace(providerName)) {
+          providerName = _DefaultProviderName;
+        }
+
+        if (!_CreatedLLMs.ContainsKey(providerName)) {
+          _CreatedLLMs[providerName] = new FakeLLM(true);
+        }
+
+        return _CreatedLLMs[providerName];
+      }
+
     }
 
     /// <summary>
@@ -279,7 +477,10 @@ namespace AI.SmartStandards.InteractivePrompting {
         }
       }
 
-      public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+      public string CallChatApi(
+        System.Threading.CancellationToken cancellationToken, ChatTurn[] newMessages, ref string contextStore,
+        Action<string, int, int> onProgress
+      ) {
 
         _Calls.Add(newMessages);
         _ContextStoresReceived.Add(contextStore);

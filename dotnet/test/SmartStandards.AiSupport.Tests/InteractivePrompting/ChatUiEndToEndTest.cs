@@ -114,8 +114,114 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       Assert.AreEqual("echo: Hello", (string)sendResult["return"]["content"], sendResult.ToString());
 
+      //the progress callback is delivered to UJMW clients (convention: '<callbackName>Invokes')
+      JArray progressInvokes = sendResult["onProgressInvokes"] as JArray;
+      Assert.IsNotNull(progressInvokes, sendResult.ToString());
+      Assert.IsTrue(progressInvokes.Count > 0, sendResult.ToString());
+
       JObject recent = this.Post(ChatUiSetupExtensions.BackendRouteSegment + "/GetRecentChats", new JObject());
       Assert.AreEqual("Hello", (string)recent["return"].First()["name"], recent.ToString());
+
+    }
+
+    [TestMethod()]
+    public void ChatDetailsDialog_IsServed() {
+
+      string index = _Client.GetAsync("/").Result.Content.ReadAsStringAsync().Result;
+      StringAssert.Contains(index, "detailsDialog");
+
+      string script = _Client.GetAsync("/chat.js").Result.Content.ReadAsStringAsync().Result;
+      StringAssert.Contains(script, "SetChatProvider");
+      StringAssert.Contains(script, "Invokes");
+
+    }
+
+    [TestMethod()]
+    public void SourceManagementUi_IsServed() {
+
+      string index = _Client.GetAsync("/").Result.Content.ReadAsStringAsync().Result;
+      StringAssert.Contains(index, "settingsTabSkills");
+      StringAssert.Contains(index, "settingsTabTools");
+      StringAssert.Contains(index, "toolSourceList");
+      StringAssert.Contains(index, "btnUserInstructions");
+      StringAssert.Contains(index, "detailsSkillSources");
+      StringAssert.Contains(index, "detailsToolSources");
+
+      string script = _Client.GetAsync("/chat.js").Result.Content.ReadAsStringAsync().Result;
+      StringAssert.Contains(script, "chatApi/extensions/");
+      StringAssert.Contains(script, "GetSkillSources");
+      StringAssert.Contains(script, "GetToolSources");
+      StringAssert.Contains(script, "AddMcpServer");
+      StringAssert.Contains(script, "UploadToolAssembly");
+      StringAssert.Contains(script, "[activity] ");
+      StringAssert.Contains(script, "RaiseChatSkillSourceLevel");
+      StringAssert.Contains(script, "SetChatToolSourceLevel");
+
+    }
+
+    [TestMethod()]
+    public void ToolApprovalAndAuditUi_IsServedAndAuditLogIsReachable() {
+
+      string index = _Client.GetAsync("/").Result.Content.ReadAsStringAsync().Result;
+      StringAssert.Contains(index, "detailsAuditLog");
+
+      string script = _Client.GetAsync("/chat.js").Result.Content.ReadAsStringAsync().Result;
+      StringAssert.Contains(script, "AllowForChat");
+      StringAssert.Contains(script, "AllowOnce");
+      StringAssert.Contains(script, "GetToolAuditLog");
+
+    }
+
+    [TestMethod()]
+    public void SendMessage_DeliversProgressWhileRunning() {
+
+      EchoLLM.Delay = TimeSpan.FromSeconds(4);
+
+      try {
+
+        JObject beginArgs = new JObject();
+        beginArgs["name"] = "";
+        string chatId = (string)this.Post(ChatUiSetupExtensions.BackendRouteSegment + "/BeginNewChat", beginArgs)["return"];
+
+        JObject sendArgs = new JObject();
+        sendArgs["chatId"] = chatId;
+        sendArgs["message"] = "Hello";
+        JObject initial = this.Post(ChatUiSetupExtensions.BackendRouteSegment + "/SendMessage?wait=1", sendArgs);
+
+        Assert.IsNotNull(initial["async"], initial.ToString());
+
+        JArray progressInvokes = initial["onProgressInvokes"] as JArray;
+        Assert.IsNotNull(progressInvokes, "No progress within the initial (still running) response: " + initial.ToString());
+        Assert.IsTrue(progressInvokes.Any((p) => ((string)p["arg1"]).Contains("echo-progress")), initial.ToString());
+
+        System.Threading.Thread.Sleep(5000);
+
+        string asyncId = (string)initial["async"]["asyncId"];
+        string secret = (string)initial["async"]["pollingSecret"];
+        string salt = "abcdef";
+        string hash;
+
+        using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create()) {
+          byte[] hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(secret + salt));
+          hash = Convert.ToBase64String(hashBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        }
+
+        string pollUrl = "/" + ChatUiSetupExtensions.BackendRouteSegment + "/SendMessage?asyncId=" + Uri.EscapeDataString(asyncId) +
+          "&pollingSalt=" + salt + "&pollingHash=" + Uri.EscapeDataString(hash);
+        string polledText = _Client.GetAsync(pollUrl).Result.Content.ReadAsStringAsync().Result;
+        JObject polled = JObject.Parse(polledText);
+
+        //later progress is delivered with the poll (not again the already delivered entries)
+        JArray polledInvokes = polled["onProgressInvokes"] as JArray;
+        Assert.IsNotNull(polledInvokes, polledText);
+        Assert.IsTrue(polledInvokes.Any((p) => (string)p["arg1"] == "echo-progress-2"), polledText);
+        Assert.IsFalse(polledInvokes.Any((p) => (string)p["arg1"] == "echo-progress"), polledText);
+        Assert.AreEqual("echo: Hello", (string)polled["return"]["content"], polledText);
+
+      }
+      finally {
+        EchoLLM.Delay = TimeSpan.Zero;
+      }
 
     }
 
@@ -136,7 +242,26 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     private sealed class EchoLLM : ICommonLLM {
 
-      public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+      public static TimeSpan Delay = TimeSpan.Zero;
+
+      public string CallChatApi(
+        System.Threading.CancellationToken cancellationToken, ChatTurn[] newMessages, ref string contextStore,
+        Action<string, int, int> onProgress
+      ) {
+
+        if (Delay > TimeSpan.Zero) {
+
+          if (onProgress != null) {
+            onProgress.Invoke("echo-progress", 0, 0);
+          }
+
+          System.Threading.Thread.Sleep(Delay);
+
+          if (onProgress != null) {
+            onProgress.Invoke("echo-progress-2", 0, 0);
+          }
+        }
+
         contextStore = null;
         return "echo: " + newMessages.Last().Content;
       }

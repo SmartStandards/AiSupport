@@ -56,6 +56,12 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
     private StringBuilder _CurrentAnswer = null;
 
+    private Action<string, int, int> _CurrentProgress = null;
+
+    private DateTime _LastProgressUtc = DateTime.MinValue;
+
+    private static readonly TimeSpan _ProgressThrottle = TimeSpan.FromMilliseconds(250);
+
     private bool _SupportsLoadSession = false;
 
     private bool _IsInitialized = false;
@@ -230,6 +236,16 @@ namespace AI.SmartStandards.LowLevelPrompting {
     /// </summary>
     public string Prompt(string text, TimeSpan timeout) {
 
+      return this.Prompt(text, timeout, CancellationToken.None, null);
+    }
+
+    /// <summary>
+    /// Sends a prompt to the current session ('session/prompt') and returns the collected answer text.
+    /// On timeout or cancellation, the turn is cancelled ('session/cancel'). 'onProgress' (optional) receives the last
+    /// non-empty line of the streamed answer, 'thinking ...' or the title of a tool call of the agent (throttled).
+    /// </summary>
+    public string Prompt(string text, TimeSpan timeout, CancellationToken cancellationToken, Action<string, int, int> onProgress) {
+
       if (_SessionId == null) {
         throw new InvalidOperationException("There is no ACP session. Call 'CreateSession' or 'TryLoadSession' first.");
       }
@@ -240,6 +256,19 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
         lock (_AnswerSyncRoot) {
           _CurrentAnswer = answer;
+          _CurrentProgress = onProgress;
+          _LastProgressUtc = DateTime.MinValue;
+        }
+
+        if (onProgress != null) {
+
+          try {
+            onProgress.Invoke("waiting for GitHub Copilot", 0, 0);
+          }
+          catch (Exception) {
+            // progress is purely informative
+          }
+
         }
 
         try {
@@ -255,9 +284,13 @@ namespace AI.SmartStandards.LowLevelPrompting {
           JToken result;
 
           try {
-            result = this.SendRequest("session/prompt", parameters, timeout);
+            result = this.SendRequest("session/prompt", parameters, timeout, cancellationToken);
           }
           catch (TimeoutException) {
+            this.SendCancel();
+            throw;
+          }
+          catch (OperationCanceledException) {
             this.SendCancel();
             throw;
           }
@@ -294,6 +327,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
           lock (_AnswerSyncRoot) {
             _CurrentAnswer = null;
+            _CurrentProgress = null;
           }
 
         }
@@ -354,6 +388,11 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
     private JToken SendRequest(string method, JObject parameters, TimeSpan timeout) {
 
+      return this.SendRequest(method, parameters, timeout, CancellationToken.None);
+    }
+
+    private JToken SendRequest(string method, JObject parameters, TimeSpan timeout, CancellationToken cancellationToken) {
+
       long id = Interlocked.Increment(ref _LastRequestId);
       TaskCompletionSource<JToken> completion = new TaskCompletionSource<JToken>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -380,7 +419,11 @@ namespace AI.SmartStandards.LowLevelPrompting {
       bool completed;
 
       try {
-        completed = completion.Task.Wait(timeout);
+        completed = completion.Task.Wait((int)timeout.TotalMilliseconds, cancellationToken);
+      }
+      catch (OperationCanceledException) {
+        this.RemovePendingRequest(id);
+        throw;
       }
       catch (AggregateException ex) {
 
@@ -560,11 +603,38 @@ namespace AI.SmartStandards.LowLevelPrompting {
         return;
       }
 
-      if ((string)update["sessionUpdate"] != "agent_message_chunk") {
+      if (!string.Equals((string)parameters["sessionId"], _SessionId, StringComparison.Ordinal)) {
         return;
       }
 
-      if (!string.Equals((string)parameters["sessionId"], _SessionId, StringComparison.Ordinal)) {
+      string updateKind = (string)update["sessionUpdate"];
+
+      if (updateKind == "agent_thought_chunk") {
+        this.ReportProgress("thinking ...", false);
+        return;
+      }
+
+      if (updateKind == "tool_call" || updateKind == "tool_call_update") {
+
+        string title = (string)update["title"];
+        string toolStatus = (string)update["status"];
+
+        if (!string.IsNullOrWhiteSpace(title)) {
+
+          string toolText = "Copilot: " + title.Trim();
+
+          if (!string.IsNullOrWhiteSpace(toolStatus)) {
+            toolText = toolText + " (" + toolStatus.Trim() + ")";
+          }
+
+          //tool calls are rare and meaningful - they are never throttled away
+          this.ReportProgress(toolText, true);
+        }
+
+        return;
+      }
+
+      if (updateKind != "agent_message_chunk") {
         return;
       }
 
@@ -574,15 +644,84 @@ namespace AI.SmartStandards.LowLevelPrompting {
         return;
       }
 
+      string lastLine = null;
+
       lock (_AnswerSyncRoot) {
 
         // updates outside of a prompt (for example the history replay of 'session/load') are ignored
         if (_CurrentAnswer != null) {
           _CurrentAnswer.Append((string)content["text"]);
+          lastLine = GetLastNonEmptyLine(_CurrentAnswer.ToString());
         }
 
       }
 
+      if (lastLine != null) {
+        this.ReportProgress(lastLine, false);
+      }
+
+    }
+
+    /// <summary>
+    /// Forwards a status text to the progress delegate of the current turn (throttled unless 'force' is true).
+    /// </summary>
+    private void ReportProgress(string statusText, bool force) {
+
+      Action<string, int, int> progress;
+
+      lock (_AnswerSyncRoot) {
+
+        progress = _CurrentProgress;
+
+        if (progress == null) {
+          return;
+        }
+
+        DateTime now = DateTime.UtcNow;
+
+        if (!force && now - _LastProgressUtc < _ProgressThrottle) {
+          return;
+        }
+
+        _LastProgressUtc = now;
+      }
+
+      try {
+        progress.Invoke(statusText, 0, 0);
+      }
+      catch (Exception) {
+        // progress is purely informative and must never break the protocol handling
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the last non-empty line of the given text (max. 200 characters), or null.
+    /// </summary>
+    public static string GetLastNonEmptyLine(string text) {
+
+      if (string.IsNullOrEmpty(text)) {
+        return null;
+      }
+
+      string[] lines = text.Split('\n');
+
+      for (int i = lines.Length - 1; i >= 0; i--) {
+
+        string line = lines[i].Trim();
+
+        if (line.Length > 0) {
+
+          if (line.Length > 200) {
+            line = line.Substring(line.Length - 200);
+          }
+
+          return line;
+        }
+
+      }
+
+      return null;
     }
 
     private void HandleAgentRequest(JToken idToken, string method) {

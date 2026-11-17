@@ -143,7 +143,10 @@ namespace AI.SmartStandards.LowLevelPrompting {
     /// Executes a chat turn using the native ACP session of the chat (reusing, resuming or creating it).
     /// Without 'contextStore', a new session is created and the given turns (full outer history) are sent once.
     /// </summary>
-    private string CallInSessionMode(ChatTurn[] newMessages, ref string contextStore, bool allowInteractiveLogin) {
+    private string CallInSessionMode(
+      ChatTurn[] newMessages, ref string contextStore, bool allowInteractiveLogin,
+      CancellationToken cancellationToken, Action<string, int, int> onProgress
+    ) {
 
       string requestedSessionId = null;
 
@@ -159,6 +162,17 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       string prompt = BuildPrompt(newMessages);
       PooledSession pooled;
+
+      if (onProgress != null) {
+
+        if (requestedSessionId == null) {
+          onProgress.Invoke("starting GitHub Copilot session", 0, 0);
+        }
+        else {
+          onProgress.Invoke("resuming GitHub Copilot session", 0, 0);
+        }
+
+      }
 
       try {
 
@@ -186,7 +200,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
           }
 
           // Retry exactly once - a second authentication error is reported to the user
-          return this.CallInSessionMode(newMessages, ref contextStore, false);
+          return this.CallInSessionMode(newMessages, ref contextStore, false, cancellationToken, onProgress);
         }
 
         throw new InvalidOperationException(
@@ -199,7 +213,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
       string answer;
 
       try {
-        answer = pooled.Connection.Prompt(prompt, _Timeout);
+        answer = pooled.Connection.Prompt(prompt, _Timeout, cancellationToken, onProgress);
       }
       catch (IOException ex) {
 

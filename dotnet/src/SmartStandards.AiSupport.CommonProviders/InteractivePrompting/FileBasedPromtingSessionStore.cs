@@ -116,9 +116,7 @@ namespace AI.SmartStandards.InteractivePrompting {
         throw new ArgumentException($"Invalid session id '{session.Id}'.", nameof(session));
       }
 
-      if (session.Messages == null) {
-        session.Messages = new ChatMessage[0];
-      }
+      session.NormalizeAfterLoad();
 
       string json = JsonConvert.SerializeObject(session, Formatting.Indented);
 
@@ -191,8 +189,8 @@ namespace AI.SmartStandards.InteractivePrompting {
       string json = File.ReadAllText(fileFullName);
       ChatSession session = JsonConvert.DeserializeObject<ChatSession>(json);
 
-      if (session != null && session.Messages == null) {
-        session.Messages = new ChatMessage[0];
+      if (session != null) {
+        session.NormalizeAfterLoad();
       }
 
       return session;

@@ -78,11 +78,30 @@ namespace AI.SmartStandards.LowLevelPrompting {
     /// and the last user message asks for 'dark mode' or 'light mode', the mock calls this tool, and it confirms
     /// a following tool response.
     /// </summary>
-    public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+    public string CallChatApi(
+      CancellationToken cancellationToken, ChatTurn[] newMessages, ref string contextStore, Action<string, int, int> onProgress
+    ) {
 
       if (_SimulatedDelayMs > 0) {
-        Thread.Sleep(_SimulatedDelayMs);
+
+        string[] fakePhases = new string[] { "reading your message", "thinking hard", "formulating an answer" };
+        int phaseDelay = _SimulatedDelayMs / fakePhases.Length;
+
+        for (int i = 0; i < fakePhases.Length; i++) {
+
+          if (onProgress != null) {
+            onProgress.Invoke(fakePhases[i], i + 1, fakePhases.Length);
+          }
+
+          if (cancellationToken.WaitHandle.WaitOne(phaseDelay)) {
+            cancellationToken.ThrowIfCancellationRequested();
+          }
+
+        }
+
       }
+
+      cancellationToken.ThrowIfCancellationRequested();
 
       contextStore = null;
 

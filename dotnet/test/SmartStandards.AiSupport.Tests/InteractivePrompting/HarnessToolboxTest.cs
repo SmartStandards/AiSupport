@@ -79,6 +79,10 @@ namespace AI.SmartStandards.InteractivePrompting {
       StringAssert.Contains(prompt, "\"ui_set_theme\"");
       Assert.IsFalse(prompt.Contains(HarnessToolbox.LoadSkillToolName));
 
+      //the harness tools must be clearly announced as second (text-only) tool layer
+      StringAssert.Contains(prompt, "SECOND tool layer");
+      StringAssert.Contains(prompt, "NOT part of your native/built-in tool set");
+
     }
 
     [TestMethod()]
@@ -161,8 +165,11 @@ namespace AI.SmartStandards.InteractivePrompting {
       Assert.AreEqual(UiThemeNames.Dark, settings.GetUiTheme());
       Assert.IsFalse(answer.Content.Contains("<tool_call>"));
 
-      //the tool exchange is not part of the visible history
-      Assert.AreEqual(2, backend.GetChatMessageCount(chatId));
+      //the raw tool exchange is not part of the visible history, only a presentation-only activity note
+      Assert.AreEqual(3, backend.GetChatMessageCount(chatId));
+      ChatMessage[] messages = backend.GetChatMessages(chatId, 0, 2);
+      Assert.AreEqual(ChatMessageKinds.Activity, messages[1].Kind);
+      Assert.IsFalse(messages[1].Content.Contains("<tool_call>"));
 
       backend.SendMessage(CancellationToken.None, chatId, "and back to light mode");
       Assert.AreEqual(UiThemeNames.Light, settings.GetUiTheme());
@@ -202,6 +209,116 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     }
 
+    [TestMethod()]
+    public void SourceLevels_FilterSkillsAndToolsPerScope() {
+
+      HarnessToolbox toolbox = new HarnessToolbox();
+      toolbox.AddSource(new HarnessSource("team", false, "Team guidelines", SkillSourceLevels.Hidden, false));
+      toolbox.AddSource(new HarnessSource("ui", true, "UI tools", ToolSourceLevels.Hidden, false));
+      toolbox.AddSkill(new HarnessSkill("team-style", "Team style.", () => "Team body", false), "team");
+      toolbox.AddTool(new SetUiThemeTool(this.CreateSettingsService()), "ui");
+
+      //everything hidden by default
+      Assert.IsNull(toolbox.BuildHarnessPrompt());
+
+      Dictionary<string, string> skillOverrides = new Dictionary<string, string>();
+      Dictionary<string, string> toolOverrides = new Dictionary<string, string>();
+      HarnessScope scope = new HarnessScope(skillOverrides, toolOverrides, null);
+
+      skillOverrides["team"] = SkillSourceLevels.OnDemand;
+      string prompt = toolbox.BuildHarnessPrompt(scope);
+      StringAssert.Contains(prompt, "- team-style: Team style.");
+      Assert.IsFalse(prompt.Contains("Team body"));
+
+      skillOverrides["team"] = SkillSourceLevels.InitializeAtStart;
+      prompt = toolbox.BuildHarnessPrompt(scope);
+      StringAssert.Contains(prompt, "Team body");
+
+      //tool hidden -> unknown, requires confirmation without approver -> denied, with approver -> executed
+      string call = "<tool_call>{\"name\":\"ui_set_theme\",\"arguments\":{\"theme\":\"dark\"}}</tool_call>";
+      StringAssert.Contains(toolbox.ExecuteToolCalls(HarnessToolbox.ParseToolCalls(call), scope), "Unknown tool");
+
+      toolOverrides["ui"] = ToolSourceLevels.RequiresConfirmation;
+      StringAssert.Contains(toolbox.ExecuteToolCalls(HarnessToolbox.ParseToolCalls(call), scope), "denied");
+
+      HarnessScope approvingScope = new HarnessScope(skillOverrides, toolOverrides, (c, s) => true);
+      string response = toolbox.ExecuteToolCalls(HarnessToolbox.ParseToolCalls(call), approvingScope);
+      Assert.IsFalse(response.Contains("is_error"), response);
+
+    }
+
+    [TestMethod()]
+    public void SkillSourceOverride_IsOneWayAndIgnoredForFixedSources() {
+
+      HarnessToolbox toolbox = new HarnessToolbox();
+      toolbox.AddSource(new HarnessSource("ondemand", false, null, SkillSourceLevels.OnDemand, false));
+      toolbox.AddSource(new HarnessSource("builtin", false, null, SkillSourceLevels.InitializeAtStart, true));
+
+      Dictionary<string, string> overrides = new Dictionary<string, string>();
+      overrides["ondemand"] = SkillSourceLevels.Hidden;
+      overrides["builtin"] = SkillSourceLevels.Hidden;
+      HarnessScope scope = new HarnessScope(overrides, null, null);
+
+      Assert.AreEqual(SkillSourceLevels.OnDemand, toolbox.GetEffectiveSkillSourceLevel("ondemand", scope));
+      Assert.AreEqual(SkillSourceLevels.InitializeAtStart, toolbox.GetEffectiveSkillSourceLevel("builtin", scope));
+
+      Assert.ThrowsExactly<ArgumentException>(
+        () => toolbox.AddTool(new SetUiThemeTool(this.CreateSettingsService()), "ondemand")
+      );
+
+    }
+
+    [TestMethod()]
+    public void Backend_ChatSourceLevels_PushControlMessagesAndReachModel() {
+
+      HarnessToolbox toolbox = new HarnessToolbox();
+      toolbox.AddSource(new HarnessSource("team", false, "Team guidelines", SkillSourceLevels.Hidden, false));
+      toolbox.AddSource(new HarnessSource("ui", true, "UI tools", ToolSourceLevels.Hidden, false));
+      toolbox.AddSkill(new HarnessSkill("team-style", "Team style.", () => "Team body", false), "team");
+      toolbox.AddTool(new SetUiThemeTool(this.CreateSettingsService()), "ui");
+
+      RecordingLLM llm = new RecordingLLM();
+      CheapPromptingUIBackend backend = new CheapPromptingUIBackend(
+        new FileBasedPromptingSessionStore(Path.Combine(_TempDirectory, "Chats")),
+        () => llm, toolbox, () => "Rec", "Tester"
+      );
+
+      string chatId = backend.BeginNewChat("Test");
+      backend.SendMessage(CancellationToken.None, chatId, "1");
+      Assert.AreEqual(1, llm.Calls[0].Length);
+
+      backend.RaiseChatSkillSourceLevel(chatId, "team", SkillSourceLevels.InitializeAtStart);
+      backend.SetChatToolSourceLevel(chatId, "ui", ToolSourceLevels.NoConfirmation);
+
+      //one-way: lowering is ignored (no further control message)
+      backend.RaiseChatSkillSourceLevel(chatId, "team", SkillSourceLevels.OnDemand);
+
+      ChatMessage[] messages = backend.GetChatMessages(chatId, 0, 100);
+      Assert.AreEqual(4, messages.Length);
+      Assert.AreEqual(ChatMessageKinds.Control, messages[2].Kind);
+      Assert.AreEqual(ChatMessageKinds.Control, messages[3].Kind);
+
+      ChatDetails details = backend.GetChatDetails(chatId);
+      Assert.AreEqual(SkillSourceLevels.InitializeAtStart, details.SkillSources.Single().EffectiveLevel);
+      Assert.AreEqual(ToolSourceLevels.NoConfirmation, details.ToolSources.Single().EffectiveLevel);
+      CollectionAssert.AreEqual(new string[] { "ui_set_theme" }, details.ToolSources.Single().ItemNames);
+
+      backend.SendMessage(CancellationToken.None, chatId, "2");
+
+      //harness prompt changed -> resent, followed by both control messages and the user message
+      ChatTurn[] lastCall = llm.Calls.Last();
+      Assert.AreEqual(4, lastCall.Length);
+      StringAssert.Contains(lastCall[0].Content, "Team body");
+      StringAssert.Contains(lastCall[0].Content, "ui_set_theme");
+      StringAssert.Contains(lastCall[1].Content, "<harness_notice>");
+      Assert.AreEqual("2", lastCall[3].Content);
+
+      Assert.ThrowsExactly<KeyNotFoundException>(
+        () => backend.SetChatToolSourceLevel(chatId, "team", ToolSourceLevels.Hidden)
+      );
+
+    }
+
     private FileBasedPromptingSettingsService CreateSettingsService() {
 
       return new FileBasedPromptingSettingsService(Path.Combine(_TempDirectory, "settings.json"));
@@ -220,7 +337,10 @@ namespace AI.SmartStandards.InteractivePrompting {
         }
       }
 
-      public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+      public string CallChatApi(
+        System.Threading.CancellationToken cancellationToken, ChatTurn[] newMessages, ref string contextStore,
+        Action<string, int, int> onProgress
+      ) {
 
         _Calls.Add(newMessages);
         contextStore = "ctx-" + _Calls.Count.ToString();

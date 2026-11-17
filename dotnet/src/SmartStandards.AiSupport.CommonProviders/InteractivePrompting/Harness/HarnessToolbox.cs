@@ -38,7 +38,322 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
 
     private readonly List<IHarnessTool> _Tools = new List<IHarnessTool>();
 
+    private readonly List<HarnessSource> _Sources = new List<HarnessSource>();
+
+    private readonly Dictionary<string, string> _SkillSourceIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    private readonly Dictionary<string, string> _ToolSourceIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
     private readonly object _SyncRoot = new object();
+
+    #region " Registration "
+
+    /// <summary>
+    /// Registers (or replaces) a skill source or tool source. Skills/tools can be assigned to it
+    /// via 'AddSkill(skill, sourceId)' / 'AddTool(tool, sourceId)'.
+    /// </summary>
+    public void AddSource(HarnessSource source) {
+
+      if (source == null) {
+        throw new ArgumentNullException(nameof(source));
+      }
+
+      lock (_SyncRoot) {
+        _Sources.RemoveAll((s) => string.Equals(s.SourceId, source.SourceId, StringComparison.OrdinalIgnoreCase));
+        _Sources.Add(source);
+      }
+
+    }
+
+    /// <summary>
+    /// Removes a source including all skills/tools which belong to it. Unknown ids are ignored.
+    /// </summary>
+    public void RemoveSource(string sourceId) {
+
+      if (string.IsNullOrWhiteSpace(sourceId)) {
+        return;
+      }
+
+      lock (_SyncRoot) {
+
+        _Sources.RemoveAll((s) => string.Equals(s.SourceId, sourceId, StringComparison.OrdinalIgnoreCase));
+
+        string[] skillNames = _SkillSourceIds.Where(
+          (e) => string.Equals(e.Value, sourceId, StringComparison.OrdinalIgnoreCase)
+        ).Select((e) => e.Key).ToArray();
+
+        foreach (string skillName in skillNames) {
+          _SkillSourceIds.Remove(skillName);
+          _Skills.RemoveAll((s) => string.Equals(s.Name, skillName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        string[] toolNames = _ToolSourceIds.Where(
+          (e) => string.Equals(e.Value, sourceId, StringComparison.OrdinalIgnoreCase)
+        ).Select((e) => e.Key).ToArray();
+
+        foreach (string toolName in toolNames) {
+          _ToolSourceIds.Remove(toolName);
+          _Tools.RemoveAll((t) => string.Equals(t.Name, toolName, StringComparison.OrdinalIgnoreCase));
+        }
+
+      }
+
+    }
+
+    /// <summary>
+    /// Returns all registered sources, ordered by id.
+    /// </summary>
+    public HarnessSource[] GetSources() {
+
+      lock (_SyncRoot) {
+        return _Sources.OrderBy((s) => s.SourceId, StringComparer.Ordinal).ToArray();
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the source with the given id or null.
+    /// </summary>
+    public HarnessSource GetSource(string sourceId) {
+
+      lock (_SyncRoot) {
+        return _Sources.FirstOrDefault((s) => string.Equals(s.SourceId, sourceId, StringComparison.OrdinalIgnoreCase));
+      }
+
+    }
+
+    /// <summary>
+    /// Registers (or replaces) a skill which belongs to the given (already registered) skill source.
+    /// </summary>
+    public void AddSkill(HarnessSkill skill, string sourceId) {
+
+      this.EnsureSourceExists(sourceId, false);
+      this.AddSkill(skill);
+
+      lock (_SyncRoot) {
+        _SkillSourceIds[skill.Name] = sourceId;
+      }
+
+    }
+
+    /// <summary>
+    /// Registers (or replaces) a tool which belongs to the given (already registered) tool source.
+    /// </summary>
+    public void AddTool(IHarnessTool tool, string sourceId) {
+
+      this.EnsureSourceExists(sourceId, true);
+      this.AddTool(tool);
+
+      lock (_SyncRoot) {
+        _ToolSourceIds[tool.Name] = sourceId;
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the id of the source of the given skill (null for skills without source).
+    /// </summary>
+    public string GetSkillSourceId(string skillName) {
+
+      lock (_SyncRoot) {
+
+        string sourceId;
+
+        if (skillName != null && _SkillSourceIds.TryGetValue(skillName, out sourceId)) {
+          return sourceId;
+        }
+
+        return null;
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the id of the source of the given tool (null for tools without source).
+    /// </summary>
+    public string GetToolSourceId(string toolName) {
+
+      lock (_SyncRoot) {
+
+        string sourceId;
+
+        if (toolName != null && _ToolSourceIds.TryGetValue(toolName, out sourceId)) {
+          return sourceId;
+        }
+
+        return null;
+      }
+
+    }
+
+    private void EnsureSourceExists(string sourceId, bool isToolSource) {
+
+      if (string.IsNullOrWhiteSpace(sourceId)) {
+        throw new ArgumentNullException(nameof(sourceId));
+      }
+
+      HarnessSource source = this.GetSource(sourceId);
+
+      if (source == null || source.IsToolSource != isToolSource) {
+        throw new ArgumentException($"The source '{sourceId}' is not registered (as matching source kind).", nameof(sourceId));
+      }
+
+    }
+
+    #endregion
+
+    #region " Effective levels "
+
+    /// <summary>
+    /// Returns the effective level of a skill source within the given scope. Per-chat overrides can only
+    /// raise the global default (one-way), fixed sources ignore overrides.
+    /// </summary>
+    public string GetEffectiveSkillSourceLevel(string sourceId, HarnessScope scope) {
+
+      HarnessSource source = this.GetSource(sourceId);
+
+      if (source == null) {
+        return SkillSourceLevels.Hidden;
+      }
+
+      string level = source.DefaultLevel;
+      string overrideLevel;
+
+      if (!source.IsFixed && scope != null && scope.SkillLevelOverrides.TryGetValue(source.SourceId, out overrideLevel)) {
+
+        if (GetSkillLevelRank(overrideLevel) > GetSkillLevelRank(level)) {
+          level = overrideLevel;
+        }
+
+      }
+
+      return level;
+    }
+
+    /// <summary>
+    /// Returns the effective level of a tool source within the given scope (per-chat override or global default).
+    /// </summary>
+    public string GetEffectiveToolSourceLevel(string sourceId, HarnessScope scope) {
+
+      HarnessSource source = this.GetSource(sourceId);
+
+      if (source == null) {
+        return ToolSourceLevels.Hidden;
+      }
+
+      string overrideLevel;
+
+      if (!source.IsFixed && scope != null && scope.ToolLevelOverrides.TryGetValue(source.SourceId, out overrideLevel)) {
+
+        if (GetToolLevelRank(overrideLevel) >= 0) {
+          return overrideLevel;
+        }
+
+      }
+
+      return source.DefaultLevel;
+    }
+
+    /// <summary>
+    /// Rank of a skill source level (Hidden=0, OnDemand=1, InitializeAtStart=2, unknown=-1).
+    /// </summary>
+    public static int GetSkillLevelRank(string level) {
+
+      if (string.Equals(level, SkillSourceLevels.Hidden, StringComparison.OrdinalIgnoreCase)) {
+        return 0;
+      }
+
+      if (string.Equals(level, SkillSourceLevels.OnDemand, StringComparison.OrdinalIgnoreCase)) {
+        return 1;
+      }
+
+      if (string.Equals(level, SkillSourceLevels.InitializeAtStart, StringComparison.OrdinalIgnoreCase)) {
+        return 2;
+      }
+
+      return -1;
+    }
+
+    /// <summary>
+    /// Rank of a tool source level (Hidden=0, RequiresConfirmation=1, NoConfirmation=2, unknown=-1).
+    /// </summary>
+    public static int GetToolLevelRank(string level) {
+
+      if (string.Equals(level, ToolSourceLevels.Hidden, StringComparison.OrdinalIgnoreCase)) {
+        return 0;
+      }
+
+      if (string.Equals(level, ToolSourceLevels.RequiresConfirmation, StringComparison.OrdinalIgnoreCase)) {
+        return 1;
+      }
+
+      if (string.Equals(level, ToolSourceLevels.NoConfirmation, StringComparison.OrdinalIgnoreCase)) {
+        return 2;
+      }
+
+      return -1;
+    }
+
+    /// <summary>
+    /// Returns the skills visible within the given scope: pinned (mandatory or level 'InitializeAtStart')
+    /// and catalog (level 'OnDemand'). Skills without source keep the legacy behavior.
+    /// </summary>
+    private void ClassifySkills(HarnessScope scope, List<HarnessSkill> pinnedSkills, List<HarnessSkill> catalogSkills) {
+
+      foreach (HarnessSkill skill in this.GetSkills()) {
+
+        string sourceId = this.GetSkillSourceId(skill.Name);
+
+        if (sourceId == null) {
+
+          if (skill.IsMandatory) {
+            pinnedSkills.Add(skill);
+          }
+          else {
+            catalogSkills.Add(skill);
+          }
+
+          continue;
+        }
+
+        int rank = GetSkillLevelRank(this.GetEffectiveSkillSourceLevel(sourceId, scope));
+
+        if (rank <= 0) {
+          continue;
+        }
+
+        if (skill.IsMandatory || rank == 2) {
+          pinnedSkills.Add(skill);
+        }
+        else {
+          catalogSkills.Add(skill);
+        }
+
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the tools visible within the given scope (tools without source are always visible).
+    /// </summary>
+    private IHarnessTool[] GetVisibleTools(HarnessScope scope) {
+
+      List<IHarnessTool> visibleTools = new List<IHarnessTool>();
+
+      foreach (IHarnessTool tool in this.GetTools()) {
+
+        string sourceId = this.GetToolSourceId(tool.Name);
+
+        if (sourceId == null || GetToolLevelRank(this.GetEffectiveToolSourceLevel(sourceId, scope)) > 0) {
+          visibleTools.Add(tool);
+        }
+
+      }
+
+      return visibleTools.ToArray();
+    }
+
+    #endregion
 
     /// <summary>
     /// Registers (or replaces) a skill.
@@ -106,27 +421,31 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     /// </summary>
     public string BuildHarnessPrompt() {
 
-      HarnessSkill[] skills = this.GetSkills();
-      IHarnessTool[] tools = this.GetTools();
+      return this.BuildHarnessPrompt(HarnessScope.CreateDefault());
+    }
+
+    /// <summary>
+    /// Renders the hidden harness prompt for the given (per-chat) scope. Returns null if there is nothing
+    /// to provide (no visible skill with content and no visible tool).
+    /// </summary>
+    public string BuildHarnessPrompt(HarnessScope scope) {
+
+      IHarnessTool[] tools = this.GetVisibleTools(scope);
+
+      List<HarnessSkill> pinnedSkills = new List<HarnessSkill>();
+      List<HarnessSkill> catalogSkills = new List<HarnessSkill>();
+      this.ClassifySkills(scope, pinnedSkills, catalogSkills);
 
       List<HarnessSkill> mandatorySkills = new List<HarnessSkill>();
-      List<HarnessSkill> catalogSkills = new List<HarnessSkill>();
       Dictionary<string, string> mandatoryContents = new Dictionary<string, string>(StringComparer.Ordinal);
 
-      foreach (HarnessSkill skill in skills) {
+      foreach (HarnessSkill skill in pinnedSkills) {
 
-        if (skill.IsMandatory) {
+        string content = skill.GetContent();
 
-          string content = skill.GetContent();
-
-          if (content.Length > 0) {
-            mandatorySkills.Add(skill);
-            mandatoryContents[skill.Name] = content;
-          }
-
-        }
-        else {
-          catalogSkills.Add(skill);
+        if (content.Length > 0) {
+          mandatorySkills.Add(skill);
+          mandatoryContents[skill.Name] = content;
         }
 
       }
@@ -158,7 +477,7 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
 
         prompt.AppendLine();
         prompt.AppendLine("## Available skills");
-        prompt.AppendLine("Load the body of a skill with the tool '" + LoadSkillToolName + "' before you rely on it.");
+        prompt.AppendLine("Load the body of a skill with the harness tool '" + LoadSkillToolName + "' (via a <tool_call> text block, see below) before you rely on it.");
         prompt.AppendLine();
 
         foreach (HarnessSkill skill in catalogSkills) {
@@ -172,8 +491,19 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       if (toolDefinitions.Count > 0) {
 
         prompt.AppendLine();
-        prompt.AppendLine("## Tools");
-        prompt.AppendLine("You may call tools. The tool signatures are provided within <tools></tools>:");
+        prompt.AppendLine("## Harness tools (second tool layer - text protocol only)");
+        prompt.AppendLine("IMPORTANT: The tools listed below are NOT part of your native/built-in tool set (they are not function-calling");
+        prompt.AppendLine("tools, MCP tools or shell commands of your runtime, and you cannot find or execute them yourself).");
+        prompt.AppendLine("They form a SECOND tool layer which is provided by the host application that hosts this conversation.");
+        prompt.AppendLine("The ONLY way to invoke them is to write a <tool_call> block as plain TEXT into your answer message.");
+        prompt.AppendLine("The host parses your answer text, executes the calls on its side and sends the results back to you");
+        prompt.AppendLine("as the next message, containing <tool_response></tool_response> blocks.");
+        prompt.AppendLine("Rules:");
+        prompt.AppendLine("- Never try to call a harness tool via your native tool mechanism, and never claim that a harness tool does not exist.");
+        prompt.AppendLine("- Your own native tools (if any) stay available and are independent of this list.");
+        prompt.AppendLine("- When the task needs a harness tool, end your answer with the <tool_call> block(s) and wait for the <tool_response>.");
+        prompt.AppendLine("- Never invent a <tool_response> yourself.");
+        prompt.AppendLine("The signatures of the harness tools are provided within <tools></tools>:");
         prompt.AppendLine("<tools>");
 
         foreach (JObject definition in toolDefinitions) {
@@ -181,12 +511,12 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
         }
 
         prompt.AppendLine("</tools>");
-        prompt.AppendLine("To call a tool, answer ONLY with one or more blocks of this form:");
+        prompt.AppendLine("To call a harness tool, answer with one or more blocks of exactly this form (plain text, JSON inside):");
         prompt.AppendLine("<tool_call>");
         prompt.AppendLine("{\"name\": \"<tool-name>\", \"arguments\": {<arguments>}}");
         prompt.AppendLine("</tool_call>");
-        prompt.AppendLine("The harness executes the calls and answers with <tool_response></tool_response> blocks. Then continue with your task.");
-        prompt.AppendLine("If no tool is needed, answer normally.");
+        prompt.AppendLine("The host executes the calls and answers with <tool_response></tool_response> blocks. Then continue with your task.");
+        prompt.AppendLine("If no harness tool is needed, answer normally.");
 
       }
 
@@ -199,7 +529,15 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     /// </summary>
     public string BuildHarnessPromptFingerprint() {
 
-      string prompt = this.BuildHarnessPrompt();
+      return this.BuildHarnessPromptFingerprint(HarnessScope.CreateDefault());
+    }
+
+    /// <summary>
+    /// Returns a short fingerprint of the harness prompt for the given scope (null if there is none).
+    /// </summary>
+    public string BuildHarnessPromptFingerprint(HarnessScope scope) {
+
+      string prompt = this.BuildHarnessPrompt(scope);
 
       if (prompt == null) {
         return null;
@@ -318,6 +656,20 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     /// </summary>
     public string ExecuteToolCalls(HarnessToolCall[] calls) {
 
+      return this.ExecuteToolCalls(calls, HarnessScope.CreateDefault());
+    }
+
+    /// <summary>
+    /// Executes the given calls within the given (per-chat) scope: tools of hidden sources are not available,
+    /// tools of sources with level 'RequiresConfirmation' are only executed if the approver of the scope agrees.
+    /// Errors are returned as error results, never thrown.
+    /// </summary>
+    public string ExecuteToolCalls(HarnessToolCall[] calls, HarnessScope scope) {
+
+      if (scope == null) {
+        scope = HarnessScope.CreateDefault();
+      }
+
       StringBuilder responses = new StringBuilder();
 
       foreach (HarnessToolCall call in calls) {
@@ -325,12 +677,32 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
         JObject response = new JObject();
         response["name"] = call.Name;
 
+        HarnessToolExecution execution = new HarnessToolExecution();
+        execution.Call = call;
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
         try {
-          response["content"] = this.ExecuteToolCall(call);
+          string content = this.ExecuteToolCall(call, scope, execution);
+          response["content"] = content;
+          execution.Success = true;
+
+          if (content != null) {
+            execution.ResultSize = content.Length;
+          }
+
         }
         catch (Exception ex) {
           response["is_error"] = true;
           response["content"] = ex.Message;
+          execution.Success = false;
+          execution.ErrorMessage = ex.Message;
+        }
+
+        stopwatch.Stop();
+        execution.DurationMs = stopwatch.ElapsedMilliseconds;
+
+        if (scope.OnToolExecuted != null) {
+          scope.OnToolExecuted.Invoke(execution);
         }
 
         if (responses.Length > 0) {
@@ -345,28 +717,70 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       return responses.ToString();
     }
 
-    private string ExecuteToolCall(HarnessToolCall call) {
+    private string ExecuteToolCall(HarnessToolCall call, HarnessScope scope, HarnessToolExecution execution) {
 
       if (call.ParseError != null) {
         throw new ArgumentException("The tool call could not be parsed: " + call.ParseError);
       }
 
       if (string.Equals(call.Name, LoadSkillToolName, StringComparison.OrdinalIgnoreCase)) {
-        return this.LoadSkill(call.Arguments);
+        execution.Executed = true;
+        return this.LoadSkill(call.Arguments, scope);
       }
 
-      IHarnessTool tool = this.GetTools().FirstOrDefault(
+      IHarnessTool tool = this.GetVisibleTools(scope).FirstOrDefault(
         (t) => string.Equals(t.Name, call.Name, StringComparison.OrdinalIgnoreCase)
       );
 
       if (tool == null) {
+        execution.SourceId = this.GetToolSourceId(call.Name);
         throw new ArgumentException($"Unknown tool '{call.Name}'.");
       }
 
-      return tool.Invoke(call.Arguments);
+      string sourceId = this.GetToolSourceId(tool.Name);
+      execution.SourceId = sourceId;
+
+      if (sourceId != null) {
+
+        string level = this.GetEffectiveToolSourceLevel(sourceId, scope);
+
+        if (string.Equals(level, ToolSourceLevels.RequiresConfirmation, StringComparison.OrdinalIgnoreCase)) {
+
+          execution.RequiredConfirmation = true;
+          bool approved = false;
+
+          if (scope.ToolApprover != null) {
+            approved = scope.ToolApprover.Invoke(call, this.GetSource(sourceId));
+          }
+
+          if (!approved) {
+            throw new UnauthorizedAccessException($"The call of the tool '{tool.Name}' was denied by the user.");
+          }
+
+        }
+
+      }
+
+      execution.Executed = true;
+
+      HarnessSource toolSource = null;
+
+      if (sourceId != null) {
+        toolSource = this.GetSource(sourceId);
+      }
+
+      HarnessToolContext previousContext = HarnessToolContext.Enter(new HarnessToolContext(call, toolSource, scope));
+
+      try {
+        return tool.Invoke(call.Arguments);
+      }
+      finally {
+        HarnessToolContext.Restore(previousContext);
+      }
+
     }
 
-    private string LoadSkill(JObject arguments) {
+    private string LoadSkill(JObject arguments, HarnessScope scope) {
 
       string skillName = null;
 
@@ -374,7 +788,10 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
         skillName = arguments["name"].Value<string>().Trim();
       }
 
-      HarnessSkill skill = this.GetSkills().FirstOrDefault(
+      List<HarnessSkill> visibleSkills = new List<HarnessSkill>();
+      this.ClassifySkills(scope, visibleSkills, visibleSkills);
+
+      HarnessSkill skill = visibleSkills.FirstOrDefault(
         (s) => string.Equals(s.Name, skillName, StringComparison.OrdinalIgnoreCase)
       );
 

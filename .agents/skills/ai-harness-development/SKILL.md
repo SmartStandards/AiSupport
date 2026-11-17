@@ -57,7 +57,8 @@ Detail references of this skill (load on demand):
      UI convention: a switch for available features, an X for unavailable ones. An opt-out switches the connector to the
      Level-2 emulation of that feature; it never breaks the chat.
    - Current capability names: `ProviderSideContext` (provider holds the conversation), `PersistentSession` (one long-running
-     inner harness instance per chat), `SessionResume` (an ended session can be restored by its id).
+     inner harness instance per chat), `SessionResume` (an ended session can be restored by its id). Planned:
+     `PausableToolCalls` (a pending tool call may stay open while the user is asked; otherwise an explicit wait notice is used).
 8. **Sessions are disposable, the outer history is the truth.** One inner-harness instance per chat; idle instances may be
    terminated at any time. Recovery order: (1) running instance, (2) native resume with the session id persisted in the
    `contextStore` (ACP `session/load`), (3) `ContextStoreInvalidException` → the Level-2 harness rebuilds the context from the
@@ -78,6 +79,31 @@ Detail references of this skill (load on demand):
 - Treat tool results as **untrusted** (indirect prompt injection); keep them in tool-result slots, never in system prompts.
 - Normalize stop reasons to: `EndTurn`, `MaxTokens`, `MaxTurns`, `Budget`, `Refusal`, `Cancelled`, `Error`.
 - Timeouts: bridge/MCP tool timeouts of the inner harness must exceed the expected tool runtime plus polling latency.
+
+## Tool provider settings UI contract (norm, planned)
+
+Source: [epic-prompting-ui-iteration-2.md](../../../doc/epics/epic-prompting-ui-iteration-2.md), 3.2.1. Binding for every
+`IHarnessToolProvider` that delivers its own detail tab (OOB providers included).
+
+- The provider returns **one self-contained HTML page** (`GetSettingsUiHtml()`, inline JS/CSS, no external resources) or `null`
+  (the host then shows a plain JSON editor).
+- The page exchanges **exactly one JSON settings object** with the host. Nothing else goes in or out.
+- Host rendering: `iframe` with `sandbox="allow-scripts"` (never `allow-same-origin`), `srcdoc`, CSP `default-src 'none';
+  script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:`. No network, no cookies, no host DOM access.
+- Channel: `window.postMessage` only. Messages (JSON objects with a `type` field):
+
+| `type` | Direction | Payload | Meaning |
+|---|---|---|---|
+| `settings.ready` | page → host | – | optional; the page is ready to receive the object |
+| `settings.load` | host → page | `settings` (object) | the current settings object; may be sent again (e.g. after reset) |
+| `settings.changed` | page → host | `settings` (object) | the **complete** new object (no patches), sent on every change |
+
+- The host saves via `SaveToolProviderSettings(sourceId, settingsJson)`; the **provider validates server-side** and rejects
+  invalid objects with a readable message. The page is never trusted.
+- **No secrets** in the object. Tokens/PATs use credential slots (`GetCredentialSlots()`) rendered by the host outside the frame
+  and stored via `ICredentialStore`.
+- Convention credo: unknown message types and unknown fields are ignored on both sides; a page that never sends
+  `settings.ready` still receives `settings.load` after the frame's `load` event.
 
 ## Implementation map (verify flags before implementing; they change often)
 

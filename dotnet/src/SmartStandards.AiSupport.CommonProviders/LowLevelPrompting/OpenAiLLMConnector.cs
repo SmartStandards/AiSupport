@@ -10,6 +10,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
 
@@ -76,12 +77,18 @@ namespace AI.SmartStandards.LowLevelPrompting {
     /// <summary>
     /// Sends chat messages via the OpenAI Responses API. The 'contextStore' holds the id of the last response
     /// ('previous_response_id'), so that only the new messages need to be transferred.
+    /// Progress phases: 'sending request', 'waiting for response', 'receiving response'.
     /// </summary>
-    public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+    public string CallChatApi(
+      CancellationToken cancellationToken, ChatTurn[] newMessages, ref string contextStore, Action<string, int, int> onProgress
+    ) {
 
       if (newMessages == null || newMessages.Length == 0) {
         throw new ArgumentNullException(nameof(newMessages));
       }
+
+      cancellationToken.ThrowIfCancellationRequested();
+      ReportProgress(onProgress, "sending request to OpenAI (" + _ChatModel + ")");
 
       if (!this.UseProviderSideContext) {
         contextStore = null;
@@ -125,8 +132,11 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
         StringContent content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
-        response = client.PostAsync(_ResponsesEndpoint, content).Result;
-        responseContent = response.Content.ReadAsStringAsync().Result;
+        ReportProgress(onProgress, "waiting for response");
+        response = client.PostAsync(_ResponsesEndpoint, content, cancellationToken).GetAwaiter().GetResult();
+
+        ReportProgress(onProgress, "receiving response");
+        responseContent = response.Content.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
 
       }
 
@@ -199,6 +209,17 @@ namespace AI.SmartStandards.LowLevelPrompting {
       }
 
       return answer.ToString();
+    }
+
+    /// <summary>
+    /// Reports a status text via the optional progress delegate (no counters).
+    /// </summary>
+    private static void ReportProgress(Action<string, int, int> onProgress, string statusText) {
+
+      if (onProgress != null) {
+        onProgress.Invoke(statusText, 0, 0);
+      }
+
     }
 
     private static JObject TryParseJsonObject(string json) {

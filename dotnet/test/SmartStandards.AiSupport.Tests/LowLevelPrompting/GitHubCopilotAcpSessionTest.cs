@@ -103,6 +103,51 @@ namespace AI.SmartStandards.LowLevelPrompting {
     }
 
     [TestMethod()]
+    public void AcpSession_Prompt_ReportsProgressAndHonorsCancellation() {
+
+      using (FakeAgent agent = new FakeAgent(true)) {
+
+        GitHubCopilotAcpSession session = agent.CreateClient();
+        session.Initialize(_Timeout);
+        session.CreateSession("C:\\temp", _Timeout);
+
+        List<string> progressTexts = new List<string>();
+
+        string answer = session.Prompt(
+          "Again", _Timeout, CancellationToken.None, (text, current, total) => progressTexts.Add(text)
+        );
+
+        Assert.AreEqual("Again back", answer);
+        Assert.IsTrue(progressTexts.Count >= 2);
+        Assert.AreEqual("waiting for GitHub Copilot", progressTexts[0]);
+        Assert.AreEqual("Again", progressTexts[1]);
+
+        using (CancellationTokenSource cancellation = new CancellationTokenSource()) {
+
+          cancellation.Cancel();
+
+          Assert.ThrowsException<OperationCanceledException>(
+            () => session.Prompt("Cancelled", _Timeout, cancellation.Token, null)
+          );
+
+        }
+
+        session.Dispose();
+
+      }
+
+    }
+
+    [TestMethod()]
+    public void AcpSession_GetLastNonEmptyLine() {
+
+      Assert.AreEqual("second", GitHubCopilotAcpSession.GetLastNonEmptyLine("first\nsecond\n\n"));
+      Assert.IsNull(GitHubCopilotAcpSession.GetLastNonEmptyLine("\n \n"));
+      Assert.IsNull(GitHubCopilotAcpSession.GetLastNonEmptyLine(null));
+
+    }
+
+    [TestMethod()]
     public void ContextStore_SessionIdRoundTrip() {
 
       Assert.AreEqual("abc", GitHubCopilotCliConnector.GetSessionIdFromContextStore(GitHubCopilotCliConnector.SessionContextStorePrefix + "abc"));
@@ -119,7 +164,9 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       ChatTurn[] turns = new ChatTurn[] { new ChatTurn(ChatRoles.User, "Hi") };
 
-      Assert.ThrowsException<ContextStoreInvalidException>(() => connector.CallChatApi(turns, ref contextStore));
+      Assert.ThrowsException<ContextStoreInvalidException>(
+        () => connector.CallChatApi(CancellationToken.None, turns, ref contextStore, null)
+      );
 
     }
 
@@ -136,8 +183,10 @@ namespace AI.SmartStandards.LowLevelPrompting {
         LLMProviderInfo mock = service.GetAvailableProviders().Single((p) => p.Name == StupidMockLLM.ProviderName);
 
         Assert.IsTrue(copilot.Capabilities.All((c) => c.IsAvailable));
-        Assert.IsTrue(mock.Capabilities.All((c) => !c.IsAvailable));
+        Assert.IsTrue(mock.Capabilities.All((c) => !c.IsAvailable || c.Name == LLMCapabilityNames.PausableToolCalls));
+        Assert.IsTrue(mock.Capabilities.Single((c) => c.Name == LLMCapabilityNames.PausableToolCalls).IsAvailable);
         Assert.AreEqual(LLMCapabilityNames.GetAll().Length, mock.Capabilities.Length);
+        Assert.IsTrue(copilot.KnownModels.Contains(GitHubCopilotCliConnector.DefaultModelPlaceholder));
 
         //defaults: everything which is available is used
         service.SaveSettings(GitHubCopilotCliConnector.ProviderName, "", null);

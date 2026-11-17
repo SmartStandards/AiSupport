@@ -79,22 +79,37 @@ namespace AI.SmartStandards.ChatClient {
 
       FileBasedPromptingSessionStore sessionStore = new FileBasedPromptingSessionStore(chatsDirectory);
 
-      //skills and tools for the model: the user instructions (settings) as mandatory skill
-      //and the internal test tool which switches the UI theme
+      //skill sources: built-in 'global-user-preferences' (= the user instructions of the settings, stored as
+      //'%USERPROFILE%\.agents\skills\global-user-preferences\SKILL.md'), 'global-system-preferences' and
+      //the persisted file/folder references
+      FileBasedPromptingExtensionService extensionService = new FileBasedPromptingExtensionService();
+
+      settingsService.UseUserInstructionsFile(
+        extensionService.UserPreferencesFileFullName,
+        FileBasedPromptingExtensionService.UserPreferencesSourceId,
+        "Preferences of the user (conventions, rules). They MUST be read and followed for every task."
+      );
+
+      //tools for the model: the internal test tool which switches the UI theme
       HarnessToolbox toolbox = new HarnessToolbox();
-      toolbox.AddSkill(HarnessSkill.CreateUserInstructionsSkill(() => settingsService.GetUserInstructions()));
+      extensionService.RegisterOutOfTheBoxToolProviders();
+      extensionService.AttachToolbox(toolbox);
       toolbox.AddTool(new SetUiThemeTool(settingsService));
 
-      //the LLM is created per call, so that changed settings are effective immediately
+      //the LLM is created per call (per chat provider/model), so that changed settings are effective immediately
       CheapPromptingUIBackend backend = new CheapPromptingUIBackend(
         sessionStore,
-        () => settingsService.CreateConfiguredLLM(),
+        (IChatLLMFactory)settingsService,
         toolbox,
         () => settingsService.GetConfiguredLLMDisplayName(),
         Environment.UserName
       );
 
+      //'secure availability': the offline copies of the skill sources are refreshed once on every new chat start
+      backend.OnNewChatStarting = extensionService.RefreshOfflineCopies;
+
       services.AddSingleton<IPromptingSettingsService>(settingsService);
+      services.AddSingleton<IPromptingExtensionService>(extensionService);
       services.AddSingleton<IPromptingSessionStore>(sessionStore);
       services.AddSingleton<IPromptingUIBackend>(backend);
 

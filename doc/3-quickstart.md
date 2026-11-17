@@ -40,6 +40,24 @@ byte[] png = llm.CallImageGeneratorApi("A lighthouse in the morning fog");
 2. Adjust the local paths configured in `Program.cs` (e.g. `C:\Temp\_OneNoteExport`, `C:\Temp\Joplin`).
 3. Start it. The UJMW endpoints are available via Swagger. The demo requires any non-empty `Authorization` header.
 
+## Enable the built-in tools of the chat UI
+
+```csharp
+FileBasedPromptingExtensionService extensionService = new FileBasedPromptingExtensionService();
+extensionService.RegisterOutOfTheBoxToolProviders();
+
+HarnessToolbox toolbox = new HarnessToolbox();
+extensionService.AttachToolbox(toolbox);
+
+//allow read access below C:\Data without asking (the user can extend the list via 'Allow permanently')
+extensionService.SaveToolProviderSettings(
+  FileSystemToolProvider.Id, "{ \"allowedPaths\": [ { \"path\": \"C:\\\\Data\", \"access\": \"RO\" } ] }"
+);
+```
+
+All built-in sources start with level `RequiresConfirmation`: the chat UI shows an approval card for every call
+(`Deny`, `Allow once`, `Allow for this chat`) and a guard card if a path, domain or command is not on the allow-list.
+
 ## Expose selected controller actions as MCP tools
 
 Register the facade and explicitly include the API operations that should become tools:

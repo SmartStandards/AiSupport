@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingUIBackend.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingSettingsService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)InteractivePrompting\IPromptingExtensionService.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\ChatTurn.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\ContextStoreInvalidException.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LowLevelPrompting\ICommonLLM.cs" />

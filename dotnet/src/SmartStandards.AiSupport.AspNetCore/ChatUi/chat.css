@@ -187,6 +187,42 @@ button.primary:hover:not(:disabled) {
   font-style: italic;
 }
 
+.message.control {
+  align-self: center;
+  max-width: 70%;
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(175, 184, 193, 0.7);
+  box-shadow: 0 2px 8px rgba(31, 35, 40, 0.08);
+  color: #57606a;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.message.control.activity {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-style: italic;
+  border-style: dashed;
+}
+
+.message.control.activity .author {
+  display: none;
+}
+
+.message.approval {
+  align-self: center;
+  max-width: 80%;
+  border: 2px solid #d4a72c;
+  background: #fff8c5;
+  color: #24292f;
+}
+
+.message.approval .approval-actions {
+  margin-top: 8px;
+}
+
 #composer {
   padding: 10px 16px 14px;
   border-top: 1px solid #d0d7de;
@@ -359,6 +395,124 @@ button.primary:hover:not(:disabled) {
   font-weight: normal;
 }
 
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-row .source-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-row.broken .source-title {
+  color: #cf222e;
+}
+
+.source-row .source-secure {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.source-add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.source-add-row input {
+  flex: 1;
+}
+
+.source-row .source-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #1a7f37;
+}
+
+.small-button {
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #d0d7de;
+  margin-bottom: 10px;
+}
+
+.tab-bar .tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  margin-bottom: -1px;
+}
+
+.tab-bar .tab.active {
+  border-color: #d0d7de;
+  background: #fff;
+  font-weight: 600;
+}
+
+.tab-page {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.tool-settings-editor textarea {
+  width: 100%;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+body.dark .tab-bar {
+  border-bottom-color: #30363d;
+}
+
+body.dark .tab-bar .tab.active {
+  border-color: #30363d;
+  background: #161b22;
+}
+
+.audit-log {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
+}
+
+.audit-row {
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  word-break: break-word;
+}
+
+.audit-row.failed .audit-decision {
+  color: #cf222e;
+}
+
+.audit-decision {
+  font-size: 11px;
+  font-weight: 600;
+}
+
 /* ---------------------------------------------------------------------------
    Dark mode (activated via 'body.dark', see setting 'UiTheme' / tool 'ui_set_theme')
    --------------------------------------------------------------------------- */
@@ -422,6 +576,18 @@ body.dark .message.error {
   background: #3d1214;
   border-color: #f85149;
   color: #ffdcd7;
+}
+
+body.dark .message.control {
+  background: rgba(22, 27, 34, 0.45);
+  border-color: rgba(72, 79, 88, 0.8);
+  color: #8b949e;
+}
+
+body.dark .message.approval {
+  border-color: #9e6a03;
+  background: #2d2205;
+  color: #e6edf3;
 }
 
 body.dark #txtMessage,

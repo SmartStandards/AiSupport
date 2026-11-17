@@ -50,6 +50,18 @@ context, but it must not replace features which an underlying SDK/harness alread
 | CAP-5 | The chat UI shows a switch for every available capability and an X for every unavailable one. |
 | CAP-6 | Capability names: `ProviderSideContext` (the provider holds the conversation; only new messages are sent), `PersistentSession` (one long-running inner harness instance per chat), `SessionResume` (an ended session can be restored by its id). |
 
+### Tool sources, approvals and guards (prompting UI)
+
+| Id | Requirement |
+|---|---|
+| TLM-1 | Tools are grouped into tool sources (`IHarnessToolProvider`). Every source has a global level (`Hidden`, `RequiresConfirmation`, `NoConfirmation`) and one JSON settings object, validated by the provider when saved. Secrets are stored separately (protected credentials file), never inside the settings object. |
+| TLM-2 | MCP servers (Streamable HTTP, optional bearer token) can be registered as tool sources. |
+| TLM-3 | Public interfaces of an uploaded .NET assembly can be registered as UJMW contract tool sources (base URL + token); calls go through the UJMW `DynamicClientFactory`. |
+| OOB-1..4 | Built-in tool sources: preferences update, file system access, internet access (HTTP GET), shell access (cmd/PowerShell). They are registered via `RegisterOutOfTheBoxToolProviders()`. |
+| APR-1 | Calls of sources with level `RequiresConfirmation` pause the turn until the user answers: `Deny` (rejection result, source hidden for this chat), `AllowOnce`, `AllowForChat` (persisted with the chat, revocable). Unanswered requests are denied after a timeout; cancelling the turn denies as well. |
+| GRD-1 | The OOB tools enforce allow-lists independently of the approval: `allowedPaths` (RO/RW, recursive, normalized), `allowedDomains` (exact host or `*.domain`), `allowedCommands` (literal, wildcard or `regex:` over the full command line). A miss asks the user (`Deny`, `AllowOnce`, `AllowPermanently` = append to the global allow-list). |
+| AUD-1 | Every requested tool call is written into the audit log of the chat (timestamp, source, tool, masked/truncated argument summary, decision, duration, success/error, result size; max. 500 entries). |
+
 ### GitHub Copilot CLI session mode
 
 | Id | Requirement |

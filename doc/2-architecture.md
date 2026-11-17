@@ -75,6 +75,21 @@ Agent-facing quality rules of the facade:
   agnostically. Side channel values only select a scope; whether it may be entered is always decided server-side
   against the access token.
 
+### Tool sources, approvals and guards
+
+`FileBasedPromptingExtensionService` owns the tool sources: built-in providers registered by the host, MCP servers and
+UJMW contract interfaces. Levels and settings objects are persisted in `tools.json` beside the extensions file,
+tokens in the protected credentials file (`tool:<sourceId>`), uploaded assemblies below `ToolAssemblies`. On
+`AttachToolbox` and on every change, the service recreates the tools of all sources inside the `HarnessToolbox`;
+sources whose tools cannot be created stay registered and are flagged as broken.
+
+During a turn, `CheapPromptingUIBackend` creates a `HarnessScope` with the per-chat overrides, an approver and an
+`InteractionRequester`. Both publish a `PendingToolApproval` (with `Kind` `ToolApproval`, `PathAccess`,
+`DomainAccess` or `ShellCommand` and a `Subject`) and block the tool loop until the UI answers via
+`AnswerToolApproval`, the timeout elapses or the turn is cancelled. The model only sees the final tool result
+(silent pause). Guards (`HarnessGuards`) run inside the OOB tools and reach the requester through the thread-static
+`HarnessToolContext`, which the toolbox sets around `IHarnessTool.Invoke`, so the tool signature stays unchanged.
+
 ## Architecture decisions
 
 - **Remotability over convenience:** contracts stay synchronous and DTO-based so that UJMW and WCF can transport them.

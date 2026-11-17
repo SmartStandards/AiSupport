@@ -20,6 +20,7 @@
     <header id="chatHeader">
       <span id="chatTitle">AI Chat</span>
       <span class="header-actions">
+        <button id="btnDetails" title="Chat details (provider, model, skill/tool sources)" disabled>Details</button>
         <button id="btnRename" title="Rename chat" disabled>Rename</button>
         <button id="btnCompress" title="Compress the chat context" disabled>Compress</button>
         <button id="btnDelete" title="Delete chat" disabled>Delete</button>
@@ -39,49 +40,146 @@
   </main>
 
   <div id="settingsDialog" class="dialog-backdrop" hidden>
-    <div class="dialog">
+    <div class="dialog wide">
       <h2>Settings</h2>
-      <label>LLM provider
-        <select id="selProvider"></select>
-      </label>
-      <label>Model
-        <input id="txtModel" type="text" placeholder="(default)">
-      </label>
-      <label>API key (PAT)
-        <input id="txtApiKey" type="password" autocomplete="off" placeholder="(unchanged)">
-      </label>
-      <div id="apiKeyState" class="muted"></div>
-      <div class="capabilities-title">Native provider features</div>
-      <div id="capabilityList" class="capability-list"></div>
-      <label>Theme
-        <select id="selTheme">
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </label>
-      <div class="user-instructions-row">
-        <span>User instructions <span id="userInstructionsState" class="muted"></span></span>
-        <button id="btnUserInstructions" title="Edit the instructions which the model must follow (skill 'mustread-user-instructions')">Edit...</button>
+      <div class="tab-bar" role="tablist">
+        <button type="button" class="tab active" data-tab="settingsTabGeneral">General</button>
+        <button type="button" class="tab" data-tab="settingsTabSkills" id="tabButtonSkills">Skills <span id="skillSourcesState" class="muted"></span></button>
+        <button type="button" class="tab" data-tab="settingsTabTools" id="tabButtonTools">Tools <span id="toolSourcesState" class="muted"></span></button>
       </div>
+
+      <div id="settingsTabGeneral" class="tab-page">
+        <label>LLM provider
+          <select id="selProvider"></select>
+        </label>
+        <label>Model
+          <input id="txtModel" type="text" placeholder="(default)">
+        </label>
+        <label>API key (PAT)
+          <input id="txtApiKey" type="password" autocomplete="off" placeholder="(unchanged)">
+        </label>
+        <div id="apiKeyState" class="muted"></div>
+        <div class="capabilities-title">Native provider features</div>
+        <div id="capabilityList" class="capability-list"></div>
+        <label>Theme
+          <select id="selTheme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <div class="user-instructions-row">
+          <span>User instructions <span id="userInstructionsState" class="muted"></span></span>
+          <button id="btnUserInstructions" title="Edit the instructions which the model must follow (mandatory skill)">Edit...</button>
+        </div>
+        <div class="muted small">The API key is stored locally within the roaming profile of the current user.</div>
+      </div>
+
+      <div id="settingsTabSkills" class="tab-page" hidden>
+        <div id="skillSourcesUnavailable" class="muted small" hidden>The host does not provide skill source management.</div>
+        <div class="muted small">Changes are applied immediately and take effect with the next message. Referenced files are read on demand (never copied).</div>
+        <div id="skillSourceList" class="source-list"></div>
+        <div class="capabilities-title">Add source</div>
+        <div class="source-add-row">
+          <select id="selSkillSourceKind">
+            <option value="File">File</option>
+            <option value="Folder">Folder</option>
+            <option value="Url">URL</option>
+            <option value="GitHub">GitHub</option>
+          </select>
+          <input id="txtSkillSourceLocation" type="text" placeholder="Local or UNC path (for example C:\skills\my-skill\SKILL.md)">
+          <input id="txtSkillSourceCredential" type="password" placeholder="PAT/token (optional)" autocomplete="off" hidden>
+          <button id="btnSkillSourceAdd">Add</button>
+        </div>
+        <div class="capabilities-title">Location of 'global-system-preferences'</div>
+        <div class="source-add-row">
+          <input id="txtSystemPreferencesLocation" type="text" placeholder="(default location)">
+          <button id="btnSystemPreferencesSet">Apply</button>
+        </div>
+      </div>
+
+      <div id="settingsTabTools" class="tab-page" hidden>
+        <div id="toolSourcesUnavailable" class="muted small" hidden>The host does not provide tool source management.</div>
+        <div class="muted small">Global default levels of the tool sources (changeable per chat in the chat details). Changes are applied immediately.</div>
+        <div id="toolSourceList" class="source-list"></div>
+        <div id="toolSettingsEditor" class="tool-settings-editor" hidden>
+          <div class="capabilities-title">Settings of <span id="toolSettingsTitle"></span></div>
+          <textarea id="txtToolSettings" rows="8" spellcheck="false"></textarea>
+          <div class="source-add-row">
+            <span class="spacer"></span>
+            <button id="btnToolSettingsCancel" type="button">Cancel</button>
+            <button id="btnToolSettingsSave" type="button" class="primary">Save settings</button>
+          </div>
+        </div>
+        <div class="capabilities-title">Add MCP server (Streamable HTTP)</div>
+        <div class="source-add-row">
+          <input id="txtMcpUrl" type="text" placeholder="https://host/mcp">
+          <input id="txtMcpToken" type="password" placeholder="Bearer token (optional)" autocomplete="off">
+          <button id="btnMcpAdd" type="button">Add</button>
+        </div>
+        <div class="capabilities-title">Add UJMW contract interface (.NET assembly)</div>
+        <div class="source-add-row">
+          <input id="fileToolAssembly" type="file" accept=".dll">
+          <button id="btnToolAssemblyUpload" type="button">Upload</button>
+        </div>
+        <div id="contractRegisterRow" class="source-add-row" hidden>
+          <select id="selContractInterface"></select>
+          <input id="txtContractUrl" type="text" placeholder="https://host/api/contract/">
+          <input id="txtContractToken" type="password" placeholder="Token (optional)" autocomplete="off">
+          <button id="btnContractRegister" type="button">Register</button>
+        </div>
+      </div>
+
       <div class="dialog-actions">
         <button id="btnDeleteKey">Delete API key</button>
         <span class="spacer"></span>
         <button id="btnSettingsCancel">Cancel</button>
         <button id="btnSettingsSave" class="primary">Save</button>
       </div>
-      <div class="muted small">The API key is stored locally within the roaming profile of the current user.</div>
     </div>
   </div>
 
   <div id="userInstructionsDialog" class="dialog-backdrop" hidden>
     <div class="dialog wide">
       <h2>User instructions</h2>
-      <div class="muted small">These instructions are provided to the model as mandatory skill <code>mustread-user-instructions</code> and must be followed for every task.</div>
+      <div class="muted small">These instructions are provided to the model as mandatory skill (<code>global-user-preferences</code> or <code>mustread-user-instructions</code>, depending on the host) and must be followed for every task.</div>
       <textarea id="txtUserInstructions" rows="14" spellcheck="false" placeholder="For example: Always answer in German. Prefer explicit types over var."></textarea>
       <div class="dialog-actions">
         <span class="spacer"></span>
         <button id="btnUserInstructionsCancel">Cancel</button>
         <button id="btnUserInstructionsSave" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="detailsDialog" class="dialog-backdrop" hidden>
+    <div class="dialog">
+      <h2>Chat details</h2>
+      <div id="detailsInfo" class="muted small"></div>
+      <label>LLM provider (this chat)
+        <select id="selDetailsProvider"></select>
+      </label>
+      <div id="detailsProviderHint" class="muted small" hidden>Switching the provider discards the provider-side context. It is rebuilt from the chat history with the next message.</div>
+      <label>Model (this chat)
+        <input id="txtDetailsModel" type="text" list="lstDetailsModels" placeholder="(default)">
+        <datalist id="lstDetailsModels"></datalist>
+      </label>
+      <div id="detailsSkillSourcesSection" hidden>
+        <div class="capabilities-title">Skill sources (this chat)</div>
+        <div class="muted small">Levels can only be raised within a chat (to lower them, change the global default).</div>
+        <div id="detailsSkillSources" class="source-list"></div>
+      </div>
+      <div id="detailsToolSourcesSection" hidden>
+        <div class="capabilities-title">Tool sources (this chat)</div>
+        <div id="detailsToolSources" class="source-list"></div>
+      </div>
+      <div id="detailsAuditSection" hidden>
+        <div class="capabilities-title">Tool calls (audit log)</div>
+        <div id="detailsAuditLog" class="audit-log"></div>
+      </div>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button id="btnDetailsCancel">Cancel</button>
+        <button id="btnDetailsSave" class="primary">Save</button>
       </div>
     </div>
   </div>

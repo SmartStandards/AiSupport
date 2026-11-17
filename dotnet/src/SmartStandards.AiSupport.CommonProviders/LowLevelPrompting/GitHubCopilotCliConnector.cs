@@ -113,16 +113,21 @@ namespace AI.SmartStandards.LowLevelPrompting {
     }
 
     /// <summary>
-    /// Sends the complete (self-maintained) conversation to the Copilot CLI and returns its answer.
+    /// Sends the conversation to the Copilot CLI and returns its answer. 'onProgress' (optional) receives the last
+    /// output line or the current activity of the CLI; 'cancellationToken' cancels the turn (or kills the process).
     /// </summary>
-    public string CallChatApi(ChatTurn[] newMessages, ref string contextStore) {
+    public string CallChatApi(
+      CancellationToken cancellationToken, ChatTurn[] newMessages, ref string contextStore, Action<string, int, int> onProgress
+    ) {
 
       if (newMessages == null || newMessages.Length == 0) {
         throw new ArgumentException("At least one message is required.", nameof(newMessages));
       }
 
+      cancellationToken.ThrowIfCancellationRequested();
+
       if (this.UseSessionMode) {
-        return this.CallInSessionMode(newMessages, ref contextStore, true);
+        return this.CallInSessionMode(newMessages, ref contextStore, true, cancellationToken, onProgress);
       }
 
       // Prompt mode has no provider-side context, so the caller always passes the full history
@@ -136,7 +141,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
         );
       }
 
-      return this.RunCli(prompt, true);
+      return this.RunCli(prompt, true, cancellationToken, onProgress);
     }
 
     /// <summary>
@@ -221,7 +226,13 @@ namespace AI.SmartStandards.LowLevelPrompting {
     /// Runs the CLI in prompt mode. If 'allowInteractiveLogin' is true and the CLI reports missing authentication,
     /// an interactive login console is opened and the call is retried once.
     /// </summary>
-    private string RunCli(string prompt, bool allowInteractiveLogin) {
+    private string RunCli(
+      string prompt, bool allowInteractiveLogin, CancellationToken cancellationToken, Action<string, int, int> onProgress
+    ) {
+
+      if (onProgress != null) {
+        onProgress.Invoke("starting GitHub Copilot CLI", 0, 0);
+      }
 
       CliLaunchInfo launchInfo = ResolveCli();
 
@@ -281,14 +292,27 @@ namespace AI.SmartStandards.LowLevelPrompting {
         Task<string> stdOutTask = process.StandardOutput.ReadToEndAsync();
         Task<string> stdErrTask = process.StandardError.ReadToEndAsync();
 
-        if (!process.WaitForExit((int)_Timeout.TotalMilliseconds)) {
+        if (onProgress != null) {
+          onProgress.Invoke("waiting for GitHub Copilot CLI", 0, 0);
+        }
+
+        bool exited = false;
+        DateTime deadlineUtc = DateTime.UtcNow + _Timeout;
+
+        while (!exited && !cancellationToken.IsCancellationRequested && DateTime.UtcNow < deadlineUtc) {
+          exited = process.WaitForExit(200);
+        }
+
+        if (!exited) {
 
           try {
-            process.Kill();
+            process.Kill(true);
           }
           catch (InvalidOperationException) {
             // the process has already exited in the meantime
           }
+
+          cancellationToken.ThrowIfCancellationRequested();
 
           throw new TimeoutException($"The GitHub Copilot CLI did not answer within {_Timeout.TotalSeconds} seconds.");
         }
@@ -318,7 +342,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
             }
 
             // Retry exactly once - a second authentication error is reported to the user
-            return this.RunCli(prompt, false);
+            return this.RunCli(prompt, false, cancellationToken, onProgress);
           }
 
           throw new InvalidOperationException(

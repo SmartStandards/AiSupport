@@ -1,4 +1,6 @@
+using AI.SmartStandards.InteractivePrompting.Harness;
 using AI.SmartStandards.LowLevelPrompting;
+using Logging.SmartStandards.CopyForAI.SmartStandards;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
@@ -12,13 +14,21 @@ namespace AI.SmartStandards.InteractivePrompting {
   /// within the roaming profile of the current user (default: '%APPDATA%\SmartStandards\AiSupport\settings.json').
   /// It also acts as factory for the configured 'ICommonLLM'.
   /// </summary>
-  public class FileBasedPromptingSettingsService : IPromptingSettingsService {
+  public class FileBasedPromptingSettingsService : IPromptingSettingsService, IChatLLMFactory {
 
     public const string OpenAiProviderName = "OpenAI";
 
     private readonly string _SettingsFileFullName;
 
     private readonly object _SyncRoot = new object();
+
+    private ISecretProtector _SecretProtector = new KeyFileSecretProtector();
+
+    private string _UserInstructionsFileFullName;
+
+    private string _UserInstructionsSkillName;
+
+    private string _UserInstructionsSkillDescription;
 
     private readonly List<LLMProviderInfo> _Providers = new List<LLMProviderInfo>();
 
@@ -49,7 +59,8 @@ namespace AI.SmartStandards.InteractivePrompting {
       openAi.DisplayName = "OpenAI (api.openai.com)";
       openAi.DefaultModel = OpenAiLLMConnector.DefaultChatModel;
       openAi.RequiresApiKey = true;
-      openAi.Capabilities = BuildCapabilities(LLMCapabilityNames.ProviderSideContext);
+      openAi.Capabilities = BuildCapabilities(LLMCapabilityNames.ProviderSideContext, LLMCapabilityNames.PausableToolCalls);
+      openAi.KnownModels = new string[] { "gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini" };
 
       this.RegisterProvider(
         openAi,
@@ -67,8 +78,12 @@ namespace AI.SmartStandards.InteractivePrompting {
       copilotCli.DefaultModel = GitHubCopilotCliConnector.DefaultModelPlaceholder;
       copilotCli.RequiresApiKey = false;
       copilotCli.Capabilities = BuildCapabilities(
-        LLMCapabilityNames.ProviderSideContext, LLMCapabilityNames.PersistentSession, LLMCapabilityNames.SessionResume
+        LLMCapabilityNames.ProviderSideContext, LLMCapabilityNames.PersistentSession, LLMCapabilityNames.SessionResume,
+        LLMCapabilityNames.PausableToolCalls
       );
+      copilotCli.KnownModels = new string[] {
+        GitHubCopilotCliConnector.DefaultModelPlaceholder, "gpt-4.1", "gpt-5", "claude-sonnet-4", "claude-sonnet-4.5"
+      };
 
       this.RegisterProvider(
         copilotCli,
@@ -87,7 +102,8 @@ namespace AI.SmartStandards.InteractivePrompting {
       stupidMock.DisplayName = "Stupid Mock LLM (for UI tests)";
       stupidMock.DefaultModel = "stupid";
       stupidMock.RequiresApiKey = false;
-      stupidMock.Capabilities = BuildCapabilities();
+      stupidMock.Capabilities = BuildCapabilities(LLMCapabilityNames.PausableToolCalls);
+      stupidMock.KnownModels = new string[] { "stupid" };
 
       this.RegisterProvider(stupidMock, (apiKey, model) => new StupidMockLLM());
 
@@ -118,6 +134,10 @@ namespace AI.SmartStandards.InteractivePrompting {
         else if (name == LLMCapabilityNames.SessionResume) {
           capability.DisplayName = "Session resume";
           capability.Description = "An ended session is restored by its id (otherwise it is rebuilt from the chat history).";
+        }
+        else if (name == LLMCapabilityNames.PausableToolCalls) {
+          capability.DisplayName = "Pausable tool calls";
+          capability.Description = "A tool call silently waits for your approval (otherwise the model is told that permission is being requested and continues later).";
         }
         else {
           capability.DisplayName = name;
@@ -152,6 +172,26 @@ namespace AI.SmartStandards.InteractivePrompting {
       string roamingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
 
       return Path.Combine(roamingDirectory, "SmartStandards", "AiSupport", "settings.json");
+    }
+
+    /// <summary>
+    /// Protects the API keys within the settings file. Default: 'KeyFileSecretProtector' (AES + HMAC with a
+    /// machine-local key file). Plain text API keys of older versions are still accepted and will be protected
+    /// on the next write.
+    /// </summary>
+    public ISecretProtector SecretProtector {
+      get {
+        return _SecretProtector;
+      }
+      set {
+
+        if (value == null) {
+          throw new ArgumentNullException(nameof(value));
+        }
+
+        _SecretProtector = value;
+
+      }
     }
 
     public string SettingsFileFullName {
@@ -362,6 +402,10 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       lock (_SyncRoot) {
 
+        if (_UserInstructionsFileFullName != null) {
+          return this.ReadUserInstructionsFile();
+        }
+
         PersistedSettings persisted = this.ReadSettings();
 
         if (persisted.UserInstructions == null) {
@@ -380,6 +424,11 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       lock (_SyncRoot) {
 
+        if (_UserInstructionsFileFullName != null) {
+          this.WriteUserInstructionsFile(userInstructions);
+          return;
+        }
+
         PersistedSettings persisted = this.ReadSettings();
 
         if (string.IsNullOrWhiteSpace(userInstructions)) {
@@ -391,6 +440,81 @@ namespace AI.SmartStandards.InteractivePrompting {
 
         this.WriteSettings(persisted);
       }
+
+    }
+
+    /// <summary>
+    /// Stores the user instructions as body of the given skill file (Agent Skills layout, usually
+    /// '%USERPROFILE%\.agents\skills\global-user-preferences\SKILL.md') instead of 'settings.json'.
+    /// Instructions which are still stored within 'settings.json' are migrated into the file once
+    /// (only if the file does not exist yet).
+    /// </summary>
+    public void UseUserInstructionsFile(string skillFileFullName, string skillName, string skillDescription) {
+
+      if (string.IsNullOrWhiteSpace(skillFileFullName)) {
+        throw new ArgumentNullException(nameof(skillFileFullName));
+      }
+
+      lock (_SyncRoot) {
+
+        _UserInstructionsFileFullName = skillFileFullName;
+        _UserInstructionsSkillName = skillName;
+        _UserInstructionsSkillDescription = skillDescription;
+
+        PersistedSettings persisted = this.ReadSettings();
+
+        if (string.IsNullOrWhiteSpace(persisted.UserInstructions)) {
+          return;
+        }
+
+        if (!File.Exists(skillFileFullName)) {
+          this.WriteUserInstructionsFile(persisted.UserInstructions);
+        }
+
+        persisted.UserInstructions = null;
+        this.WriteSettings(persisted);
+      }
+
+    }
+
+    private string ReadUserInstructionsFile() {
+
+      if (!File.Exists(_UserInstructionsFileFullName)) {
+        return string.Empty;
+      }
+
+      return SkillFile.Load(_UserInstructionsFileFullName).Body;
+    }
+
+    private void WriteUserInstructionsFile(string userInstructions) {
+
+      SkillFile skillFile;
+
+      if (File.Exists(_UserInstructionsFileFullName)) {
+        skillFile = SkillFile.Load(_UserInstructionsFileFullName);
+      }
+      else {
+        skillFile = new SkillFile();
+        skillFile.Name = _UserInstructionsSkillName;
+        skillFile.Description = _UserInstructionsSkillDescription;
+      }
+
+      if (string.IsNullOrWhiteSpace(skillFile.Name)) {
+        skillFile.Name = SkillFile.DeriveNameFromPath(_UserInstructionsFileFullName);
+      }
+
+      if (skillFile.Description == null) {
+        skillFile.Description = string.Empty;
+      }
+
+      if (userInstructions == null) {
+        skillFile.Body = string.Empty;
+      }
+      else {
+        skillFile.Body = userInstructions.Trim();
+      }
+
+      skillFile.Save(_UserInstructionsFileFullName);
 
     }
 
@@ -438,23 +562,40 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// with a user-readable message if the settings are incomplete).
     /// </summary>
     public ICommonLLM CreateConfiguredLLM() {
+      return this.CreateLLM(null, null);
+    }
+
+    /// <summary>
+    /// Creates an 'ICommonLLM' for an explicitly given provider and model (for example the per-chat selection).
+    /// If 'providerName' is null/empty or unknown, the globally selected provider is used. If 'model' is null/empty,
+    /// the model configured for the provider (or its default model) is used. The API key and disabled capabilities
+    /// are always taken from the global settings. Throws an 'InvalidOperationException' with a user-readable message
+    /// if the settings are incomplete.
+    /// </summary>
+    public ICommonLLM CreateLLM(string providerName, string model) {
 
       Func<string, string, string[], ICommonLLM> factory;
       string apiKey;
-      string model;
       string[] disabledCapabilities;
 
       lock (_SyncRoot) {
 
         PersistedSettings persisted = this.ReadSettings();
-        LLMProviderInfo provider = this.GetSelectedProvider(persisted);
+        LLMProviderInfo provider = this.FindProvider(providerName);
+
+        if (provider == null) {
+          provider = this.GetSelectedProvider(persisted);
+        }
 
         if (provider == null) {
           throw new InvalidOperationException("No LLM provider is configured. Please open the settings.");
         }
 
         apiKey = GetValueOrNull(persisted.ApiKeys, provider.Name);
-        model = this.GetSelectedModel(persisted, provider);
+
+        if (string.IsNullOrWhiteSpace(model)) {
+          model = this.GetSelectedModel(persisted, provider);
+        }
 
         if (provider.RequiresApiKey && string.IsNullOrWhiteSpace(apiKey)) {
           throw new InvalidOperationException(
@@ -467,6 +608,56 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
 
       return factory.Invoke(apiKey, model, disabledCapabilities);
+    }
+
+    /// <summary>
+    /// Returns the name of the globally selected provider (snapshot source for new chats) or null if there is none.
+    /// </summary>
+    public string GetDefaultProviderName() {
+
+      lock (_SyncRoot) {
+
+        PersistedSettings persisted = this.ReadSettings();
+        LLMProviderInfo provider = this.GetSelectedProvider(persisted);
+
+        if (provider == null) {
+          return null;
+        }
+
+        return provider.Name;
+      }
+
+    }
+
+    /// <summary>
+    /// Returns the model configured for the given provider (or its default model) or null if the provider is unknown.
+    /// </summary>
+    public string GetDefaultModel(string providerName) {
+
+      lock (_SyncRoot) {
+
+        LLMProviderInfo provider = this.FindProvider(providerName);
+
+        if (provider == null) {
+          return null;
+        }
+
+        PersistedSettings persisted = this.ReadSettings();
+
+        return this.GetSelectedModel(persisted, provider);
+      }
+
+    }
+
+    /// <summary>
+    /// Returns true if a provider with the given name is registered.
+    /// </summary>
+    public bool IsKnownProvider(string providerName) {
+
+      lock (_SyncRoot) {
+        return this.FindProvider(providerName) != null;
+      }
+
     }
 
     /// <summary>
@@ -562,6 +753,9 @@ namespace AI.SmartStandards.InteractivePrompting {
       if (persisted.ApiKeys == null) {
         persisted.ApiKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
       }
+      else {
+        persisted.ApiKeys = this.UnprotectApiKeys(persisted.ApiKeys);
+      }
 
       if (persisted.DisabledCapabilities == null) {
         persisted.DisabledCapabilities = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
@@ -578,10 +772,72 @@ namespace AI.SmartStandards.InteractivePrompting {
         Directory.CreateDirectory(directory);
       }
 
-      string json = JsonConvert.SerializeObject(persisted, Formatting.Indented);
+      Dictionary<string, string> plainApiKeys = persisted.ApiKeys;
+      string json;
+
+      try {
+        persisted.ApiKeys = this.ProtectApiKeys(plainApiKeys);
+        json = JsonConvert.SerializeObject(persisted, Formatting.Indented);
+      }
+      finally {
+        persisted.ApiKeys = plainApiKeys;
+      }
 
       File.WriteAllText(_SettingsFileFullName, json);
 
+    }
+
+    /// <summary>
+    /// Returns a copy of the API keys with protected (encrypted) values.
+    /// </summary>
+    private Dictionary<string, string> ProtectApiKeys(Dictionary<string, string> plainApiKeys) {
+
+      Dictionary<string, string> result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+      if (plainApiKeys == null) {
+        return result;
+      }
+
+      foreach (KeyValuePair<string, string> entry in plainApiKeys) {
+
+        if (!string.IsNullOrWhiteSpace(entry.Value)) {
+          result[entry.Key] = _SecretProtector.Protect(entry.Value);
+        }
+
+      }
+
+      return result;
+    }
+
+    /// <summary>
+    /// Returns a copy of the persisted API keys with plain values. Legacy plain text values are taken as they are,
+    /// values which cannot be unprotected (manipulated or protected with another key) are logged and skipped.
+    /// </summary>
+    private Dictionary<string, string> UnprotectApiKeys(Dictionary<string, string> persistedApiKeys) {
+
+      Dictionary<string, string> result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+      foreach (KeyValuePair<string, string> entry in persistedApiKeys) {
+
+        if (string.IsNullOrWhiteSpace(entry.Value)) {
+          continue;
+        }
+
+        if (!_SecretProtector.IsProtected(entry.Value)) {
+          result[entry.Key] = entry.Value;
+          continue;
+        }
+
+        try {
+          result[entry.Key] = _SecretProtector.Unprotect(entry.Value);
+        }
+        catch (Exception ex) {
+          DevLogger.LogError(ex);
+        }
+
+      }
+
+      return result;
     }
 
     internal sealed class PersistedSettings {

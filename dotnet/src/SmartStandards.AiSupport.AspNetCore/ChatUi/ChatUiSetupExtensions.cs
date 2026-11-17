@@ -30,6 +30,11 @@ namespace AI.SmartStandards {
     /// </summary>
     public const string SettingsRouteSegment = "chatApi/settings";
 
+    /// <summary>
+    /// Route segment (relative to the mount path) of the UJMW endpoint for 'IPromptingExtensionService'.
+    /// </summary>
+    public const string ExtensionsRouteSegment = "chatApi/extensions";
+
     private const string _ResourcePrefix = "AiSupport.ChatUi.";
 
     /// <summary>
@@ -55,6 +60,13 @@ namespace AI.SmartStandards {
         registrar.AddControllerFor<IPromptingSettingsService>((options) => {
           options.ControllerRoute = routePrefix + SettingsRouteSegment;
           options.ControllerTitle = "Chat UI Settings";
+          options.EnableRequestSidechannel = false;
+          options.EnableResponseSidechannel = false;
+        });
+
+        registrar.AddControllerFor<IPromptingExtensionService>((options) => {
+          options.ControllerRoute = routePrefix + ExtensionsRouteSegment;
+          options.ControllerTitle = "Chat UI Extensions";
           options.EnableRequestSidechannel = false;
           options.EnableResponseSidechannel = false;
         });
