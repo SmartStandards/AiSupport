@@ -79,7 +79,38 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     }
 
     /// <summary>
-    /// Sets the ambient context for the current thread and returns the previous one (to be restored afterwards).
+    /// Reports the progress of the running tool (PRG-3) via the progress reporter of the scope. The status text is
+    /// prefixed with the tool name. Outside of a tool call or without reporter, the call is ignored (convention credo).
+    /// </summary>
+    /// <param name="statusText">Human readable status (null keeps the previous text).</param>
+    /// <param name="current">Current item (0 if not applicable).</param>
+    /// <param name="max">Total items (0 or less hides the progress bar).</param>
+    public static void ReportProgress(string statusText, int current, int max) {
+
+      HarnessToolContext context = _Current;
+
+      if (context == null || context.Scope == null || context.Scope.ToolProgressReporter == null) {
+        return;
+      }
+
+      string text = statusText;
+
+      if (text != null && context.Call != null && !string.IsNullOrWhiteSpace(context.Call.Name)) {
+        text = context.Call.Name + ": " + text;
+      }
+
+      try {
+        context.Scope.ToolProgressReporter.Invoke(text, current, max);
+      }
+      catch (Exception ex) {
+        //a failing progress sink must never break the tool
+        Logging.SmartStandards.CopyForAI.SmartStandards.DevLogger.LogError(ex);
+      }
+
+    }
+
+    /// <summary>
+    /// Sets the ambient context for the current thread
     /// </summary>
     internal static HarnessToolContext Enter(HarnessToolContext context) {
 

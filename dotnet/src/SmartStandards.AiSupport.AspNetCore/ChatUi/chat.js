@@ -548,6 +548,8 @@
 
       // the model may have switched the theme via the internal tool 'ui_set_theme'
       await loadTheme();
+      // ...or updated the user instructions via 'preferences_update'
+      await loadUserInstructions();
 
     } catch (e) {
       showError(e);
@@ -665,28 +667,35 @@
       select.value = state.details.providerName || "";
       fillDetailsModels(select.value);
       el("txtDetailsModel").value = state.details.model || "";
+      el("txtDetailsName").value = state.details.name || el("chatTitle").textContent;
 
       const info = [];
       info.push("Messages: " + (state.details.messageCount || 0));
-      info.push("Context: " + (state.details.isCompressed ? "compressed (baseline)" : "full history"));
       if (state.details.lastAction) {
         info.push("Last action: " + new Date(state.details.lastAction).toLocaleString());
       }
       el("detailsInfo").textContent = info.join(" | ");
-
-      renderChatSources("detailsSkillSources", "detailsSkillSourcesSection", state.details.skillSources, false);
-      renderChatSources("detailsToolSources", "detailsToolSourcesSection", state.details.toolSources, true);
+      el("detailsContextState").textContent = "(" + (state.details.isCompressed ? "compressed (baseline)" : "full history") + ")";
 
       let auditLog = [];
       try {
         auditLog = (await call(backendUrl, "GetToolAuditLog", { chatId: state.chatId })) || [];
       } catch (e) {
-        // older servers without audit log: hide the section (convention credo)
+        // older servers without audit log: the tab stays empty (convention credo)
         auditLog = [];
       }
-      renderAuditLog(auditLog);
+      state.detailsAuditLog = Array.isArray(auditLog) ? auditLog : [];
+
+      renderChatSources("detailsSkillSources", "detailsSkillSourcesSection", state.details.skillSources, false);
+      renderChatSources("detailsToolSources", "detailsToolSourcesSection", state.details.toolSources, true);
+      el("detailsSecurityEmpty").hidden = !(el("detailsSkillSourcesSection").hidden && el("detailsToolSourcesSection").hidden);
+      updateSkillLevelWarning("detailsSkillSources", "detailsLevelWarning");
+
+      fillAuditFilter();
+      renderAuditLog();
 
       updateDetailsProviderHint();
+      selectDetailsTab("detailsTabGeneral");
       el("detailsDialog").hidden = false;
     } catch (e) {
       showError(e);
@@ -698,11 +707,31 @@
     state.details = null;
   }
 
+  function selectDetailsTab(tabId) {
+    document.querySelectorAll("#detailsDialog .tab").forEach((button) => {
+      button.classList.toggle("active", button.dataset.tab === tabId);
+    });
+    document.querySelectorAll("#detailsDialog .tab-page").forEach((page) => {
+      page.hidden = (page.id !== tabId);
+    });
+  }
+
+  // CHD-3: compresses the context directly from the details dialog
+  async function compressFromDetails() {
+    closeDetails();
+    await compressChat();
+  }
+
   async function saveDetails() {
     try {
       const providerName = el("selDetailsProvider").value;
       const model = el("txtDetailsModel").value.trim();
       const details = state.details || {};
+      const newName = el("txtDetailsName").value.trim();
+      if (newName.length > 0 && newName !== (details.name || "")) {
+        await call(backendUrl, "RenameChat", { chatId: state.chatId, newName: newName });
+        el("chatTitle").textContent = newName;
+      }
       if (providerName !== details.providerName || model !== (details.model || "")) {
         await call(backendUrl, "SetChatProvider", { chatId: state.chatId, providerName: providerName, model: model });
       }
@@ -713,9 +742,8 @@
         await call(backendUrl, methodName, { chatId: state.chatId, sourceId: change.sourceId, level: change.level });
       }
       closeDetails();
-      if (changedSources.length > 0) {
-        await openChat(state.chatId, el("chatTitle").textContent);
-      }
+      // control messages (3.8) are shown immediately; the chat list shows a changed name
+      await openChat(state.chatId, el("chatTitle").textContent);
     } catch (e) {
       alert(e.message || e);
     }
@@ -744,7 +772,9 @@
       row.appendChild(title);
 
       const select = document.createElement("select");
+      select.className = "level-select";
       select.dataset.sourceId = s.sourceId;
+      select.dataset.label = s.displayName || s.sourceId;
       select.dataset.isTool = isTool ? "1" : "0";
       select.dataset.original = s.effectiveLevel || "";
       const minRank = isTool ? 0 : levels.indexOf(s.effectiveLevel);
@@ -759,7 +789,26 @@
       });
       select.value = s.effectiveLevel || "";
       select.disabled = !!s.isFixed;
+      if (!isTool) {
+        select.addEventListener("change", () => updateSkillLevelWarning(containerId, "detailsLevelWarning"));
+      }
       row.appendChild(select);
+
+      if (isTool) {
+        // CHD-8: grey until a tool of the source was used in this chat, then blue; opens the filtered audit log
+        const used = (state.detailsAuditLog || []).some((e) => e.toolSourceId === s.sourceId);
+        const log = document.createElement("button");
+        log.type = "button";
+        log.className = "small-button audit-icon" + (used ? " used" : "");
+        log.textContent = "\u2630";
+        log.title = used ? "Show the tool calls of this source" : "No tool of this source was used in this chat yet";
+        log.addEventListener("click", () => {
+          el("selDetailsAuditFilter").value = s.sourceId;
+          renderAuditLog();
+          selectDetailsTab("detailsTabAudit");
+        });
+        row.appendChild(log);
+      }
 
       if (isTool && s.isApprovedForChat) {
         const badge = document.createElement("span");
@@ -786,12 +835,46 @@
     });
   }
 
-  // Renders the tool audit log of the chat (most recent first).
-  function renderAuditLog(entries) {
+  // Shows the SKM-6 warning as soon as a skill source is (or is about to be) set to 'Initialize at start'.
+  function updateSkillLevelWarning(containerId, warningId) {
+    const names = [];
+    el(containerId).querySelectorAll("select[data-source-id], select[data-skill-source]").forEach((select) => {
+      if (select.value === "InitializeAtStart" && select.dataset.isTool !== "1") {
+        names.push(select.dataset.label || select.dataset.sourceId || select.dataset.skillSource);
+      }
+    });
+    const warning = el(warningId);
+    warning.hidden = (names.length === 0);
+    warning.textContent = "\u26A0 'Initialize at start' loads all skills of the source into every context " +
+      "(higher token usage, also for small talk): " + names.join(", ");
+  }
+
+  function fillAuditFilter() {
+    const select = el("selDetailsAuditFilter");
+    select.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "All tool sources";
+    select.appendChild(all);
+    const sources = (state.details && Array.isArray(state.details.toolSources)) ? state.details.toolSources : [];
+    sources.forEach((s) => {
+      const option = document.createElement("option");
+      option.value = s.sourceId;
+      option.textContent = s.displayName || s.sourceId;
+      select.appendChild(option);
+    });
+    select.value = "";
+  }
+
+  // Renders the tool audit log of the chat (most recent first), optionally filtered by tool source (CHD-8).
+  function renderAuditLog() {
     const container = el("detailsAuditLog");
     container.innerHTML = "";
-    const list = Array.isArray(entries) ? entries.slice().reverse() : [];
-    el("detailsAuditSection").hidden = (list.length === 0);
+    const filter = el("selDetailsAuditFilter").value;
+    const all = state.detailsAuditLog || [];
+    const list = all.filter((e) => !filter || e.toolSourceId === filter).slice().reverse();
+    el("detailsAuditEmpty").hidden = (list.length > 0);
+    el("detailsAuditState").textContent = all.length > 0 ? "(" + all.length + ")" : "";
 
     list.forEach((e) => {
       const row = document.createElement("div");
@@ -863,12 +946,21 @@
       const title = document.createElement("span");
       title.className = "source-title";
       const skills = Array.isArray(s.skillNames) ? s.skillNames : [];
-      title.textContent = (s.isReferenceBroken ? "\u26A0 " : "") + (s.displayName || s.sourceId) +
-        " [" + (s.kind || "?") + "]" + (skills.length > 0 ? " - " + skills.join(", ") : "");
-      title.title = (s.location || "") + (s.lastError ? "\n" + s.lastError : "");
+      title.textContent = (s.isReferenceBroken ? "\u26A0 " : "") + (s.displayName || s.sourceId);
+      title.title = (s.kind ? "[" + s.kind + "] " : "") + (s.location || "") +
+        (skills.length > 0 ? "\nSkills: " + skills.join(", ") : "") + (s.lastError ? "\n" + s.lastError : "");
       row.appendChild(title);
 
+      const meta = document.createElement("span");
+      meta.className = "source-meta muted";
+      meta.textContent = (s.kind || "?") + " \u00B7 " + skills.length;
+      meta.title = skills.join(", ");
+      row.appendChild(meta);
+
       const select = document.createElement("select");
+      select.className = "level-select";
+      select.dataset.skillSource = s.sourceId;
+      select.dataset.label = s.displayName || s.sourceId;
       skillLevels.forEach((level) => {
         const option = document.createElement("option");
         option.value = level;
@@ -877,8 +969,27 @@
       });
       select.value = s.level || "OnDemand";
       select.disabled = !!s.isFixed;
-      select.addEventListener("change", () => runSkillSourceAction("SetSkillSourceLevel", { sourceId: s.sourceId, level: select.value }));
+      select.addEventListener("change", () => {
+        // SKM-6: the warning is shown immediately (before the server round trip)
+        updateSkillLevelWarning("skillSourceList", "skillLevelWarning");
+        runSkillSourceAction("SetSkillSourceLevel", { sourceId: s.sourceId, level: select.value });
+      });
       row.appendChild(select);
+
+      if (!s.isFixed) {
+        const rename = document.createElement("button");
+        rename.type = "button";
+        rename.className = "small-button";
+        rename.textContent = "\u270E";
+        rename.title = "Change the label of this source (empty = default label)";
+        rename.addEventListener("click", () => {
+          const value = prompt("Label of the skill source (empty = default):", s.displayName || "");
+          if (value !== null) {
+            runSkillSourceAction("SetSkillSourceDisplayName", { sourceId: s.sourceId, displayName: value });
+          }
+        });
+        row.appendChild(rename);
+      }
 
       const secure = document.createElement("label");
       secure.className = "source-secure";
@@ -890,15 +1001,18 @@
         "SetSkillSourceSecureAvailability", { sourceId: s.sourceId, enabled: secureCheckbox.checked }
       ));
       secure.appendChild(secureCheckbox);
-      secure.appendChild(document.createTextNode(" Secure availability"));
-      secure.title = "Keeps a local offline copy, which is refreshed once on every new chat start" +
+      secure.appendChild(document.createTextNode(" Offline"));
+      secure.title = "Secure availability: keeps a local offline copy, which is refreshed once on every new chat start" +
         (s.offlineCopyTimestampUtc ? " (last copy: " + new Date(s.offlineCopyTimestampUtc).toLocaleString() + ")" : "");
       row.appendChild(secure);
 
       if (s.kind === "Url" || s.kind === "GitHub") {
         const credential = document.createElement("button");
-        credential.textContent = s.hasCredentials ? "Token " + (s.credentialHint || "") : "Set token";
-        credential.title = "Sets, replaces or (with an empty value) removes the PAT/token of this source";
+        credential.type = "button";
+        credential.className = "small-button";
+        credential.textContent = s.hasCredentials ? "Token \u2713" : "Token";
+        credential.title = "Sets, replaces or (with an empty value) removes the PAT/token of this source" +
+          (s.hasCredentials ? " (" + (s.credentialHint || "") + ")" : "");
         credential.addEventListener("click", () => {
           const value = prompt("PAT/token for '" + (s.displayName || s.sourceId) + "' (empty = remove):", "");
           if (value !== null) {
@@ -909,7 +1023,10 @@
       }
 
       const remove = document.createElement("button");
-      remove.textContent = "Remove";
+      remove.type = "button";
+      remove.className = "small-button";
+      remove.textContent = "\u2716";
+      remove.title = "Remove this skill source";
       remove.disabled = !!s.isFixed;
       remove.addEventListener("click", () => {
         if (confirm("Remove the skill source '" + (s.displayName || s.sourceId) + "'? (referenced files are not deleted)")) {
@@ -920,6 +1037,8 @@
 
       container.appendChild(row);
     });
+
+    updateSkillLevelWarning("skillSourceList", "skillLevelWarning");
   }
 
   async function runSkillSourceAction(methodName, args) {
@@ -1002,12 +1121,18 @@
       const title = document.createElement("span");
       title.className = "source-title";
       const tools = Array.isArray(s.toolNames) ? s.toolNames : [];
-      title.textContent = (s.isReferenceBroken ? "\u26A0 " : "") + (s.displayName || s.sourceId) +
-        " [" + (s.kind || "?") + "]" + (tools.length > 0 ? " - " + tools.length + " tools" : "");
-      title.title = (s.location ? s.location + "\n" : "") + tools.join(", ") + (s.brokenReason ? "\n" + s.brokenReason : "");
+      title.textContent = (s.isReferenceBroken ? "\u26A0 " : "") + (s.displayName || s.sourceId);
+      title.title = (s.kind ? "[" + s.kind + "] " : "") + (s.location ? s.location + "\n" : "") + tools.join(", ") + (s.brokenReason ? "\n" + s.brokenReason : "");
       row.appendChild(title);
 
+      const meta = document.createElement("span");
+      meta.className = "source-meta muted";
+      meta.textContent = (s.kind || "?") + " \u00B7 " + tools.length;
+      meta.title = tools.join(", ");
+      row.appendChild(meta);
+
       const select = document.createElement("select");
+      select.className = "level-select";
       toolLevels.forEach((level) => {
         const option = document.createElement("option");
         option.value = level;
@@ -1085,25 +1210,194 @@
     try {
       const json = await call(extensionsUrl, "GetToolProviderSettings", { sourceId: source.sourceId });
       let pretty = json || "{}";
+      let parsed = null;
       try {
-        pretty = JSON.stringify(JSON.parse(pretty), null, 2);
+        parsed = JSON.parse(pretty);
+        pretty = JSON.stringify(parsed, null, 2);
       } catch (e) {
         // keep the raw text
+        parsed = null;
       }
       el("toolSettingsTitle").textContent = source.displayName || source.sourceId;
       el("txtToolSettings").value = pretty;
       el("toolSettingsEditor").dataset.sourceId = source.sourceId;
+
+      const hasAllowLists = !!parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+        allowListDefinitions.some((d) => Array.isArray(parsed[d.key]));
+      el("toolSettingsRawToggle").hidden = !hasAllowLists;
+      el("chkToolSettingsRaw").checked = !hasAllowLists;
+      if (hasAllowLists) {
+        renderAllowListEditor(parsed);
+      }
+      applyToolSettingsMode();
+
       el("toolSettingsEditor").hidden = false;
-      el("txtToolSettings").focus();
     } catch (e) {
       alert(e.message || e);
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Allow-list editors (fixed editors for the guards of the built-in tool providers, UIC-1 fallback)
+  // Unknown properties of the settings object are preserved untouched.
+  // ---------------------------------------------------------------------------
+
+  const allowListDefinitions = [
+    { key: "allowedPaths", title: "Allowed paths", valueKey: "path", optionKey: "access", options: ["RO", "RW"], placeholder: "C:\\data or \\\\server\\share" },
+    { key: "allowedDomains", title: "Allowed domains", valueKey: null, optionKey: null, options: null, placeholder: "example.com or *.example.com" },
+    { key: "allowedCommands", title: "Allowed shell commands", valueKey: "pattern", optionKey: "shell", options: ["cmd", "powershell"], placeholder: "git status, dir *, regex:^git (log|diff)" }
+  ];
+
+  function renderAllowListEditor(settings) {
+    const container = el("toolAllowListEditor");
+    container.innerHTML = "";
+    container.settingsObject = settings;
+
+    allowListDefinitions.forEach((definition) => {
+      if (!Array.isArray(settings[definition.key])) {
+        return;
+      }
+
+      const section = document.createElement("div");
+      section.className = "allow-list";
+      section.dataset.key = definition.key;
+
+      const title = document.createElement("div");
+      title.className = "capabilities-title";
+      title.textContent = definition.title;
+      section.appendChild(title);
+
+      const rows = document.createElement("div");
+      rows.className = "allow-list-rows";
+      section.appendChild(rows);
+
+      settings[definition.key].forEach((entry) => {
+        rows.appendChild(createAllowListRow(definition, entry));
+      });
+
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "small-button";
+      add.textContent = "+ Add";
+      add.addEventListener("click", () => {
+        const row = createAllowListRow(definition, null);
+        rows.appendChild(row);
+        row.querySelector("input").focus();
+      });
+      section.appendChild(add);
+
+      container.appendChild(section);
+    });
+  }
+
+  function createAllowListRow(definition, entry) {
+    const row = document.createElement("div");
+    row.className = "source-add-row allow-list-row";
+
+    let value = "";
+    let option = definition.options ? definition.options[0] : null;
+    if (typeof entry === "string") {
+      value = entry;
+    } else if (entry && typeof entry === "object" && definition.valueKey) {
+      value = entry[definition.valueKey] || "";
+      if (entry[definition.optionKey]) {
+        option = entry[definition.optionKey];
+      }
+    }
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    input.placeholder = definition.placeholder;
+    row.appendChild(input);
+
+    if (definition.options) {
+      const select = document.createElement("select");
+      select.className = "level-select";
+      definition.options.forEach((o) => {
+        const item = document.createElement("option");
+        item.value = o;
+        item.textContent = o;
+        select.appendChild(item);
+      });
+      // unknown values are kept (convention credo)
+      if (definition.options.indexOf(option) < 0) {
+        const item = document.createElement("option");
+        item.value = option;
+        item.textContent = option;
+        select.appendChild(item);
+      }
+      select.value = option;
+      row.appendChild(select);
+    }
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "small-button";
+    remove.textContent = "\u2716";
+    remove.title = "Remove this entry";
+    remove.addEventListener("click", () => row.remove());
+    row.appendChild(remove);
+
+    return row;
+  }
+
+  function collectAllowListSettings() {
+    const container = el("toolAllowListEditor");
+    const settings = Object.assign({}, container.settingsObject || {});
+
+    container.querySelectorAll(".allow-list").forEach((section) => {
+      const definition = allowListDefinitions.find((d) => d.key === section.dataset.key);
+      const entries = [];
+      section.querySelectorAll(".allow-list-row").forEach((row) => {
+        const value = row.querySelector("input").value.trim();
+        if (value.length === 0) {
+          return;
+        }
+        if (!definition.valueKey) {
+          entries.push(value);
+          return;
+        }
+        const entry = {};
+        entry[definition.valueKey] = value;
+        entry[definition.optionKey] = row.querySelector("select").value;
+        entries.push(entry);
+      });
+      settings[definition.key] = entries;
+    });
+
+    return settings;
+  }
+
+  // switches between the fixed allow-list editors and the raw JSON editor (keeping both in sync)
+  function applyToolSettingsMode() {
+    const raw = el("chkToolSettingsRaw").checked || el("toolSettingsRawToggle").hidden;
+    el("toolAllowListEditor").hidden = raw;
+    el("txtToolSettings").hidden = !raw;
+  }
+
+  function toggleToolSettingsMode() {
+    if (el("chkToolSettingsRaw").checked) {
+      el("txtToolSettings").value = JSON.stringify(collectAllowListSettings(), null, 2);
+    } else {
+      try {
+        renderAllowListEditor(JSON.parse(el("txtToolSettings").value || "{}"));
+      } catch (e) {
+        alert("The JSON is invalid: " + (e.message || e));
+        el("chkToolSettingsRaw").checked = true;
+      }
+    }
+    applyToolSettingsMode();
+  }
+
   async function saveToolSettings() {
     const sourceId = el("toolSettingsEditor").dataset.sourceId;
     try {
-      await call(extensionsUrl, "SaveToolProviderSettings", { sourceId: sourceId, settingsJson: el("txtToolSettings").value });
+      let settingsJson = el("txtToolSettings").value;
+      if (!el("toolAllowListEditor").hidden) {
+        settingsJson = JSON.stringify(collectAllowListSettings());
+      }
+      await call(extensionsUrl, "SaveToolProviderSettings", { sourceId: sourceId, settingsJson: settingsJson });
       el("toolSettingsEditor").hidden = true;
       await loadToolSources();
       renderToolSourceList();
@@ -1337,6 +1631,7 @@
 
     el("selTheme").value = state.theme;
     renderUserInstructionsState();
+    loadUserInstructions();
     renderSkillSourcesState();
     renderToolSourcesState();
     selectSettingsTab("settingsTabGeneral");
@@ -1431,7 +1726,9 @@
     }
   }
 
-  function openUserInstructions() {
+  async function openUserInstructions() {
+    // always read the current state (a tool may have changed the file in the meantime)
+    await loadUserInstructions();
     el("txtUserInstructions").value = state.userInstructions || "";
     el("userInstructionsDialog").hidden = false;
     el("txtUserInstructions").focus();
@@ -1489,6 +1786,12 @@
     el("btnToolAssemblyUpload").addEventListener("click", uploadToolAssembly);
     el("btnContractRegister").addEventListener("click", registerContractInterface);
     el("btnToolSettingsSave").addEventListener("click", saveToolSettings);
+    el("chkToolSettingsRaw").addEventListener("change", toggleToolSettingsMode);
+    document.querySelectorAll("#detailsDialog .tab").forEach((button) => {
+      button.addEventListener("click", () => selectDetailsTab(button.dataset.tab));
+    });
+    el("btnDetailsCompress").addEventListener("click", compressFromDetails);
+    el("selDetailsAuditFilter").addEventListener("change", () => renderAuditLog());
     el("btnToolSettingsCancel").addEventListener("click", () => {
       el("toolSettingsEditor").hidden = true;
     });

@@ -218,6 +218,35 @@ namespace AI.SmartStandards.InteractivePrompting {
     }
 
     [TestMethod()]
+    public void SkillSourceDisplayName_IsFreelySelectableAndResettable() {
+
+      this.WriteSkill(Path.Combine("lib", "alpha", "SKILL.md"), "alpha", "Alpha skill", "Alpha body");
+
+      FileBasedPromptingExtensionService service = this.CreateService();
+      string folderSourceId = service.AddSkillSource("folder", Path.Combine(_TempDirectory, "lib"), null);
+      string defaultLabel = service.GetSkillSources().Single((s) => s.SourceId == folderSourceId).DisplayName;
+
+      service.SetSkillSourceDisplayName(folderSourceId, "  My team skills  ");
+
+      Assert.AreEqual(
+        "My team skills",
+        this.CreateService().GetSkillSources().Single((s) => s.SourceId == folderSourceId).DisplayName
+      );
+
+      service.SetSkillSourceDisplayName(folderSourceId, "");
+
+      Assert.AreEqual(
+        defaultLabel,
+        this.CreateService().GetSkillSources().Single((s) => s.SourceId == folderSourceId).DisplayName
+      );
+
+      Assert.ThrowsException<InvalidOperationException>(
+        () => service.SetSkillSourceDisplayName(FileBasedPromptingExtensionService.UserPreferencesSourceId, "x")
+      );
+
+    }
+
+    [TestMethod()]
     public void BrokenReferences_AreFlaggedButKept() {
 
       string singleFile = this.WriteSkill(Path.Combine("refs", "temp.md"), "temp-skill", "Temp", "Temp body");

@@ -531,6 +531,40 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     }
 
+    /// <summary>
+    /// Sets the (freely selectable) label of a skill source. An empty value restores the derived default label.
+    /// </summary>
+    public void SetSkillSourceDisplayName(string sourceId, string displayName) {
+
+      if (IsBuiltInSourceId(sourceId)) {
+        throw new InvalidOperationException($"The label of the built-in skill source '{sourceId}' cannot be changed.");
+      }
+
+      lock (_SyncRoot) {
+
+        PersistedExtensions persisted = this.ReadPersisted();
+
+        PersistedSkillSource source = persisted.SkillSources.FirstOrDefault(
+          (s) => string.Equals(s.SourceId, sourceId, StringComparison.OrdinalIgnoreCase)
+        );
+
+        if (source == null) {
+          throw new ArgumentException($"Unknown skill source '{sourceId}'.", nameof(sourceId));
+        }
+
+        if (string.IsNullOrWhiteSpace(displayName)) {
+          source.DisplayName = DeriveDisplayName(source.Kind, source.Location);
+        }
+        else {
+          source.DisplayName = displayName.Trim();
+        }
+
+        this.WritePersisted(persisted);
+        this.ResolveAndSynchronize(persisted);
+      }
+
+    }
+
     #endregion
 
     #region " Remote sources "

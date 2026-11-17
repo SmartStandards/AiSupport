@@ -96,6 +96,15 @@ namespace AI.SmartStandards.InteractivePrompting {
     void SetSkillSourceCredential(string sourceId, string credential);
 
     /// <summary>
+    /// Sets the freely selectable label of a skill source (for example for a folder source).
+    /// An empty value restores the derived default label. Not allowed for built-in sources.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    void SetSkillSourceDisplayName(string sourceId, string displayName);
+
+    /// <summary>
     /// Returns all tool sources (built-in tool providers first, then MCP servers and contract interfaces).
     /// Sources whose tools could not be created are flagged (never removed).
     /// </summary>

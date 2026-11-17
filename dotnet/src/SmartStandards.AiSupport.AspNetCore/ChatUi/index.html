@@ -78,6 +78,7 @@
         <div id="skillSourcesUnavailable" class="muted small" hidden>The host does not provide skill source management.</div>
         <div class="muted small">Changes are applied immediately and take effect with the next message. Referenced files are read on demand (never copied).</div>
         <div id="skillSourceList" class="source-list"></div>
+        <div id="skillLevelWarning" class="warning small" hidden></div>
         <div class="capabilities-title">Add source</div>
         <div class="source-add-row">
           <select id="selSkillSourceKind">
@@ -103,6 +104,8 @@
         <div id="toolSourceList" class="source-list"></div>
         <div id="toolSettingsEditor" class="tool-settings-editor" hidden>
           <div class="capabilities-title">Settings of <span id="toolSettingsTitle"></span></div>
+          <div id="toolAllowListEditor" class="allow-list-editor" hidden></div>
+          <label id="toolSettingsRawToggle" class="source-secure" hidden><input id="chkToolSettingsRaw" type="checkbox"> Edit as JSON</label>
           <textarea id="txtToolSettings" rows="8" spellcheck="false"></textarea>
           <div class="source-add-row">
             <span class="spacer"></span>
@@ -152,30 +155,55 @@
   </div>
 
   <div id="detailsDialog" class="dialog-backdrop" hidden>
-    <div class="dialog">
+    <div class="dialog wide">
       <h2>Chat details</h2>
-      <div id="detailsInfo" class="muted small"></div>
-      <label>LLM provider (this chat)
-        <select id="selDetailsProvider"></select>
-      </label>
-      <div id="detailsProviderHint" class="muted small" hidden>Switching the provider discards the provider-side context. It is rebuilt from the chat history with the next message.</div>
-      <label>Model (this chat)
-        <input id="txtDetailsModel" type="text" list="lstDetailsModels" placeholder="(default)">
-        <datalist id="lstDetailsModels"></datalist>
-      </label>
-      <div id="detailsSkillSourcesSection" hidden>
-        <div class="capabilities-title">Skill sources (this chat)</div>
-        <div class="muted small">Levels can only be raised within a chat (to lower them, change the global default).</div>
-        <div id="detailsSkillSources" class="source-list"></div>
+      <div class="tab-bar" role="tablist">
+        <button type="button" class="tab active" data-tab="detailsTabGeneral">General</button>
+        <button type="button" class="tab" data-tab="detailsTabSecurity">Security</button>
+        <button type="button" class="tab" data-tab="detailsTabAudit">Audit log <span id="detailsAuditState" class="muted"></span></button>
       </div>
-      <div id="detailsToolSourcesSection" hidden>
-        <div class="capabilities-title">Tool sources (this chat)</div>
-        <div id="detailsToolSources" class="source-list"></div>
+
+      <div id="detailsTabGeneral" class="tab-page">
+        <div id="detailsInfo" class="muted small"></div>
+        <label>Chat name
+          <input id="txtDetailsName" type="text">
+        </label>
+        <label>LLM provider (this chat)
+          <select id="selDetailsProvider"></select>
+        </label>
+        <div id="detailsProviderHint" class="muted small" hidden>Switching the provider discards the provider-side context. It is rebuilt from the chat history with the next message.</div>
+        <label>Model (this chat)
+          <input id="txtDetailsModel" type="text" list="lstDetailsModels" placeholder="(default)">
+          <datalist id="lstDetailsModels"></datalist>
+        </label>
+        <div class="user-instructions-row">
+          <span>Context <span id="detailsContextState" class="muted"></span></span>
+          <button id="btnDetailsCompress" type="button" title="Let the model compress the chat context into a new baseline">Compress now</button>
+        </div>
       </div>
-      <div id="detailsAuditSection" hidden>
-        <div class="capabilities-title">Tool calls (audit log)</div>
+
+      <div id="detailsTabSecurity" class="tab-page" hidden>
+        <div id="detailsSecurityEmpty" class="muted small" hidden>The host does not provide skill or tool sources.</div>
+        <div id="detailsSkillSourcesSection" hidden>
+          <div class="capabilities-title">Skill sources (this chat)</div>
+          <div class="muted small">Levels can only be raised within a chat (to lower them, change the global default).</div>
+          <div id="detailsSkillSources" class="source-list"></div>
+        </div>
+        <div id="detailsToolSourcesSection" hidden>
+          <div class="capabilities-title">Tool sources (this chat)</div>
+          <div id="detailsToolSources" class="source-list"></div>
+        </div>
+        <div id="detailsLevelWarning" class="warning small" hidden></div>
+      </div>
+
+      <div id="detailsTabAudit" class="tab-page" hidden>
+        <div class="source-add-row">
+          <select id="selDetailsAuditFilter"></select>
+        </div>
+        <div id="detailsAuditEmpty" class="muted small" hidden>(no tool calls)</div>
         <div id="detailsAuditLog" class="audit-log"></div>
       </div>
+
       <div class="dialog-actions">
         <span class="spacer"></span>
         <button id="btnDetailsCancel">Cancel</button>

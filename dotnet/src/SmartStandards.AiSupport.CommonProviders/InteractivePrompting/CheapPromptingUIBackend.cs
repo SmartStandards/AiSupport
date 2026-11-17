@@ -577,6 +577,13 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       HarnessScope scope = new HarnessScope(session.SkillLevelOverrides, toolLevelOverrides, approver, onToolExecuted);
 
+      //progress of running tools (PRG-3) is forwarded to the progress callback of the turn
+      if (onProgress != null) {
+        scope.ToolProgressReporter = (statusText, current, max) => {
+          onProgress.Invoke(statusText, current, max);
+        };
+      }
+
       //guard requests (second line of defense) use the same pause mechanics as tool approvals
       scope.InteractionRequester = (request) => {
 

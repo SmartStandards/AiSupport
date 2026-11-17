@@ -513,6 +513,63 @@ body.dark .tab-bar .tab.active {
   font-weight: 600;
 }
 
+/* compact source rows (skills/tools) */
+.source-row {
+  gap: 6px;
+  min-height: 24px;
+}
+
+.source-row .source-meta {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.source-row select.level-select,
+.allow-list-row select.level-select {
+  width: auto;
+  max-width: 150px;
+  padding: 1px 4px;
+  font-size: 12px;
+  margin: 0;
+}
+
+.source-row button:not(.small-button) {
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.audit-icon {
+  color: #8c959f;
+}
+
+.audit-icon.used {
+  color: #0969da;
+  font-weight: 600;
+}
+
+.warning {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border: 1px solid #d4a72c;
+  border-radius: 4px;
+  background: rgba(212, 167, 44, 0.12);
+}
+
+.allow-list {
+  margin-bottom: 8px;
+}
+
+.allow-list-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.allow-list-row input {
+  padding: 2px 6px;
+}
+
 /* ---------------------------------------------------------------------------
    Dark mode (activated via 'body.dark', see setting 'UiTheme' / tool 'ui_set_theme')
    --------------------------------------------------------------------------- */

@@ -115,6 +115,21 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       }
     }
 
+    private Action<string, int, int> _ToolProgressReporter;
+
+    /// <summary>
+    /// Optional sink for progress reports of running tools (statusText, current, max), see
+    /// 'HarnessToolContext.ReportProgress' (PRG-3). Without reporter, progress reports are ignored.
+    /// </summary>
+    public Action<string, int, int> ToolProgressReporter {
+      get {
+        return _ToolProgressReporter;
+      }
+      set {
+        _ToolProgressReporter = value;
+      }
+    }
+
   }
 
   /// <summary>

@@ -144,6 +144,13 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       JsonSerializer serializer = JsonSerializer.CreateDefault();
 
       for (int i = 0; i < parameters.Length; i++) {
+
+        if (IsProgressParameter(parameters[i])) {
+          //PRG-3: progress callbacks of the contract (UJMW long-running) are forwarded to the harness
+          values[i] = CreateProgressForwarder();
+          continue;
+        }
+
         values[i] = ConvertArgument(parameters[i], arguments, serializer);
       }
 
@@ -172,6 +179,37 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       }
 
       return JsonConvert.SerializeObject(result, Formatting.None);
+    }
+
+    /// <summary>
+    /// True for progress callback parameters ('Action&lt;string, int, int&gt;'), which are not exposed to the model
+    /// but injected by the harness (PRG-3).
+    /// </summary>
+    private static bool IsProgressParameter(ParameterInfo parameter) {
+
+      return parameter.ParameterType == typeof(Action<string, int, int>);
+    }
+
+    /// <summary>
+    /// Creates a progress callback which forwards to the ambient tool context of the current call.
+    /// </summary>
+    private static Action<string, int, int> CreateProgressForwarder() {
+
+      HarnessToolContext context = HarnessToolContext.Current;
+
+      return (statusText, current, max) => {
+
+        //the callback may be invoked on another thread: restore the context of the call for it
+        HarnessToolContext previous = HarnessToolContext.Enter(context);
+
+        try {
+          HarnessToolContext.ReportProgress(statusText, current, max);
+        }
+        finally {
+          HarnessToolContext.Restore(previous);
+        }
+
+      };
     }
 
     private static object ConvertArgument(ParameterInfo parameter, JObject arguments, JsonSerializer serializer) {
@@ -243,6 +281,10 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       JArray required = new JArray();
 
       foreach (ParameterInfo parameter in method.GetParameters()) {
+
+        if (IsProgressParameter(parameter)) {
+          continue;
+        }
 
         JObject parameterSchema = GenerateSchema(parameter.ParameterType, new HashSet<Type>());
 

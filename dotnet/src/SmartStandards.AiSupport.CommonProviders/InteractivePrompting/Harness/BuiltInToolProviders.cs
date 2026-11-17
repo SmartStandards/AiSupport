@@ -536,12 +536,13 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       }
 
       StringBuilder output = new StringBuilder();
+      HarnessToolContext toolContext = HarnessToolContext.Current;
 
       using (Process process = new Process()) {
 
         process.StartInfo = startInfo;
-        process.OutputDataReceived += (sender, e) => { AppendLine(output, e.Data); };
-        process.ErrorDataReceived += (sender, e) => { AppendLine(output, e.Data); };
+        process.OutputDataReceived += (sender, e) => { AppendLine(output, e.Data, toolContext); };
+        process.ErrorDataReceived += (sender, e) => { AppendLine(output, e.Data, toolContext); };
 
         process.Start();
         process.BeginOutputReadLine();
@@ -571,7 +572,7 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
 
     }
 
-    private static void AppendLine(StringBuilder output, string line) {
+    private static void AppendLine(StringBuilder output, string line, HarnessToolContext toolContext) {
 
       if (line == null) {
         return;
@@ -579,6 +580,21 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
 
       lock (output) {
         output.AppendLine(line);
+      }
+
+      //PRG-3: the last non-empty output line is reported as progress of the tool
+      //(the output events are raised on another thread, so the context of the call is restored for it)
+      if (toolContext != null && line.Trim().Length > 0) {
+
+        HarnessToolContext previous = HarnessToolContext.Enter(toolContext);
+
+        try {
+          HarnessToolContext.ReportProgress(line.Trim(), 0, 0);
+        }
+        finally {
+          HarnessToolContext.Restore(previous);
+        }
+
       }
 
     }
