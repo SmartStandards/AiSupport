@@ -12,6 +12,15 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.8
+released **2026-11-17**, including:
+ - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
+ - Iteration 3 preparred
+ - harness with guards ready
+ - harness
+
+
+
 ## v 0.1.7
 released **2026-11-16**, including:
  - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
