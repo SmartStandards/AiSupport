@@ -100,23 +100,38 @@ namespace AI.SmartStandards {
         endpoints.MapGet("/" + routePrefix + fileName, handler);
 
         if (string.Equals(fileName, "index.html", StringComparison.OrdinalIgnoreCase)) {
-          endpoints.MapGet("/" + routePrefix, handler);
+          MapMountPathEndpoint(endpoints, routePrefix, handler);
         }
 
       }
 
-      if (routePrefix.Length > 0) {
+    }
 
-        //relative URLs within the UI require the trailing slash
-        string mountWithoutSlash = "/" + routePrefix.TrimEnd('/');
-        string mountWithSlash = "/" + routePrefix;
+    /// <summary>
+    /// Maps the mount path itself to the index page. ASP.NET Core routing ignores trailing slashes, so '/chat' and
+    /// '/chat/' share ONE endpoint: requests without the trailing slash are redirected (relative URLs within the UI
+    /// require it), requests with the trailing slash are served directly.
+    /// </summary>
+    private static void MapMountPathEndpoint(IEndpointRouteBuilder endpoints, string routePrefix, RequestDelegate indexHandler) {
 
-        endpoints.MapGet(mountWithoutSlash, (HttpContext context) => {
-          context.Response.Redirect(mountWithSlash);
-          return Task.CompletedTask;
-        });
-
+      if (routePrefix.Length == 0) {
+        endpoints.MapGet("/", indexHandler);
+        return;
       }
+
+      string mountWithSlash = "/" + routePrefix;
+
+      endpoints.MapGet(mountWithSlash, (HttpContext context) => {
+
+        string requestPath = context.Request.PathBase.Value + context.Request.Path.Value;
+
+        if (!requestPath.EndsWith("/", StringComparison.Ordinal)) {
+          context.Response.Redirect(requestPath + "/" + context.Request.QueryString.Value);
+          return Task.CompletedTask;
+        }
+
+        return indexHandler.Invoke(context);
+      });
 
     }
 

@@ -161,6 +161,12 @@ namespace AI.SmartStandards.LowLevelPrompting {
       }
 
       string prompt = BuildPrompt(newMessages);
+
+      if (requestedSessionId == null) {
+        // a new session has just received the complete context history: repeat the tool rules explicitly at its end
+        prompt = AppendWrapperToolReminder(prompt);
+      }
+
       PooledSession pooled;
 
       if (onProgress != null) {
@@ -225,6 +231,14 @@ namespace AI.SmartStandards.LowLevelPrompting {
         }
 
         throw new InvalidOperationException("The GitHub Copilot CLI (ACP) terminated unexpectedly: " + ex.Message, ex);
+      }
+      catch (GitHubCopilotTurnStoppedException) {
+
+        // the process and the session are still healthy - only this turn produced no answer
+        this.ReleaseSession(sessionId, pooled);
+        contextStore = SessionContextStorePrefix + sessionId;
+
+        throw;
       }
       catch (Exception) {
         this.DiscardSession(sessionId, pooled);
@@ -295,6 +309,32 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       return this.AddToPool(connection);
     }
+
+    /// <summary>
+    /// Appends the explicit instruction to prefer the tools of the wrapper (harness) to a prompt which starts a new
+    /// session, so that it is the LAST thing Copilot reads after the streamed context history.
+    /// </summary>
+    public static string AppendWrapperToolReminder(string prompt) {
+
+      StringBuilder sb = new StringBuilder();
+      sb.AppendLine(prompt);
+      sb.AppendLine();
+      sb.AppendLine(WrapperToolReminder);
+
+      return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Explicit instruction (sent at the start of every new session after the context history) that the tools of the
+    /// wrapper (harness) have to be preferred over the native tools of Copilot.
+    /// </summary>
+    public const string WrapperToolReminder = (
+      "[IMPORTANT HOST INSTRUCTION]\n" +
+      "ALWAYS PREFER THE TOOLS OF THE WRAPPER (the harness tools described in the context above). " +
+      "Invoke them ONLY by writing a <tool_call> block as plain TEXT into your answer and then wait for the <tool_response>. " +
+      "Your own native tools (shell, file access, web fetch, ...) are NOT permitted in this environment - every attempt " +
+      "to use them is refused and ends your turn without an answer. If no wrapper tool fits, answer with text only."
+    );
 
     private PooledSession StartNewSession() {
 

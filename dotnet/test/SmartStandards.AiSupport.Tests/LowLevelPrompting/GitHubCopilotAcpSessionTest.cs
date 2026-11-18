@@ -139,6 +139,44 @@ namespace AI.SmartStandards.LowLevelPrompting {
     }
 
     [TestMethod()]
+    public void AcpSession_EmptyTurnAfterRefusedNativeTool_ThrowsCleanStopException() {
+
+      using (FakeAgent agent = new FakeAgent(true)) {
+
+        GitHubCopilotAcpSession session = agent.CreateClient();
+        session.Initialize(_Timeout);
+        session.CreateSession("C:\\temp", _Timeout);
+
+        agent.EmptyTurnOnNextPrompt = true;
+
+        GitHubCopilotTurnStoppedException ex = Assert.ThrowsException<GitHubCopilotTurnStoppedException>(
+          () => session.Prompt("Use a tool", _Timeout)
+        );
+
+        Assert.IsTrue(ex.Message.StartsWith(GitHubCopilotTurnStoppedException.MessagePrefix));
+        Assert.AreEqual("end_turn", ex.StopReason);
+        CollectionAssert.AreEqual(new string[] { "Run shell" }, ex.RefusedNativeTools);
+
+        //the session stays usable
+        Assert.AreEqual("Next back", session.Prompt("Next", _Timeout));
+
+        session.Dispose();
+
+      }
+
+    }
+
+    [TestMethod()]
+    public void Copilot_AppendWrapperToolReminder_IsLastPartOfThePrompt() {
+
+      string prompt = GitHubCopilotCliConnector.AppendWrapperToolReminder("history");
+
+      Assert.IsTrue(prompt.StartsWith("history"));
+      Assert.IsTrue(prompt.EndsWith(GitHubCopilotCliConnector.WrapperToolReminder.TrimEnd()));
+
+    }
+
+    [TestMethod()]
     public void AcpSession_GetLastNonEmptyLine() {
 
       Assert.AreEqual("second", GitHubCopilotAcpSession.GetLastNonEmptyLine("first\nsecond\n\n"));
@@ -240,6 +278,17 @@ namespace AI.SmartStandards.LowLevelPrompting {
       private readonly List<JObject> _ReceivedMessages = new List<JObject>();
 
       private volatile bool _DieOnNextPrompt = false;
+
+      private volatile bool _EmptyTurnOnNextPrompt = false;
+
+      public bool EmptyTurnOnNextPrompt {
+        get {
+          return _EmptyTurnOnNextPrompt;
+        }
+        set {
+          _EmptyTurnOnNextPrompt = value;
+        }
+      }
 
       public FakeAgent(bool supportsLoad) {
 
@@ -351,6 +400,24 @@ namespace AI.SmartStandards.LowLevelPrompting {
           }
 
           string text = (string)message["params"]["prompt"][0]["text"];
+
+          if (_EmptyTurnOnNextPrompt) {
+
+            _EmptyTurnOnNextPrompt = false;
+
+            JObject toolCall = new JObject(new JProperty("toolCallId", "tc-1"), new JProperty("title", "Run shell"), new JProperty("kind", "execute"));
+
+            this.Send(new JObject(
+              new JProperty("jsonrpc", "2.0"), new JProperty("id", "perm-2"), new JProperty("method", "session/request_permission"),
+              new JProperty("params", new JObject(new JProperty("sessionId", "sess-1"), new JProperty("toolCall", toolCall)))
+            ));
+
+            //give the client the chance to answer the permission request before the turn ends
+            Thread.Sleep(200);
+
+            this.Respond(id, new JObject(new JProperty("stopReason", "end_turn")));
+            return;
+          }
 
           this.Send(new JObject(
             new JProperty("jsonrpc", "2.0"), new JProperty("id", "perm-1"), new JProperty("method", "session/request_permission"),

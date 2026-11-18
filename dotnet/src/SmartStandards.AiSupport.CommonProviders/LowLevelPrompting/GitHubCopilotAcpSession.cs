@@ -60,6 +60,8 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
     private DateTime _LastProgressUtc = DateTime.MinValue;
 
+    private List<string> _CurrentRefusedTools = null;
+
     private static readonly TimeSpan _ProgressThrottle = TimeSpan.FromMilliseconds(250);
 
     private bool _SupportsLoadSession = false;
@@ -253,10 +255,12 @@ namespace AI.SmartStandards.LowLevelPrompting {
       lock (_TurnSyncRoot) {
 
         StringBuilder answer = new StringBuilder();
+        List<string> refusedTools = new List<string>();
 
         lock (_AnswerSyncRoot) {
           _CurrentAnswer = answer;
           _CurrentProgress = onProgress;
+          _CurrentRefusedTools = refusedTools;
           _LastProgressUtc = DateTime.MinValue;
         }
 
@@ -303,9 +307,11 @@ namespace AI.SmartStandards.LowLevelPrompting {
           }
 
           string answerText;
+          string[] refusedToolTitles;
 
           lock (_AnswerSyncRoot) {
             answerText = answer.ToString().Trim();
+            refusedToolTitles = refusedTools.ToArray();
           }
 
           if (string.Equals(stopReason, "cancelled", StringComparison.OrdinalIgnoreCase)) {
@@ -318,7 +324,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
               return "(The model refused to answer.)";
             }
 
-            throw new InvalidOperationException($"The ACP agent returned an empty answer (stop reason: '{stopReason}').");
+            throw new GitHubCopilotTurnStoppedException(stopReason, refusedToolTitles);
           }
 
           return answerText;
@@ -328,6 +334,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
           lock (_AnswerSyncRoot) {
             _CurrentAnswer = null;
             _CurrentProgress = null;
+            _CurrentRefusedTools = null;
           }
 
         }
@@ -540,7 +547,7 @@ namespace AI.SmartStandards.LowLevelPrompting {
         return;
       }
 
-      this.HandleAgentRequest(idToken, method);
+      this.HandleAgentRequest(idToken, method, parameters);
 
     }
 
@@ -724,13 +731,24 @@ namespace AI.SmartStandards.LowLevelPrompting {
       return null;
     }
 
-    private void HandleAgentRequest(JToken idToken, string method) {
+    private void HandleAgentRequest(JToken idToken, string method, JObject parameters) {
 
       JObject response = new JObject();
       response["jsonrpc"] = "2.0";
       response["id"] = idToken.DeepClone();
 
       if (method == "session/request_permission") {
+
+        // remember the refused native tool, so that an empty turn can be explained to the user
+        string toolTitle = GetPermissionToolTitle(parameters);
+
+        lock (_AnswerSyncRoot) {
+
+          if (_CurrentRefusedTools != null) {
+            _CurrentRefusedTools.Add(toolTitle);
+          }
+
+        }
 
         // pure chat mode: the inner harness must never use its own tools
         JObject outcome = new JObject();
@@ -752,6 +770,36 @@ namespace AI.SmartStandards.LowLevelPrompting {
 
       this.TryWriteMessage(response);
 
+    }
+
+    /// <summary>
+    /// Returns the title (or kind) of the native tool from a 'session/request_permission' request.
+    /// </summary>
+    private static string GetPermissionToolTitle(JObject parameters) {
+
+      if (parameters != null) {
+
+        JObject toolCall = parameters["toolCall"] as JObject;
+
+        if (toolCall != null) {
+
+          string title = (string)toolCall["title"];
+
+          if (!string.IsNullOrWhiteSpace(title)) {
+            return title.Trim();
+          }
+
+          string kind = (string)toolCall["kind"];
+
+          if (!string.IsNullOrWhiteSpace(kind)) {
+            return kind.Trim();
+          }
+
+        }
+
+      }
+
+      return "unknown tool";
     }
 
     private void Close(string reason) {
@@ -831,6 +879,67 @@ namespace AI.SmartStandards.LowLevelPrompting {
       get {
         return (_Code == GitHubCopilotAcpSession.AuthRequiredErrorCode || GitHubCopilotCliConnector.IsAuthenticationError(this.Message));
       }
+    }
+
+  }
+
+  /// <summary>
+  /// Copilot ended a turn without any answer text (typically because it tried to use one of its native tools,
+  /// which are always refused in pure chat mode). The message always starts with 'Copilot stopped this turn!'.
+  /// </summary>
+  public class GitHubCopilotTurnStoppedException : InvalidOperationException {
+
+    public const string MessagePrefix = "Copilot stopped this turn!";
+
+    private readonly string _StopReason;
+
+    private readonly string[] _RefusedNativeTools;
+
+    public GitHubCopilotTurnStoppedException(string stopReason, string[] refusedNativeTools) : base(BuildMessage(stopReason, refusedNativeTools)) {
+
+      _StopReason = stopReason;
+
+      if (refusedNativeTools == null) {
+        refusedNativeTools = new string[0];
+      }
+
+      _RefusedNativeTools = refusedNativeTools;
+
+    }
+
+    /// <summary>
+    /// The stop reason reported by the ACP agent (for example 'end_turn').
+    /// </summary>
+    public string StopReason {
+      get {
+        return _StopReason;
+      }
+    }
+
+    /// <summary>
+    /// Titles of the native Copilot tools which were refused during the turn.
+    /// </summary>
+    public string[] RefusedNativeTools {
+      get {
+        return _RefusedNativeTools;
+      }
+    }
+
+    /// <summary>
+    /// Builds the user-facing message.
+    /// </summary>
+    private static string BuildMessage(string stopReason, string[] refusedNativeTools) {
+
+      if (refusedNativeTools != null && refusedNativeTools.Length > 0) {
+        return MessagePrefix + " It tried to use its own native tool(s) (" + string.Join(", ", refusedNativeTools) + "), " +
+          "which are not permitted here. Only the tools of the chat wrapper can be used - please repeat your request.";
+      }
+
+      if (string.IsNullOrWhiteSpace(stopReason)) {
+        stopReason = "unknown";
+      }
+
+      return MessagePrefix + " No answer was returned (stop reason: '" + stopReason + "') - please repeat your request.";
     }
 
   }

@@ -36,6 +36,18 @@
   // UJMW transport
   // ---------------------------------------------------------------------------
 
+  // UJMW wraps server-side exceptions as "BL-Method '<name>' has thrown an Exception: <message>" -
+  // only the original message is relevant for the user
+  const ujmwFaultPrefixPattern = /^\s*BL-Method '[^']*' has thrown an Exception:\s*/i;
+
+  function stripUjmwFaultPrefix(message) {
+    let text = String(message);
+    while (ujmwFaultPrefixPattern.test(text)) {
+      text = text.replace(ujmwFaultPrefixPattern, "");
+    }
+    return text;
+  }
+
   async function sendRaw(method, url, body) {
 
     const init = { method: method, headers: {} };
@@ -58,7 +70,7 @@
     }
 
     if (json && json.fault) {
-      throw new Error(json.fault);
+      throw new Error(stripUjmwFaultPrefix(json.fault));
     }
 
     if (!response.ok) {
@@ -265,7 +277,7 @@
   }
 
   function showError(error) {
-    const message = (error && error.message) ? error.message : String(error);
+    const message = stripUjmwFaultPrefix((error && error.message) ? error.message : String(error));
     appendMessage("error", "Error", message);
   }
 

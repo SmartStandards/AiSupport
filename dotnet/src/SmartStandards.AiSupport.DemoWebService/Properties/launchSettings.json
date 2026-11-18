@@ -3,7 +3,7 @@
     "IIS Express": {
       "commandName": "IISExpress",
       "launchBrowser": true,
-      "launchUrl": "docs",
+      "launchUrl": "chat",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
