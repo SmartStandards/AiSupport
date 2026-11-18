@@ -12,6 +12,16 @@ This files contains a version history including all changes relevant for semanti
 
 
 
+## v 0.1.9
+released **2026-11-18**, including:
+ - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
+ - Optimized Harness UI
+ - Harness 2 SecurityRoles
+ - better statusview for loaded tools skills
+ - asp-chat works
+
+
+
 ## v 0.1.8
 released **2026-11-17**, including:
  - Merge branch 'master' of https://github.com/SmartStandards/AiSupport
