@@ -28,6 +28,40 @@ namespace AI.SmartStandards.ChatClient {
 
       this.Load += this.OnFormLoad;
 
+      this.UpdateTitle();
+      Program.ProfileManager.ActiveProfileChanged += this.OnActiveProfileChanged;
+
+    }
+
+    /// <summary>
+    /// Shows the active profile within the window title (PRF-10).
+    /// </summary>
+    private void UpdateTitle() {
+
+      this.Text = "Prompting UI - " + Program.ProfileManager.ActiveProfileDisplayName;
+
+    }
+
+    private void OnActiveProfileChanged(object sender, EventArgs e) {
+
+      //profile switches are triggered by UJMW calls (non-UI thread)
+      if (this.IsHandleCreated && this.InvokeRequired) {
+        this.BeginInvoke(new Action(this.UpdateTitle));
+      }
+      else {
+        this.UpdateTitle();
+      }
+
+    }
+
+    protected override void Dispose(bool disposing) {
+
+      if (disposing) {
+        Program.ProfileManager.ActiveProfileChanged -= this.OnActiveProfileChanged;
+      }
+
+      base.Dispose(disposing);
+
     }
 
     /// <summary>

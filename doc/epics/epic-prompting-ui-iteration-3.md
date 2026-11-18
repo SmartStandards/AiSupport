@@ -8,6 +8,9 @@
 > Order of work: **part A (harness profiles in the client) is implemented first.** Part B (server-side catalogs,
 > multi-hosting, authorization) is discussed regarding feasibility afterwards; its sections are proposals for that
 > discussion. Part C (tool DLLs referenced in place) is independent and can be done together with part A.
+>
+> Implementation status: ENV, CLS, ROL, **part A (PRF-1..10, PRF-12; PRF-11 for the profile scope)** and
+> **part C (TDL-1..4)** are implemented (see 3.6 and 3.7). The user scope of PRF-11 (AUTH-4) and part B are still open.
 
 ## 1. Abstract and motivation
 
@@ -270,6 +273,48 @@ Proposal:
 	other registered directories; first match by simple name and compatible version wins.
 - Tool DLLs are **loaded from their path** (decided, Q6). The file lock while the client runs is accepted; loading from
 	bytes is not used, so `Assembly.Location` stays valid (risk R4).
+
+### 3.6 Implementation status of part A (as built)
+
+| Artifact | Role |
+|---|---|
+| `IPromptingProfileService`, `HarnessProfileInfo` (shared) | Contract as in 3.2, plus `HarnessProfileInfo.IsDefault`. |
+| `FileBasedPromptingProfileService` | `profiles.json` persistence, default profile = root directory (PRF-9), copy incl. protected credentials and `ToolAssemblies` but **without chats** (PRF-3), unique names, admin-only modifications, `FindProfile(idOrName)`. |
+| `HarnessProfileRuntime` | Settings, extensions, session store (`<profileDir>\Chats`), toolbox and backend of one profile. |
+| `HarnessProfileManager` | Owns the active runtime, switches it (PRF-4), keeps retired runtimes for chats of running turns, routes the theme to the default profile, startup override which is **not** remembered and fails for unknown profiles (PRF-8). |
+| `ActiveProfileUIBackend` / `ActiveProfileSettingsService` / `ActiveProfileExtensionService` | DI-facing forwarders, so the UJMW controllers never have to be re-registered. |
+| `ChatUiSetupExtensions` | Publishes `chatApi/profiles` only if the host registered `IPromptingProfileService` (CMP-3). |
+| Chat UI | "Profiles" tab (last position, admin only), active profile in sidebar/settings header/document title (PRF-10), reload after switch, "ask at start" checkbox, provider combo box for new chats (PRF-12). |
+| Desktop client | `--profile <id|name>` (error for unknown names), start dialog `FormProfileSelection` (remembered, PRF-7), window title with the profile name. |
+
+Deviation from 3.1: chats are isolated by profile through the **separate `Chats` directory per profile** instead of a
+`ChatSession.ProfileId` filter; old chats stay in the root directory and therefore belong to the default profile. The
+`OwnerId` filter of the user scope (AUTH-4) is part of part B.
+
+### 3.7 Implementation status of part C (as built)
+
+- `IPromptingExtensionService.AddToolAssemblyReference(fullPath)` references a DLL in place and returns its interfaces;
+	the `AssemblyId` of a referenced DLL is its **full path**, so `RegisterContractInterface` accepts uploaded ids
+	(TDL-4, copies below `ToolAssemblies` stay valid) and paths alike. `tools.json` needs no schema change.
+- `BrowseFileSystemFiltered(path, filePattern)` (`*.md` / `*.dll`) feeds the browse dialog of the UI ("Browse..." +
+	"Reference"); "Upload" remains available for remote servers.
+- `ToolAssemblyResolver` (process-wide) is attached to every tool `AssemblyLoadContext` and once to
+	`AppDomain.CurrentDomain.AssemblyResolve` (TDL-2); a candidate must have an equal or higher version.
+- A missing referenced DLL throws `FileNotFoundException` in `CreateTools`, which flags the source as broken while the
+	registration is kept (TDL-3).
+
+### 3.8 Implementation status of part B (as built, first slice of SRV-1)
+
+- `IHarnessToolProviderFactory { SourceId; CreateProvider(profileId) }` (CommonProviders) is the catalog entry of a
+	host-contributed tool source; `DelegateHarnessToolProviderFactory` wraps a function.
+- `HarnessProfileManager(profileStore, startupProfileId, toolProviderFactories, configureRuntime)` passes the catalog to
+	every `HarnessProfileRuntime`. Each runtime asks each factory for its **own** provider (profile-specific closures and
+	settings) and registers it as built-in tool source (fixed, level/settings configurable per profile). A provider whose
+	`ProviderId` differs from the factory `SourceId` is rejected. The previous constructors remain available.
+- The factories are passed explicitly (no `IServiceProvider` dependency in CommonProviders yet); a host resolves them
+	from its container itself (`serviceProvider.GetServices<IHarnessToolProviderFactory>()`).
+- Still open: skill source factories, the MCP facade provider (SRV-2, needs an in-process invocation API with a
+	defined identity for background turns) and the default registration of the own MCP endpoints (SRV-3).
 
 ## 4. Design proposals for the discussion (part B)
 

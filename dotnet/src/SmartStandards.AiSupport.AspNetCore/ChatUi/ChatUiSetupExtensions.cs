@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Web.UJMW;
@@ -35,6 +36,12 @@ namespace AI.SmartStandards {
     /// </summary>
     public const string ExtensionsRouteSegment = "chatApi/extensions";
 
+    /// <summary>
+    /// Route segment (relative to the mount path) of the UJMW endpoint for 'IPromptingProfileService'
+    /// (only published if the host has registered a profile service before calling 'AddChatUi').
+    /// </summary>
+    public const string ProfilesRouteSegment = "chatApi/profiles";
+
     private const string _ResourcePrefix = "AiSupport.ChatUi.";
 
     /// <summary>
@@ -47,6 +54,9 @@ namespace AI.SmartStandards {
       }
 
       string routePrefix = NormalizeRoutePrefix(mountPath);
+
+      //profiles are optional: hosts without profile service keep the previous behavior (the UI hides the tab)
+      bool profilesAvailable = services.Any((descriptor) => descriptor.ServiceType == typeof(IPromptingProfileService));
 
       services.AddDynamicUjmwControllers((registrar) => {
 
@@ -70,6 +80,15 @@ namespace AI.SmartStandards {
           options.EnableRequestSidechannel = false;
           options.EnableResponseSidechannel = false;
         });
+
+        if (profilesAvailable) {
+          registrar.AddControllerFor<IPromptingProfileService>((options) => {
+            options.ControllerRoute = routePrefix + ProfilesRouteSegment;
+            options.ControllerTitle = "Chat UI Profiles";
+            options.EnableRequestSidechannel = false;
+            options.EnableResponseSidechannel = false;
+          });
+        }
 
       });
 

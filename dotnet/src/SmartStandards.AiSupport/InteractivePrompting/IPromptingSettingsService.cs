@@ -302,6 +302,20 @@ namespace AI.SmartStandards.InteractivePrompting {
     private bool _HasApiKey;
     private string _ApiKeyHint;
     private bool _IsReady;
+    private int _UserLevel;
+
+    /// <summary>
+    /// Level of the current user (see 'PromptingUserLevels'). Clients must treat unknown values (for example 0 from
+    /// older servers) as 'Admin'. The UI only reflects the level, the restrictions are enforced by the services.
+    /// </summary>
+    public int UserLevel {
+      get {
+        return _UserLevel;
+      }
+      set {
+        _UserLevel = value;
+      }
+    }
 
     public string ProviderName {
       get {

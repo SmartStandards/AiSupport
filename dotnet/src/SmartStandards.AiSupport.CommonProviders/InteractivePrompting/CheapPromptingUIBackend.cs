@@ -55,7 +55,24 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     private readonly Dictionary<string, PendingApprovalEntry> _PendingApprovals = new Dictionary<string, PendingApprovalEntry>();
 
+    private readonly Dictionary<string, int> _RunningTurns = new Dictionary<string, int>(StringComparer.Ordinal);
+
     private TimeSpan _ToolApprovalTimeout = TimeSpan.FromMinutes(5);
+
+    private Func<int> _UserLevelGetter;
+
+    /// <summary>
+    /// Optional resolver of the level of the current user (see 'PromptingUserLevels', ROL-1..13).
+    /// Without resolver, the current user is 'Admin' (no restriction).
+    /// </summary>
+    public Func<int> UserLevelGetter {
+      get {
+        return _UserLevelGetter;
+      }
+      set {
+        _UserLevelGetter = value;
+      }
+    }
 
     /// <summary>
     /// Maximum time to wait for the confirmation of a tool call by the user (default: 5 minutes).
@@ -154,11 +171,30 @@ namespace AI.SmartStandards.InteractivePrompting {
     #region " Chat management "
 
     /// <summary>
+    /// ROL-11: sources which the admin has set to 'Hidden' (global default) can only be enabled per chat by admins.
+    /// </summary>
+    private void DemandNotHiddenByAdmin(HarnessSource source, string operationName) {
+
+      bool hiddenByAdmin = string.Equals(source.DefaultLevel, ToolSourceLevels.Hidden, StringComparison.OrdinalIgnoreCase);
+
+      if (hiddenByAdmin) {
+        PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, operationName);
+      }
+
+    }
+
+    /// <summary>
     /// Returns all known chats, ordered by their last action (most recent first).
     /// </summary>
     public ChatNameAndId[] GetRecentChats() {
 
-      return _Store.GetSessionHeaders().OrderByDescending((h) => h.LastAction).ToArray();
+      ChatNameAndId[] headers = _Store.GetSessionHeaders().OrderByDescending((h) => h.LastAction).ToArray();
+
+      foreach (ChatNameAndId header in headers) {
+        header.IsInteracting = this.IsChatInteracting(header.Id);
+      }
+
+      return headers;
     }
 
     /// <summary>
@@ -264,6 +300,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void RaiseChatSkillSourceLevel(string chatId, string sourceId, string level) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.PowerUser, nameof(RaiseChatSkillSourceLevel));
+
       HarnessSource source = this.GetSourceOrThrow(sourceId, false);
 
       if (HarnessToolbox.GetSkillLevelRank(level) < 0) {
@@ -273,6 +311,8 @@ namespace AI.SmartStandards.InteractivePrompting {
       if (source.IsFixed) {
         throw new InvalidOperationException($"The level of the skill source '{source.SourceId}' cannot be changed.");
       }
+
+      this.DemandNotHiddenByAdmin(source, nameof(RaiseChatSkillSourceLevel));
 
       lock (_SyncRoot) {
 
@@ -301,6 +341,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void SetChatToolSourceLevel(string chatId, string sourceId, string level) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.PowerUser, nameof(SetChatToolSourceLevel));
+
       HarnessSource source = this.GetSourceOrThrow(sourceId, true);
 
       if (HarnessToolbox.GetToolLevelRank(level) < 0) {
@@ -309,6 +351,10 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       if (source.IsFixed) {
         throw new InvalidOperationException($"The level of the tool source '{source.SourceId}' cannot be changed.");
+      }
+
+      if (HarnessToolbox.GetToolLevelRank(level) > HarnessToolbox.GetToolLevelRank(ToolSourceLevels.Hidden)) {
+        this.DemandNotHiddenByAdmin(source, nameof(SetChatToolSourceLevel));
       }
 
       lock (_SyncRoot) {
@@ -349,6 +395,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// and the hidden harness prompt. An empty 'model' selects the model configured for the provider.
     /// </summary>
     public void SetChatProvider(string chatId, string providerName, string model) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.PowerUser, nameof(SetChatProvider));
 
       if (string.IsNullOrWhiteSpace(providerName)) {
         throw new ArgumentNullException(nameof(providerName));
@@ -481,6 +529,16 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
 
       entry.Decision = NormalizeApprovalDecision(decision);
+
+      //AUTH-3/ROL-10: extending a global allow-list is a configuration change (admin only)
+      if (entry.Decision == ToolApprovalDecisions.AllowPermanently) {
+
+        if (PromptingUserLevels.Resolve(_UserLevelGetter) < PromptingUserLevels.Admin) {
+          entry.Decision = ToolApprovalDecisions.AllowOnce;
+        }
+
+      }
+
       entry.Signal.Set();
 
     }
@@ -577,6 +635,7 @@ namespace AI.SmartStandards.InteractivePrompting {
       };
 
       HarnessScope scope = new HarnessScope(session.SkillLevelOverrides, toolLevelOverrides, approver, onToolExecuted);
+      scope.ChatId = chatId;
 
       //progress of running tools (PRG-3) is forwarded to the progress callback of the turn
       if (onProgress != null) {
@@ -946,6 +1005,72 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Progress (statusText, current, max) is reported via the optional callback 'onProgress'.
     /// </summary>
     public ChatMessage SendMessage(
+      CancellationToken cancellationToken, string chatId, string message, Action<string, int, int> onProgress
+    ) {
+
+      this.MarkTurnRunning(chatId, true);
+
+      try {
+        return this.SendMessageCore(cancellationToken, chatId, message, onProgress);
+      }
+      finally {
+        this.MarkTurnRunning(chatId, false);
+      }
+
+    }
+
+    /// <summary>
+    /// Marks (or unmarks) a chat as currently interacting with the AI (CLS-4). Nested turns are counted.
+    /// </summary>
+    private void MarkTurnRunning(string chatId, bool running) {
+
+      if (string.IsNullOrWhiteSpace(chatId)) {
+        return;
+      }
+
+      lock (_RunningTurns) {
+
+        int count;
+        _RunningTurns.TryGetValue(chatId, out count);
+
+        if (running) {
+          count = count + 1;
+        }
+        else {
+          count = count - 1;
+        }
+
+        if (count > 0) {
+          _RunningTurns[chatId] = count;
+        }
+        else {
+          _RunningTurns.Remove(chatId);
+        }
+
+      }
+
+    }
+
+    /// <summary>
+    /// True if a turn of the chat is running and NOT waiting for a user approval/answer (CLS-4).
+    /// </summary>
+    private bool IsChatInteracting(string chatId) {
+
+      lock (_RunningTurns) {
+
+        if (!_RunningTurns.ContainsKey(chatId)) {
+          return false;
+        }
+
+      }
+
+      lock (_PendingApprovals) {
+        return !_PendingApprovals.Values.Any((e) => string.Equals(e.ChatId, chatId, StringComparison.Ordinal));
+      }
+
+    }
+
+    private ChatMessage SendMessageCore(
       CancellationToken cancellationToken, string chatId, string message, Action<string, int, int> onProgress
     ) {
 
@@ -1411,10 +1536,18 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       HarnessScope scope = CreateScope(session);
       List<ChatSourceState> states = new List<ChatSourceState>();
+      bool isAdmin = (PromptingUserLevels.Resolve(_UserLevelGetter) >= PromptingUserLevels.Admin);
 
       foreach (HarnessSource source in _Toolbox.GetSources()) {
 
         if (source.IsToolSource != toolSources) {
+          continue;
+        }
+
+        //ROL-11: sources hidden by the admin are not offered to users and power users
+        bool hiddenByAdmin = string.Equals(source.DefaultLevel, ToolSourceLevels.Hidden, StringComparison.OrdinalIgnoreCase);
+
+        if (hiddenByAdmin && !isAdmin) {
           continue;
         }
 

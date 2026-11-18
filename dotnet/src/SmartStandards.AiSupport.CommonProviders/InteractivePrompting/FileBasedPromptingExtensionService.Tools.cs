@@ -1,4 +1,4 @@
-using AI.SmartStandards.InteractivePrompting.Harness;
+﻿using AI.SmartStandards.InteractivePrompting.Harness;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
@@ -125,6 +125,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public string AddMcpServer(string url, string token) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(AddMcpServer));
+
       Uri uri;
 
       if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out uri)) {
@@ -165,6 +167,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public ContractInterfaceInfo[] UploadToolAssembly(string fileName, string contentBase64) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(UploadToolAssembly));
+
       if (string.IsNullOrWhiteSpace(fileName)) {
         throw new ArgumentNullException(nameof(fileName));
       }
@@ -199,9 +203,59 @@ namespace AI.SmartStandards.InteractivePrompting {
     }
 
     /// <summary>
+    /// TDL-1: references an assembly in place (not copied) and returns its public interfaces. The 'AssemblyId' of the
+    /// returned interfaces is the full path of the assembly.
+    /// </summary>
+    public ContractInterfaceInfo[] AddToolAssemblyReference(string fullPath) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(AddToolAssemblyReference));
+
+      string fileFullName = NormalizeToolAssemblyPath(fullPath);
+
+      if (!File.Exists(fileFullName)) {
+        throw new FileNotFoundException($"The file '{fileFullName}' does not exist or is not accessible.", fileFullName);
+      }
+
+      return ContractInterfaceToolProvider.GetContractInterfaces(fileFullName, fileFullName);
+    }
+
+    private static string NormalizeToolAssemblyPath(string fullPath) {
+
+      if (string.IsNullOrWhiteSpace(fullPath)) {
+        throw new ArgumentNullException(nameof(fullPath));
+      }
+
+      string trimmed = fullPath.Trim().Trim('"');
+
+      if (!Path.IsPathRooted(trimmed)) {
+        throw new ArgumentException($"'{fullPath}' is not an absolute (local or UNC) path.", nameof(fullPath));
+      }
+
+      if (!trimmed.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) {
+        throw new ArgumentException("Only .dll files are supported.", nameof(fullPath));
+      }
+
+      return Path.GetFullPath(trimmed);
+    }
+
+    /// <summary>
+    /// An assembly id is either the id of an uploaded copy (TDL-4) or the full path of a referenced assembly (TDL-1).
+    /// </summary>
+    private static bool IsAssemblyReference(string assemblyId) {
+
+      if (string.IsNullOrWhiteSpace(assemblyId)) {
+        return false;
+      }
+
+      return Path.IsPathRooted(assemblyId.Trim());
+    }
+
+    /// <summary>
     /// Registers a contract interface of an uploaded assembly as tool source. Returns the SourceId.
     /// </summary>
     public string RegisterContractInterface(string assemblyId, string interfaceName, string url, string token) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(RegisterContractInterface));
 
       if (string.IsNullOrWhiteSpace(interfaceName)) {
         throw new ArgumentNullException(nameof(interfaceName));
@@ -213,14 +267,28 @@ namespace AI.SmartStandards.InteractivePrompting {
         throw new ArgumentException($"'{url}' is not a valid URL.", nameof(url));
       }
 
-      string assemblyFileFullName = this.GetUploadedAssemblyFileFullName(assemblyId);
+      string assemblyFileFullName;
+
+      if (IsAssemblyReference(assemblyId)) {
+
+        assemblyFileFullName = NormalizeToolAssemblyPath(assemblyId);
+        assemblyId = assemblyFileFullName;
+
+        if (!File.Exists(assemblyFileFullName)) {
+          throw new FileNotFoundException($"The file '{assemblyFileFullName}' does not exist or is not accessible.", assemblyFileFullName);
+        }
+
+      }
+      else {
+        assemblyFileFullName = this.GetUploadedAssemblyFileFullName(assemblyId);
+      }
 
       bool interfaceExists = ContractInterfaceToolProvider.GetContractInterfaces(assemblyId, assemblyFileFullName).Any(
         (i) => string.Equals(i.InterfaceName, interfaceName, StringComparison.Ordinal)
       );
 
       if (!interfaceExists) {
-        throw new ArgumentException($"The interface '{interfaceName}' was not found within the uploaded assembly.", nameof(interfaceName));
+        throw new ArgumentException($"The interface '{interfaceName}' was not found within the assembly.", nameof(interfaceName));
       }
 
       lock (_SyncRoot) {
@@ -257,6 +325,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void RemoveToolSource(string sourceId) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(RemoveToolSource));
+
       lock (_SyncRoot) {
 
         if (this.FindBuiltInToolProvider(sourceId) != null) {
@@ -287,6 +357,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void SetToolSourceLevel(string sourceId, string level) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetToolSourceLevel));
+
       if (HarnessToolbox.GetToolLevelRank(level) < 0) {
         throw new ArgumentException($"Unknown tool source level '{level}'.", nameof(level));
       }
@@ -301,6 +373,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Sets (or with an empty value removes) the credential (token) of a tool source.
     /// </summary>
     public void SetToolSourceCredential(string sourceId, string credential) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetToolSourceCredential));
 
       lock (_SyncRoot) {
 
@@ -324,6 +398,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Changes the endpoint URL of a tool source which is bound to an URL ('Mcp' or 'ContractInterface').
     /// </summary>
     public void SetToolSourceLocation(string sourceId, string url) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetToolSourceLocation));
 
       Uri uri;
 
@@ -368,6 +444,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void SetToolSourceAdditionalDescription(string sourceId, string additionalDescription) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetToolSourceAdditionalDescription));
+
       string normalized = null;
 
       if (!string.IsNullOrWhiteSpace(additionalDescription)) {
@@ -409,6 +487,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Validates (by the provider) and saves the JSON settings object of a tool source.
     /// </summary>
     public void SaveToolProviderSettings(string sourceId, string settingsJson) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SaveToolProviderSettings));
 
       string validatedJson;
 
@@ -511,11 +591,19 @@ namespace AI.SmartStandards.InteractivePrompting {
 
         string assemblyFileFullName;
 
-        try {
-          assemblyFileFullName = this.GetUploadedAssemblyFileFullName(source.AssemblyId);
+        if (IsAssemblyReference(source.AssemblyId)) {
+          //TDL-3: a missing referenced file is reported as broken by the provider, the registration is kept
+          assemblyFileFullName = source.AssemblyId.Trim();
         }
-        catch (ArgumentException) {
-          assemblyFileFullName = Path.Combine(this.ToolAssembliesDirectory, "missing.dll");
+        else {
+
+          try {
+            assemblyFileFullName = this.GetUploadedAssemblyFileFullName(source.AssemblyId);
+          }
+          catch (ArgumentException) {
+            assemblyFileFullName = Path.Combine(this.ToolAssembliesDirectory, "missing.dll");
+          }
+
         }
 
         return new ContractInterfaceToolProvider(assemblyFileFullName, source.InterfaceName, source.SourceId);

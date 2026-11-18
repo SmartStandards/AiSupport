@@ -142,9 +142,29 @@ namespace AI.SmartStandards.InteractivePrompting {
     ContractInterfaceInfo[] UploadToolAssembly(string fileName, string contentBase64);
 
     /// <summary>
-    /// Registers a contract interface of an uploaded assembly as tool source: every method becomes a tool,
+    /// TDL-1: references a .NET assembly (local or UNC path) which contains UJMW contract interfaces IN PLACE (it is
+    /// not copied) and returns the contained public interfaces. Their 'AssemblyId' is the full path of the assembly
+    /// and can be passed to 'RegisterContractInterface'. Dependencies are resolved from the original folder.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    ContractInterfaceInfo[] AddToolAssemblyReference(string fullPath);
+
+    /// <summary>
+    /// Lists the entries of a (server-side) directory like 'BrowseFileSystem', but returns the files matching the
+    /// given pattern (supported: '*.md' and '*.dll') instead of markdown files only.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    FileSystemEntryInfo[] BrowseFileSystemFiltered(string path, string filePattern);
+
+    /// <summary>
+    /// Registers a contract interface of an uploaded or referenced assembly as tool source: every method becomes a tool,
     /// which is called through the UJMW dynamic client against the given URL. The optional token is sent as
     /// bearer token (or as given, if it already contains a scheme like 'Basic ...'). Returns the SourceId.
+    /// 'assemblyId' is the id of an uploaded assembly or the full path of a referenced one ('AddToolAssemblyReference').
     /// </summary>
 #if NET_FX
     [OperationContract(), WebInvoke(Method = "POST")]

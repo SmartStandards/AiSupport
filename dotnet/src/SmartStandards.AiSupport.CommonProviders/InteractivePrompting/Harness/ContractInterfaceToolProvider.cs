@@ -97,6 +97,11 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
         throw new InvalidOperationException("The base URL of the service is missing.");
       }
 
+      //TDL-3: a missing referenced DLL marks the source as broken (the registration is kept)
+      if (!File.Exists(_AssemblyFileFullName)) {
+        throw new FileNotFoundException($"The tool assembly '{_AssemblyFileFullName}' does not exist or is not accessible.", _AssemblyFileFullName);
+      }
+
       Type contractType = LoadAssembly(_AssemblyFileFullName).GetType(_InterfaceName, false);
 
       if (contractType == null || !contractType.IsInterface) {
@@ -154,25 +159,15 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     }
 
     /// <summary>
-    /// Loads the assembly into a dedicated (collectible-free) load context (cached per file).
+    /// Loads the assembly from its path (TDL-1, the file stays locked while the process runs) into a dedicated
+    /// non-collectible load context (cached per file). Dependencies are resolved by the 'ToolAssemblyResolver' (TDL-2).
     /// </summary>
     public static Assembly LoadAssembly(string assemblyFileFullName) {
 
-      return _LoadedAssemblies.GetOrAdd(assemblyFileFullName, (fileFullName) => {
+      return _LoadedAssemblies.GetOrAdd(Path.GetFullPath(assemblyFileFullName), (fileFullName) => {
 
         AssemblyLoadContext loadContext = new AssemblyLoadContext("ToolAssembly:" + Path.GetFileName(fileFullName), false);
-        string directory = Path.GetDirectoryName(fileFullName);
-
-        loadContext.Resolving += (alc, assemblyName) => {
-
-          string candidate = Path.Combine(directory, assemblyName.Name + ".dll");
-
-          if (File.Exists(candidate)) {
-            return alc.LoadFromAssemblyPath(candidate);
-          }
-
-          return null;
-        };
+        ToolAssemblyResolver.Attach(loadContext, Path.GetDirectoryName(fileFullName));
 
         return loadContext.LoadFromAssemblyPath(fileFullName);
       });

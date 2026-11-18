@@ -115,6 +115,21 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       }
     }
 
+    private string _ChatId;
+
+    /// <summary>
+    /// Id of the chat which owns this scope (null outside of a chat turn). Used by tools which act on the
+    /// current chat (for example the 'Chat environment' tools).
+    /// </summary>
+    public string ChatId {
+      get {
+        return _ChatId;
+      }
+      set {
+        _ChatId = value;
+      }
+    }
+
     private Action<string, int, int> _ToolProgressReporter;
 
     /// <summary>

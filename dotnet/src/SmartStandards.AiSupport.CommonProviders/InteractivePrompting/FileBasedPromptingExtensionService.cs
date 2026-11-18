@@ -1,4 +1,4 @@
-using AI.SmartStandards.InteractivePrompting.Harness;
+﻿using AI.SmartStandards.InteractivePrompting.Harness;
 using Logging.SmartStandards.CopyForAI.SmartStandards;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -46,6 +46,22 @@ namespace AI.SmartStandards.InteractivePrompting {
     private Func<string, string, string> _RemoteContentLoader = LoadRemoteContent;
 
     private ISecretProtector _SecretProtector = new KeyFileSecretProtector();
+
+    private Func<int> _UserLevelGetter;
+
+    /// <summary>
+    /// Optional resolver of the level of the current user (see 'PromptingUserLevels', ROL-1..13). All modifying
+    /// operations of this service (incl. the provider-specific tool settings, ROL-10) and the file system browsing
+    /// (ROL-13) require the level 'Admin'. Without resolver, the current user is 'Admin' (no restriction).
+    /// </summary>
+    public Func<int> UserLevelGetter {
+      get {
+        return _UserLevelGetter;
+      }
+      set {
+        _UserLevelGetter = value;
+      }
+    }
 
     /// <summary>
     /// Creates the service using the default locations
@@ -302,6 +318,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public string AddSkillSource(string kind, string location, string credential) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(AddSkillSource));
+
       if (string.IsNullOrWhiteSpace(location)) {
         throw new ArgumentNullException(nameof(location));
       }
@@ -356,6 +374,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void RemoveSkillSource(string sourceId) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(RemoveSkillSource));
+
       if (IsBuiltInSourceId(sourceId)) {
         throw new InvalidOperationException($"The built-in skill source '{sourceId}' cannot be removed.");
       }
@@ -383,6 +403,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Sets the global default level (see 'SkillSourceLevels') of a (non-fixed) skill source.
     /// </summary>
     public void SetSkillSourceLevel(string sourceId, string level) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetSkillSourceLevel));
 
       if (IsBuiltInSourceId(sourceId)) {
         throw new InvalidOperationException($"The level of the built-in skill source '{sourceId}' cannot be changed.");
@@ -419,6 +441,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// An empty value restores the default location.
     /// </summary>
     public void SetSystemPreferencesLocation(string location) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetSystemPreferencesLocation));
 
       lock (_SyncRoot) {
 
@@ -461,6 +485,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void SetSkillSourceSecureAvailability(string sourceId, bool enabled) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetSkillSourceSecureAvailability));
+
       if (IsBuiltInSourceId(sourceId)) {
         throw new InvalidOperationException($"Secure availability is not supported for the built-in skill source '{sourceId}'.");
       }
@@ -502,6 +528,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void SetSkillSourceCredential(string sourceId, string credential) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetSkillSourceCredential));
+
       if (IsBuiltInSourceId(sourceId)) {
         throw new InvalidOperationException($"Credentials are not supported for the built-in skill source '{sourceId}'.");
       }
@@ -536,6 +564,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// </summary>
     public void SetSkillSourceDisplayName(string sourceId, string displayName) {
 
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SetSkillSourceDisplayName));
+
       if (IsBuiltInSourceId(sourceId)) {
         throw new InvalidOperationException($"The label of the built-in skill source '{sourceId}' cannot be changed.");
       }
@@ -569,6 +599,36 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Lists the entries of a (server-side) directory (empty path = root entries) for the browse dialog.
     /// </summary>
     public FileSystemEntryInfo[] BrowseFileSystem(string path, bool includeFiles) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(BrowseFileSystem));
+
+      if (includeFiles) {
+        return this.BrowseFileSystemCore(path, "*.md");
+      }
+
+      return this.BrowseFileSystemCore(path, null);
+    }
+
+    /// <summary>
+    /// Lists the entries of a (server-side) directory with the files matching the pattern ('*.md' or '*.dll').
+    /// </summary>
+    public FileSystemEntryInfo[] BrowseFileSystemFiltered(string path, string filePattern) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(BrowseFileSystemFiltered));
+
+      string pattern = null;
+
+      if (string.Equals(filePattern, "*.md", StringComparison.OrdinalIgnoreCase) || string.Equals(filePattern, "*.dll", StringComparison.OrdinalIgnoreCase)) {
+        pattern = filePattern.ToLowerInvariant();
+      }
+      else if (!string.IsNullOrWhiteSpace(filePattern)) {
+        throw new ArgumentException($"The file pattern '{filePattern}' is not supported.", nameof(filePattern));
+      }
+
+      return this.BrowseFileSystemCore(path, pattern);
+    }
+
+    private FileSystemEntryInfo[] BrowseFileSystemCore(string path, string filePattern) {
 
       List<FileSystemEntryInfo> result = new List<FileSystemEntryInfo>();
 
@@ -611,9 +671,9 @@ namespace AI.SmartStandards.InteractivePrompting {
           result.Add(entry);
         }
 
-        if (includeFiles) {
+        if (filePattern != null) {
 
-          foreach (FileInfo file in directory.GetFiles("*.md").OrderBy((f) => f.Name, StringComparer.OrdinalIgnoreCase)) {
+          foreach (FileInfo file in directory.GetFiles(filePattern).OrderBy((f) => f.Name, StringComparer.OrdinalIgnoreCase)) {
             FileSystemEntryInfo entry = new FileSystemEntryInfo();
             entry.Name = file.Name;
             entry.FullName = file.FullName;

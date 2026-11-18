@@ -340,6 +340,21 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
     }
 
+    private bool _IsInteracting;
+
+    /// <summary>
+    /// True while a turn of the chat is interacting with the AI (incl. waiting for tool results), but not while it
+    /// waits for a user approval/answer (CLS-4). Clients which do not know it can ignore it (convention credo).
+    /// </summary>
+    public bool IsInteracting {
+      get {
+        return _IsInteracting;
+      }
+      set {
+        _IsInteracting = value;
+      }
+    }
+
   }
 
   /// <summary>

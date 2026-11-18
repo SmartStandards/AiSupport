@@ -13,6 +13,7 @@
       <button id="btnSettings" title="Settings">&#9881;</button>
     </div>
     <ul id="chatList"></ul>
+    <div id="profileInfo" class="muted" hidden></div>
     <div id="providerInfo" class="muted"></div>
   </aside>
 
@@ -32,6 +33,7 @@
     <footer id="composer">
       <textarea id="txtMessage" rows="3" placeholder="Type a message... (Enter = send, Shift+Enter = new line)"></textarea>
       <div class="composer-actions">
+        <select id="selNewChatProvider" title="LLM provider of the new chat" hidden></select>
         <button id="btnSend" class="primary">Send</button>
         <button id="btnCancel" hidden>Cancel</button>
       </div>
@@ -46,6 +48,7 @@
         <button type="button" class="tab active" data-tab="settingsTabGeneral">General</button>
         <button type="button" class="tab" data-tab="settingsTabSkills" id="tabButtonSkills">Skills <span id="skillSourcesState" class="muted"></span></button>
         <button type="button" class="tab" data-tab="settingsTabTools" id="tabButtonTools">Tools <span id="toolSourcesState" class="muted"></span></button>
+        <button type="button" class="tab" data-tab="settingsTabProfiles" id="tabButtonProfiles" hidden>Profiles</button>
       </div>
 
       <div id="settingsTabGeneral" class="tab-page">
@@ -112,6 +115,12 @@
         </div>
         <div class="capabilities-title">Add UJMW contract interface (.NET assembly)</div>
         <div class="source-add-row">
+          <input id="txtToolAssemblyPath" type="text" placeholder="Full path of the .dll (referenced in place, not copied)">
+          <button id="btnToolAssemblyBrowse" type="button">Browse...</button>
+          <button id="btnToolAssemblyReference" type="button">Reference</button>
+        </div>
+        <div class="source-add-row">
+          <span class="muted small">or upload a copy (remote server):</span>
           <input id="fileToolAssembly" type="file" accept=".dll">
           <button id="btnToolAssemblyUpload" type="button">Upload</button>
         </div>
@@ -121,6 +130,18 @@
           <input id="txtContractToken" type="password" placeholder="Token (optional)" autocomplete="off">
           <button id="btnContractRegister" type="button">Register</button>
         </div>
+      </div>
+
+      <div id="settingsTabProfiles" class="tab-page" hidden>
+        <div class="muted small">A profile bundles provider/model, API keys, provider features and the skill/tool sources incl. their levels. Theme and user instructions are shared by all profiles. Every profile has its own chat history.</div>
+        <div id="profileList" class="source-list"></div>
+        <div class="capabilities-title">New profile (copy of the selected profile)</div>
+        <div class="source-add-row">
+          <select id="selProfileCopyFrom"></select>
+          <input id="txtProfileName" type="text" placeholder="Name of the new profile">
+          <button id="btnProfileCreate" type="button">Create</button>
+        </div>
+        <label class="checkbox-row"><input id="chkProfileAskAtStartup" type="checkbox"> Ask for the profile at start</label>
       </div>
 
       <div class="dialog-actions">

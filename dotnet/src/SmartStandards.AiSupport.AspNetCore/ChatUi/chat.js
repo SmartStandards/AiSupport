@@ -8,6 +8,7 @@
   const backendUrl = "chatApi/backend/";
   const settingsUrl = "chatApi/settings/";
   const extensionsUrl = "chatApi/extensions/";
+  const profilesUrl = "chatApi/profiles/";
   const skillLevels = ["Hidden", "OnDemand", "InitializeAtStart"];
   const skillLevelNames = { Hidden: "Hidden", OnDemand: "On demand", InitializeAtStart: "Initialize at start" };
   const toolLevels = ["Hidden", "RequiresConfirmation", "NoConfirmation"];
@@ -27,6 +28,9 @@
     extensionsAvailable: false,
     toolSources: [],
     toolSourcesAvailable: false,
+    profiles: [],
+    profilesAvailable: false,
+    newChatProvider: "",
     details: null
   };
 
@@ -299,6 +303,30 @@
     el("btnCompress").disabled = !hasChat || state.busy;
     el("btnDelete").disabled = !hasChat || state.busy;
     el("btnDetails").disabled = !hasChat || state.busy;
+    renderNewChatProvider();
+  }
+
+  // PRF-12: a new chat of a profile can be started with another provider (preselected: profile default)
+  function renderNewChatProvider() {
+    const select = el("selNewChatProvider");
+    const visible = state.profilesAvailable && !state.chatId && state.providers.length > 1;
+    select.hidden = !visible;
+    if (!visible) {
+      return;
+    }
+    const defaultProvider = (state.settings && state.settings.providerName) ? state.settings.providerName : "";
+    if (!state.newChatProvider) {
+      state.newChatProvider = defaultProvider;
+    }
+    select.innerHTML = "";
+    state.providers.forEach((p) => {
+      const option = document.createElement("option");
+      option.value = p.name;
+      option.textContent = (p.displayName || p.name) + (p.name === defaultProvider ? " (profile default)" : "");
+      select.appendChild(option);
+    });
+    select.value = state.newChatProvider;
+    select.disabled = state.busy;
   }
 
   // renders a persisted message (control/activity messages of the harness are shown as ghost bubbles)
@@ -394,7 +422,7 @@
         "<div class=\"approval-actions\">" +
         "<button type=\"button\" data-answer=\"Deny\" title=\"Block this access\">Deny</button> " +
         "<button type=\"button\" class=\"primary\" data-answer=\"AllowOnce\" title=\"Allow only this access\">Allow once</button> " +
-        "<button type=\"button\" data-answer=\"AllowPermanently\" title=\"Add it to the global allow-list of this tool source\">Allow permanently</button>" +
+        (isAdmin() ? "<button type=\"button\" data-answer=\"AllowPermanently\" title=\"Add it to the global allow-list of this tool source\">Allow permanently</button>" : "") +
         "</div>";
     } else {
       div.innerHTML =
@@ -447,13 +475,45 @@
   // Chats
   // ---------------------------------------------------------------------------
 
+  // CLS-3: relative time for recent activity, the time for older activity of today, the date before today
+  function formatLastActivity(value) {
+    const date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return "";
+    }
+    const now = new Date();
+    const minutes = Math.floor((now.getTime() - date.getTime()) / 60000);
+    if (minutes < 1) {
+      return "just now";
+    }
+    if (minutes < 60) {
+      return minutes + " min ago";
+    }
+    if (minutes < 180) {
+      return Math.floor(minutes / 60) + " h ago";
+    }
+    if (date.toDateString() === now.toDateString()) {
+      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    return date.toLocaleDateString();
+  }
+
   async function loadChatList() {
-    const chats = (await call(backendUrl, "GetRecentChats", {})) || [];
+    const chats = ((await call(backendUrl, "GetRecentChats", {})) || []).slice();
+    // CLS-2: newest activity first (also if an older backend does not sort)
+    chats.sort((a, b) => new Date(b.lastAction).getTime() - new Date(a.lastAction).getTime());
     const list = el("chatList");
     list.innerHTML = "";
     chats.forEach((chat) => {
       const li = document.createElement("li");
-      li.textContent = chat.name || chat.id;
+      const busy = !!chat.isInteracting || (state.busy && chat.id === state.chatId && !!state.currentOperation);
+      li.innerHTML =
+        "<div class=\"chat-item-title\">" +
+        (busy ? "<span class=\"busy-donut\" title=\"interacting with the AI\"></span>" : "") +
+        "<span class=\"chat-item-name\"></span></div>" +
+        "<div class=\"chat-item-time muted small\"></div>";
+      li.querySelector(".chat-item-name").textContent = chat.name || chat.id;
+      li.querySelector(".chat-item-time").textContent = formatLastActivity(chat.lastAction);
       li.title = (chat.name || chat.id) + " (" + new Date(chat.lastAction).toLocaleString() + ")";
       if (chat.id === state.chatId) {
         li.className = "active";
@@ -463,10 +523,73 @@
           openChat(chat.id, chat.name);
         }
       });
+      li.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        showChatContextMenu(e.clientX, e.clientY, chat);
+      });
       list.appendChild(li);
     });
     return chats;
   }
+
+  // CLS-1: context menu of a chat list entry (same actions as in the chat header)
+  function showChatContextMenu(x, y, chat) {
+    hideChatContextMenu();
+    const menu = document.createElement("div");
+    menu.id = "chatContextMenu";
+    menu.className = "context-menu";
+    const entries = [
+      { label: "Details", action: openDetails },
+      { label: "Rename", action: renameChat },
+      { label: "Compress", action: compressChat },
+      { label: "Delete", action: deleteChat }
+    ];
+    entries.forEach((entry) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = entry.label;
+      button.disabled = state.busy;
+      button.addEventListener("click", async () => {
+        hideChatContextMenu();
+        if (state.busy) {
+          return;
+        }
+        try {
+          if (chat.id !== state.chatId) {
+            await openChat(chat.id, chat.name);
+          }
+          await entry.action();
+        } catch (err) {
+          showError(err);
+        }
+      });
+      menu.appendChild(button);
+    });
+    document.body.appendChild(menu);
+    const maxX = window.innerWidth - menu.offsetWidth - 4;
+    const maxY = window.innerHeight - menu.offsetHeight - 4;
+    menu.style.left = Math.max(0, Math.min(x, maxX)) + "px";
+    menu.style.top = Math.max(0, Math.min(y, maxY)) + "px";
+  }
+
+  function hideChatContextMenu() {
+    const menu = document.getElementById("chatContextMenu");
+    if (menu) {
+      menu.remove();
+    }
+  }
+
+  document.addEventListener("click", () => hideChatContextMenu());
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      hideChatContextMenu();
+    }
+  });
+
+  // refreshes the relative times and the busy indicators of the chat list periodically
+  setInterval(() => {
+    loadChatList().catch(() => { });
+  }, 20000);
 
   async function openChat(chatId, chatName) {
     state.chatId = chatId;
@@ -485,6 +608,7 @@
 
   async function newChat() {
     state.chatId = null;
+    state.newChatProvider = "";
     el("chatTitle").textContent = "New chat";
     el("messages").innerHTML = "";
     updateHeaderButtons();
@@ -511,6 +635,13 @@
 
       if (!state.chatId) {
         state.chatId = await call(backendUrl, "BeginNewChat", { name: "" });
+        const chosenProvider = state.newChatProvider;
+        const defaultProvider = (state.settings && state.settings.providerName) ? state.settings.providerName : "";
+        state.newChatProvider = "";
+        if (state.profilesAvailable && chosenProvider && chosenProvider !== defaultProvider) {
+          await call(backendUrl, "SetChatProvider", { chatId: state.chatId, providerName: chosenProvider, model: "" });
+        }
+        updateHeaderButtons();
       }
 
       el("txtMessage").value = "";
@@ -538,6 +669,9 @@
       };
 
       const approvalPolling = startApprovalPolling(state.chatId);
+
+      // shows the new chat and its busy indicator in the chat list (CLS-4)
+      loadChatList().catch(() => { });
 
       try {
         const answer = await callLongRunning(backendUrl, "SendMessage", { chatId: state.chatId, message: text }, holder, callbacks);
@@ -680,6 +814,9 @@
       fillDetailsModels(select.value);
       el("txtDetailsModel").value = state.details.model || "";
       el("txtDetailsName").value = state.details.name || el("chatTitle").textContent;
+      // ROL-2/3: users keep the default provider and see the details read-only
+      select.disabled = (getUserLevel() < 2);
+      el("txtDetailsModel").disabled = (getUserLevel() < 2);
 
       const info = [];
       info.push("Messages: " + (state.details.messageCount || 0));
@@ -803,7 +940,7 @@
         row.appendChild(info);
       }
 
-      if (status.action && !s.isFixed) {
+      if (status.action && !s.isFixed && getUserLevel() >= 2) {
         const action = document.createElement("button");
         action.type = "button";
         action.className = "small-button source-action";
@@ -1197,6 +1334,8 @@
       openSkillSourcesTab();
     } else if (tabId === "settingsTabTools") {
       openToolSourcesTab();
+    } else if (tabId === "settingsTabProfiles") {
+      loadProfiles().then(renderProfiles).catch(showError);
     }
   }
 
@@ -1596,22 +1735,44 @@
       const file = input.files[0];
       const content = await readFileAsBase64(file);
       const interfaces = (await call(extensionsUrl, "UploadToolAssembly", { fileName: file.name, contentBase64: content })) || [];
-      const select = el("selContractInterface");
-      select.innerHTML = "";
-      interfaces.forEach((i) => {
-        const option = document.createElement("option");
-        option.value = i.interfaceName;
-        option.dataset.assemblyId = i.assemblyId;
-        const methods = Array.isArray(i.methodNames) ? i.methodNames : [];
-        option.textContent = i.interfaceName + " (" + methods.length + " methods)";
-        select.appendChild(option);
-      });
-      el("contractRegisterRow").hidden = (interfaces.length === 0);
-      if (interfaces.length === 0) {
-        alert("The assembly does not contain any public interface.");
-      }
+      showContractInterfaces(interfaces);
     } catch (e) {
       alert(e.message || e);
+    }
+  }
+
+  // TDL-1: the DLL is referenced at its original location (dependencies are resolved from that folder)
+  async function referenceToolAssembly() {
+    const path = el("txtToolAssemblyPath").value.trim();
+    if (path.length === 0) {
+      return;
+    }
+    try {
+      const interfaces = (await call(extensionsUrl, "AddToolAssemblyReference", { fullPath: path })) || [];
+      showContractInterfaces(interfaces);
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  function browseToolAssembly() {
+    openBrowseDialog("txtToolAssemblyPath", true, "*.dll");
+  }
+
+  function showContractInterfaces(interfaces) {
+    const select = el("selContractInterface");
+    select.innerHTML = "";
+    interfaces.forEach((i) => {
+      const option = document.createElement("option");
+      option.value = i.interfaceName;
+      option.dataset.assemblyId = i.assemblyId;
+      const methods = Array.isArray(i.methodNames) ? i.methodNames : [];
+      option.textContent = i.interfaceName + " (" + methods.length + " methods)";
+      select.appendChild(option);
+    });
+    el("contractRegisterRow").hidden = (interfaces.length === 0);
+    if (interfaces.length === 0) {
+      alert("The assembly does not contain any public interface.");
     }
   }
 
@@ -1629,6 +1790,7 @@
     el("txtContractUrl").value = "";
     el("txtContractToken").value = "";
     el("fileToolAssembly").value = "";
+    el("txtToolAssemblyPath").value = "";
   }
 
   async function addSkillSource() {
@@ -1666,16 +1828,21 @@
   // ---------------------------------------------------------------------------
   // Browse dialog (server-side file system, used for 'File' and 'Folder' skill sources)
 
-  const browseState = { path: "", selectFiles: false, targetInputId: null };
+  const browseState = { path: "", selectFiles: false, filePattern: null, targetInputId: null };
 
-  function openBrowseDialog(targetInputId, selectFiles) {
+  function openBrowseDialog(targetInputId, selectFiles, filePattern) {
     browseState.targetInputId = targetInputId;
     browseState.selectFiles = selectFiles;
-    el("browseDialogTitle").textContent = selectFiles ? "Select a skill file" : "Select a folder";
+    browseState.filePattern = filePattern || null;
+    let title = "Select a folder";
+    if (selectFiles) {
+      title = browseState.filePattern === "*.dll" ? "Select a tool assembly" : "Select a skill file";
+    }
+    el("browseDialogTitle").textContent = title;
     el("btnBrowseSelectFolder").hidden = selectFiles;
 
     let startPath = el(targetInputId).value.trim();
-    if (/\.md$/i.test(startPath)) {
+    if (/\.(md|dll)$/i.test(startPath)) {
       startPath = getParentPath(startPath);
     }
 
@@ -1706,7 +1873,11 @@
     let entries;
 
     try {
-      entries = await call(extensionsUrl, "BrowseFileSystem", { path: path, includeFiles: browseState.selectFiles });
+      if (browseState.filePattern) {
+        entries = await call(extensionsUrl, "BrowseFileSystemFiltered", { path: path, filePattern: browseState.filePattern });
+      } else {
+        entries = await call(extensionsUrl, "BrowseFileSystem", { path: path, includeFiles: browseState.selectFiles });
+      }
     } catch (e) {
       alert(e.message || e);
       if (el("browseList").childElementCount > 0) {
@@ -1774,6 +1945,21 @@
     state.providers = (await call(settingsUrl, "GetAvailableProviders", {})) || [];
     state.settings = await call(settingsUrl, "GetSettings", {});
     renderProviderInfo();
+    renderNewChatProvider();
+  }
+
+  // ROL-1..13: 1 = user, 2 = power user, 3 = admin; unknown values (older servers) are treated as admin.
+  // The UI only reflects the level, the services enforce it.
+  function getUserLevel() {
+    const level = (state.settings && typeof state.settings.userLevel === "number") ? state.settings.userLevel : 3;
+    if (level === 1 || level === 2) {
+      return level;
+    }
+    return 3;
+  }
+
+  function isAdmin() {
+    return getUserLevel() >= 3;
   }
 
   function renderProviderInfo() {
@@ -1894,8 +2080,23 @@
     renderToolSourcesState();
     selectSettingsTab("settingsTabGeneral");
 
+    // ROL-6/7/8/10: only admins change the defaults (provider, credentials, sources); everybody keeps
+    // the theme and the own user instructions
+    const admin = isAdmin();
+    ["selProvider", "txtModel", "txtApiKey"].forEach((id) => { el(id).disabled = !admin; });
+    el("capabilityList").querySelectorAll("input").forEach((input) => { input.disabled = !admin; });
+    el("tabButtonSkills").hidden = !admin;
+    el("tabButtonTools").hidden = !admin;
+    el("tabButtonProfiles").hidden = !(admin && state.profilesAvailable);
+    const deleteKeyButton = el("btnDeleteKey");
+    if (deleteKeyButton) {
+      deleteKeyButton.disabled = !admin;
+    }
+
     el("settingsDialog").hidden = false;
-    el("txtApiKey").focus();
+    if (admin) {
+      el("txtApiKey").focus();
+    }
   }
 
   function closeSettings() {
@@ -1908,15 +2109,17 @@
   async function saveSettings() {
     try {
       const providerName = el("selProvider").value;
-      await call(settingsUrl, "SaveSettings", {
-        providerName: providerName,
-        model: el("txtModel").value.trim(),
-        apiKey: el("txtApiKey").value.trim()
-      });
-      await call(settingsUrl, "SaveDisabledCapabilities", {
-        providerName: providerName,
-        disabledCapabilityNames: collectDisabledCapabilities()
-      });
+      if (isAdmin()) {
+        await call(settingsUrl, "SaveSettings", {
+          providerName: providerName,
+          model: el("txtModel").value.trim(),
+          apiKey: el("txtApiKey").value.trim()
+        });
+        await call(settingsUrl, "SaveDisabledCapabilities", {
+          providerName: providerName,
+          disabledCapabilityNames: collectDisabledCapabilities()
+        });
+      }
       const theme = el("selTheme").value;
       await call(settingsUrl, "SaveUiTheme", { themeName: theme });
       applyTheme(theme);
@@ -1935,6 +2138,181 @@
       await call(settingsUrl, "DeleteApiKey", { providerName: el("selProvider").value });
       await loadSettings();
       fillSettingsDialog(el("selProvider").value);
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Profiles (PRF-1..12, via 'IPromptingProfileService' - optional on the server: the tab stays hidden)
+  // ---------------------------------------------------------------------------
+
+  async function loadProfiles() {
+    try {
+      state.profiles = (await call(profilesUrl, "GetProfiles", {})) || [];
+      state.profilesAvailable = Array.isArray(state.profiles) && state.profiles.length > 0;
+    } catch (e) {
+      state.profiles = [];
+      state.profilesAvailable = false;
+    }
+    renderProfileInfo();
+  }
+
+  function getActiveProfile() {
+    return state.profiles.find((p) => p.isActive) || null;
+  }
+
+  // PRF-10: the active profile is always visible (sidebar, settings header, document title)
+  function renderProfileInfo() {
+    const active = getActiveProfile();
+    const info = el("profileInfo");
+    const header = document.querySelector("#settingsDialog h2");
+    if (!state.profilesAvailable || !active) {
+      info.hidden = true;
+      header.textContent = "Settings";
+      document.title = "AI Chat";
+      return;
+    }
+    info.hidden = false;
+    info.textContent = "Profile: " + active.displayName;
+    header.textContent = "Settings - profile '" + active.displayName + "'";
+    document.title = "AI Chat - " + active.displayName;
+  }
+
+  async function renderProfiles() {
+    const list = el("profileList");
+    list.innerHTML = "";
+    const copyFrom = el("selProfileCopyFrom");
+    copyFrom.innerHTML = "";
+
+    state.profiles.forEach((profile) => {
+      const row = document.createElement("div");
+      row.className = "source-row";
+
+      const name = document.createElement("span");
+      name.className = "source-name";
+      name.textContent = profile.displayName + (profile.isActive ? "  (active)" : "");
+      if (profile.isActive) {
+        name.style.fontWeight = "bold";
+      }
+      row.appendChild(name);
+
+      const activate = document.createElement("button");
+      activate.type = "button";
+      activate.textContent = "Activate";
+      activate.disabled = profile.isActive || state.busy;
+      activate.addEventListener("click", () => activateProfile(profile.profileId));
+      row.appendChild(activate);
+
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.textContent = "Rename";
+      rename.addEventListener("click", () => renameProfile(profile));
+      row.appendChild(rename);
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Delete";
+      remove.disabled = profile.isActive || profile.isDefault;
+      remove.title = remove.disabled ? "The active and the default profile cannot be deleted" : "";
+      remove.addEventListener("click", () => deleteProfile(profile));
+      row.appendChild(remove);
+
+      list.appendChild(row);
+
+      const option = document.createElement("option");
+      option.value = profile.profileId;
+      option.textContent = profile.displayName;
+      copyFrom.appendChild(option);
+    });
+
+    const active = getActiveProfile();
+    if (active) {
+      copyFrom.value = active.profileId;
+    }
+
+    try {
+      el("chkProfileAskAtStartup").checked = !!(await call(profilesUrl, "GetAskAtStartup", {}));
+    } catch (e) {
+      el("chkProfileAskAtStartup").checked = false;
+    }
+  }
+
+  async function createProfile() {
+    const name = el("txtProfileName").value.trim();
+    if (!name) {
+      alert("Please enter a name for the new profile.");
+      return;
+    }
+    try {
+      await call(profilesUrl, "CreateProfile", { copyFromProfileId: el("selProfileCopyFrom").value, displayName: name });
+      el("txtProfileName").value = "";
+      await loadProfiles();
+      await renderProfiles();
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  async function renameProfile(profile) {
+    const name = prompt("New name of the profile:", profile.displayName);
+    if (name === null || !name.trim()) {
+      return;
+    }
+    try {
+      await call(profilesUrl, "RenameProfile", { profileId: profile.profileId, displayName: name.trim() });
+      await loadProfiles();
+      await renderProfiles();
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  async function deleteProfile(profile) {
+    if (!confirm("Delete the profile '" + profile.displayName + "' including its chats?")) {
+      return;
+    }
+    try {
+      await call(profilesUrl, "DeleteProfile", { profileId: profile.profileId });
+      await loadProfiles();
+      await renderProfiles();
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  // PRF-4: the profile is applied to the running client - everything profile-specific is reloaded
+  async function activateProfile(profileId) {
+    if (state.busy) {
+      return;
+    }
+    try {
+      await call(profilesUrl, "ActivateProfile", { profileId: profileId });
+      closeSettings();
+      await reloadProfileScope();
+      openSettings();
+      selectSettingsTab("settingsTabProfiles");
+    } catch (e) {
+      alert(e.message || e);
+    }
+  }
+
+  async function reloadProfileScope() {
+    state.chatId = null;
+    state.newChatProvider = "";
+    el("chatTitle").textContent = "AI Chat";
+    el("messages").innerHTML = "";
+    updateHeaderButtons();
+    await loadProfiles();
+    await loadSettings();
+    await loadSkillSources();
+    await loadToolSources();
+    await loadChatList();
+  }
+
+  async function saveAskAtStartup() {
+    try {
+      await call(profilesUrl, "SetAskAtStartup", { enabled: el("chkProfileAskAtStartup").checked });
     } catch (e) {
       alert(e.message || e);
     }
@@ -2056,7 +2434,14 @@
     el("btnSystemPreferencesSet").addEventListener("click", setSystemPreferencesLocation);
     el("btnMcpAdd").addEventListener("click", addMcpServer);
     el("btnToolAssemblyUpload").addEventListener("click", uploadToolAssembly);
+    el("btnToolAssemblyReference").addEventListener("click", referenceToolAssembly);
+    el("btnToolAssemblyBrowse").addEventListener("click", browseToolAssembly);
     el("btnContractRegister").addEventListener("click", registerContractInterface);
+    el("btnProfileCreate").addEventListener("click", createProfile);
+    el("selNewChatProvider").addEventListener("change", () => {
+      state.newChatProvider = el("selNewChatProvider").value;
+    });
+    el("chkProfileAskAtStartup").addEventListener("change", saveAskAtStartup);
     el("btnToolSettingsSave").addEventListener("click", saveToolSettings);
     el("btnToolCredential").addEventListener("click", setToolCredentialFromSettings);
     el("chkToolSettingsRaw").addEventListener("change", toggleToolSettingsMode);
@@ -2088,6 +2473,7 @@
     updateHeaderButtons();
     try {
       await loadTheme();
+      await loadProfiles();
       await loadSettings();
       await loadUserInstructions();
       await loadSkillSources();

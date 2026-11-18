@@ -21,17 +21,25 @@ namespace AI.SmartStandards.ChatClient {
 
     private static WebViewAspNetCoreAdapter _AspApplication;
 
+    private static HarnessProfileManager _ProfileManager;
+
     internal static WebViewAspNetCoreAdapter AspApplication {
       get {
         return _AspApplication;
       }
     }
 
+    internal static HarnessProfileManager ProfileManager {
+      get {
+        return _ProfileManager;
+      }
+    }
+
     /// <summary>
-    /// Entry point.
+    /// Entry point. Optional argument: '--profile <id or name>' starts the client with the given profile (PRF-8).
     /// </summary>
     [STAThread]
-    public static void Main() {
+    public static void Main(string[] args) {
 
       Application.SetHighDpiMode(HighDpiMode.SystemAware);
       Application.EnableVisualStyles();
@@ -40,6 +48,16 @@ namespace AI.SmartStandards.ChatClient {
       FormMain mainWindow = null;
 
       try {
+
+        string startupProfileId = ResolveStartupProfile(args);
+
+        if (startupProfileId == null) {
+          return;
+        }
+
+        _ProfileManager = new HarnessProfileManager(
+          new FileBasedPromptingProfileService(), startupProfileId, null
+        );
 
         _AspApplication = new WebViewAspNetCoreAdapter(
           Assembly.GetExecutingAssembly(),
@@ -67,51 +85,84 @@ namespace AI.SmartStandards.ChatClient {
     }
 
     /// <summary>
-    /// Registers the settings service, the session store, the chat backend and the chat UI.
+    /// Determines the profile to start with: '--profile <id or name>' (PRF-8), otherwise the selection dialog
+    /// (if enabled and more than one profile exists, PRF-6), otherwise the remembered profile (empty string).
+    /// Returns null if the user cancelled the selection.
+    /// </summary>
+    private static string ResolveStartupProfile(string[] args) {
+
+      FileBasedPromptingProfileService profileStore = new FileBasedPromptingProfileService();
+
+      string requested = GetArgumentValue(args, "--profile");
+
+      if (!string.IsNullOrWhiteSpace(requested)) {
+
+        HarnessProfileInfo profile = profileStore.FindProfile(requested);
+
+        if (profile != null) {
+          return profile.ProfileId;
+        }
+
+        MessageBox.Show(
+          $"The profile '{requested}' does not exist.",
+          "Prompting UI", MessageBoxButtons.OK, MessageBoxIcon.Error
+        );
+
+        return null;
+      }
+
+      HarnessProfileInfo[] profiles = profileStore.GetProfiles();
+
+      if (profiles.Length < 2 || !profileStore.GetAskAtStartup()) {
+        return string.Empty;
+      }
+
+      using (FormProfileSelection dialog = new FormProfileSelection(profiles)) {
+
+        if (dialog.ShowDialog() != DialogResult.OK) {
+          return null;
+        }
+
+        //the selection of the start dialog is remembered (PRF-7)
+        profileStore.ActivateProfile(dialog.SelectedProfileId);
+
+        return string.Empty;
+      }
+
+    }
+
+    private static string GetArgumentValue(string[] args, string name) {
+
+      if (args == null) {
+        return null;
+      }
+
+      for (int i = 0; i < args.Length; i++) {
+
+        string arg = args[i];
+
+        if (string.Equals(arg, name, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) {
+          return args[i + 1];
+        }
+
+        if (arg.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase)) {
+          return arg.Substring(name.Length + 1);
+        }
+
+      }
+
+      return null;
+    }
+
+    /// <summary>
+    /// Registers the profile-aware services (they forward to the runtime of the active profile) and the chat UI.
     /// </summary>
     private static void ConfigureServices(IServiceCollection services, IConfiguration config) {
 
-      FileBasedPromptingSettingsService settingsService = new FileBasedPromptingSettingsService();
-
-      string chatsDirectory = Path.Combine(
-        Path.GetDirectoryName(settingsService.SettingsFileFullName), "Chats"
-      );
-
-      FileBasedPromptingSessionStore sessionStore = new FileBasedPromptingSessionStore(chatsDirectory);
-
-      //skill sources: built-in 'global-user-preferences' (= the user instructions of the settings, stored as
-      //'%USERPROFILE%\.agents\skills\global-user-preferences\SKILL.md'), 'global-system-preferences' and
-      //the persisted file/folder references
-      FileBasedPromptingExtensionService extensionService = new FileBasedPromptingExtensionService();
-
-      settingsService.UseUserInstructionsFile(
-        extensionService.UserPreferencesFileFullName,
-        FileBasedPromptingExtensionService.UserPreferencesSourceId,
-        "Preferences of the user (conventions, rules). They MUST be read and followed for every task."
-      );
-
-      //tools for the model: the internal test tool which switches the UI theme
-      HarnessToolbox toolbox = new HarnessToolbox();
-      extensionService.RegisterOutOfTheBoxToolProviders();
-      extensionService.AttachToolbox(toolbox);
-      toolbox.AddTool(new SetUiThemeTool(settingsService));
-
-      //the LLM is created per call (per chat provider/model), so that changed settings are effective immediately
-      CheapPromptingUIBackend backend = new CheapPromptingUIBackend(
-        sessionStore,
-        (IChatLLMFactory)settingsService,
-        toolbox,
-        () => settingsService.GetConfiguredLLMDisplayName(),
-        Environment.UserName
-      );
-
-      //'secure availability': the offline copies of the skill sources are refreshed once on every new chat start
-      backend.OnNewChatStarting = extensionService.RefreshOfflineCopies;
-
-      services.AddSingleton<IPromptingSettingsService>(settingsService);
-      services.AddSingleton<IPromptingExtensionService>(extensionService);
-      services.AddSingleton<IPromptingSessionStore>(sessionStore);
-      services.AddSingleton<IPromptingUIBackend>(backend);
+      services.AddSingleton<IPromptingProfileService>(_ProfileManager);
+      services.AddSingleton<IPromptingSettingsService>(new ActiveProfileSettingsService(_ProfileManager));
+      services.AddSingleton<IPromptingExtensionService>(new ActiveProfileExtensionService(_ProfileManager));
+      services.AddSingleton<IPromptingUIBackend>(new ActiveProfileUIBackend(_ProfileManager));
 
       //WebView2 + System.Text.Json has a known issue within the TestServer pipeline (see template)
       services.AddControllers().AddNewtonsoftJson();

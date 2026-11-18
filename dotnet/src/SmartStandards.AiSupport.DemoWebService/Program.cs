@@ -290,45 +290,21 @@ namespace AI.SmartStandards.DemoWebService {
     /// </summary>
     private static void RegisterChatUiServices(IServiceCollection services, ICalendarAccess chatCalendarAccess) {
 
-      FileBasedPromptingSettingsService settingsService = new FileBasedPromptingSettingsService();
-
-      string chatsDirectory = Path.Combine(
-        Path.GetDirectoryName(settingsService.SettingsFileFullName), "Chats"
+      //the calendar tools are registered within every profile runtime (also after profile switches)
+      HarnessProfileManager profileManager = new HarnessProfileManager(
+        new FileBasedPromptingProfileService(),
+        null,
+        (runtime) => {
+          if (chatCalendarAccess != null) {
+            RegisterCalendarTools(runtime.Toolbox, chatCalendarAccess);
+          }
+        }
       );
 
-      FileBasedPromptingSessionStore sessionStore = new FileBasedPromptingSessionStore(chatsDirectory);
-      FileBasedPromptingExtensionService extensionService = new FileBasedPromptingExtensionService();
-
-      settingsService.UseUserInstructionsFile(
-        extensionService.UserPreferencesFileFullName,
-        FileBasedPromptingExtensionService.UserPreferencesSourceId,
-        "Preferences of the user (conventions, rules). They MUST be read and followed for every task."
-      );
-
-      HarnessToolbox toolbox = new HarnessToolbox();
-      extensionService.RegisterOutOfTheBoxToolProviders();
-      extensionService.AttachToolbox(toolbox);
-
-      if (chatCalendarAccess != null) {
-        RegisterCalendarTools(toolbox, chatCalendarAccess);
-      }
-
-      //the LLM is created per call (per chat provider/model), so that changed settings are effective immediately
-      CheapPromptingUIBackend backend = new CheapPromptingUIBackend(
-        sessionStore,
-        (IChatLLMFactory)settingsService,
-        toolbox,
-        () => settingsService.GetConfiguredLLMDisplayName(),
-        Environment.UserName
-      );
-
-      //'secure availability': the offline copies of the skill sources are refreshed once on every new chat start
-      backend.OnNewChatStarting = extensionService.RefreshOfflineCopies;
-
-      services.AddSingleton<IPromptingSettingsService>(settingsService);
-      services.AddSingleton<IPromptingExtensionService>(extensionService);
-      services.AddSingleton<IPromptingSessionStore>(sessionStore);
-      services.AddSingleton<IPromptingUIBackend>(backend);
+      services.AddSingleton<IPromptingProfileService>(profileManager);
+      services.AddSingleton<IPromptingSettingsService>(new ActiveProfileSettingsService(profileManager));
+      services.AddSingleton<IPromptingExtensionService>(new ActiveProfileExtensionService(profileManager));
+      services.AddSingleton<IPromptingUIBackend>(new ActiveProfileUIBackend(profileManager));
 
     }
 
@@ -403,6 +379,10 @@ namespace AI.SmartStandards.DemoWebService {
       }
 
       if (contractType == typeof(IPromptingExtensionService)) {
+        return true;
+      }
+
+      if (contractType == typeof(IPromptingProfileService)) {
         return true;
       }
 

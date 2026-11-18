@@ -36,6 +36,21 @@ namespace AI.SmartStandards.InteractivePrompting {
       new Dictionary<string, Func<string, string, string[], ICommonLLM>>(StringComparer.OrdinalIgnoreCase)
     );
 
+    private Func<int> _UserLevelGetter;
+
+    /// <summary>
+    /// Optional resolver of the level of the current user (see 'PromptingUserLevels', ROL-1..13).
+    /// Without resolver, the current user is 'Admin' (no restriction).
+    /// </summary>
+    public Func<int> UserLevelGetter {
+      get {
+        return _UserLevelGetter;
+      }
+      set {
+        _UserLevelGetter = value;
+      }
+    }
+
     /// <summary>
     /// Creates the service using the default settings file within the roaming profile of the current user.
     /// The OpenAI provider is registered out of the box.
@@ -263,6 +278,7 @@ namespace AI.SmartStandards.InteractivePrompting {
         LLMProviderInfo provider = this.GetSelectedProvider(persisted);
 
         PromptingSettingsInfo info = new PromptingSettingsInfo();
+        info.UserLevel = PromptingUserLevels.Resolve(_UserLevelGetter);
 
         if (provider == null) {
           return info;
@@ -285,6 +301,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Saves the settings. If 'apiKey' is null or empty, an already stored API key is kept.
     /// </summary>
     public void SaveSettings(string providerName, string model, string apiKey) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SaveSettings));
 
       lock (_SyncRoot) {
 
@@ -318,6 +336,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Removes the stored API key of the given provider.
     /// </summary>
     public void DeleteApiKey(string providerName) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(DeleteApiKey));
 
       lock (_SyncRoot) {
 
@@ -355,6 +375,8 @@ namespace AI.SmartStandards.InteractivePrompting {
     /// Unknown or unavailable capability names are ignored.
     /// </summary>
     public void SaveDisabledCapabilities(string providerName, string[] disabledCapabilityNames) {
+
+      PromptingUserLevels.Demand(_UserLevelGetter, PromptingUserLevels.Admin, nameof(SaveDisabledCapabilities));
 
       lock (_SyncRoot) {
 

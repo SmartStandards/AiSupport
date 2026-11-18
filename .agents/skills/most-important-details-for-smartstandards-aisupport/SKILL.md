@@ -36,10 +36,15 @@ metadata:
   settings properties.
 - User instructions are re-read by the UI after every turn (tool edits); running chats pick up UI edits through the
   per-turn harness prompt fingerprint - no dirty flag needed.
-- Tool DLLs: binding rule "referenced in place" (skill `ai-harness-development`, decision 9). Current state still
-  deviates: `UploadToolAssembly` copies to `ToolAssemblies\<AssemblyId>\` and `ContractInterfaceToolProvider.LoadAssembly`
-  only probes that copy folder via `AssemblyLoadContext.Resolving`; there is no `AppDomain.AssemblyResolve` handler yet.
-  Fix planned in [epic-prompting-ui-iteration-3.md](../../../doc/epics/epic-prompting-ui-iteration-3.md) (TDL-1..4).
+- Tool DLLs: binding rule "referenced in place" (skill `ai-harness-development`, decision 9) is implemented (TDL-1..4):
+  `AddToolAssemblyReference(fullPath)` stores the full path as `AssemblyId` (uploaded copies keep their GUID id),
+  `ToolAssemblyResolver` probes all tool folders via `AssemblyLoadContext.Resolving` and `AppDomain.AssemblyResolve`.
+  Referenced DLLs stay locked while the process runs (tests must not delete their folder).
+- Harness profiles (PRF): hosts register `HarnessProfileManager` plus `ActiveProfileUIBackend` /
+  `ActiveProfileSettingsService` / `ActiveProfileExtensionService` and `IPromptingProfileService` **before**
+  `AddChatUi` - only then `chatApi/profiles` is published. Host-specific tools must be registered through the
+  `configureRuntime` hook of the manager (every profile switch creates a new runtime). The default profile uses the
+  legacy root directory; chats live in `<profileDir>\Chats`. Theme and user instructions are shared by all profiles.
 
 ## Code structure
 
