@@ -306,6 +306,12 @@ button.primary:hover:not(:disabled) {
 
 .capabilities-title {
   font-weight: 600;
+  margin-top: 16px;
+  margin-bottom: 6px;
+}
+
+.tab-page > .capabilities-title:first-child,
+.tab-page > div:first-child > .capabilities-title:first-child {
   margin-top: 4px;
 }
 
@@ -420,12 +426,57 @@ button.primary:hover:not(:disabled) {
   color: #cf222e;
 }
 
-.source-row .source-secure {
+.source-row .source-secure,
+.dialog label.source-secure {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 4px;
   white-space: nowrap;
   font-size: 12px;
+  font-weight: normal;
+  margin: 0;
+}
+
+.dialog label.source-secure[hidden] {
+  display: none;
+}
+
+.dialog label.source-secure input[type="checkbox"] {
+  margin: 0;
+  padding: 0;
+}
+
+.tool-credential-state {
+  flex: 1;
+  align-self: center;
+}
+
+.browse-list {
+  display: flex;
+  flex-direction: column;
+  height: 320px;
+  overflow-y: auto;
+  margin-top: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 4px;
+  padding: 4px;
+}
+
+.browse-list .browse-entry {
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 3px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: inherit;
+}
+
+.browse-list .browse-entry:hover {
+  background: rgba(128, 128, 128, 0.2);
 }
 
 .source-add-row {
@@ -475,11 +526,44 @@ button.primary:hover:not(:disabled) {
 .tab-page {
   max-height: 60vh;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tab-page[hidden] {
+  display: none;
+}
+
+/* general tabs (settings + chat details): more air between an input and the next caption */
+#settingsTabGeneral > label + label,
+#settingsTabGeneral > label + .capabilities-title,
+#settingsTabGeneral > .capability-list + label,
+#settingsTabGeneral > label + .user-instructions-row,
+#detailsTabGeneral > label + label,
+#detailsTabGeneral > label + .user-instructions-row,
+#detailsTabGeneral > .muted + label,
+#detailsTabGeneral > .muted + .user-instructions-row {
+  margin-top: 8px;
 }
 
 .tool-settings-editor textarea {
   width: 100%;
+  box-sizing: border-box;
   font-family: Consolas, "Courier New", monospace;
+}
+
+.tool-settings-editor {
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.tool-settings-editor #txtToolAdditionalDescription {
+  font-family: inherit;
+}
+
+.tool-settings-editor > .capabilities-title:first-of-type {
+  margin-top: 0;
 }
 
 body.dark .tab-bar {

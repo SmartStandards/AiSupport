@@ -88,12 +88,14 @@
             <option value="GitHub">GitHub</option>
           </select>
           <input id="txtSkillSourceLocation" type="text" placeholder="Local or UNC path (for example C:\skills\my-skill\SKILL.md)">
+          <button id="btnSkillSourceBrowse" type="button" title="Browse the file system of the server">Browse...</button>
           <input id="txtSkillSourceCredential" type="password" placeholder="PAT/token (optional)" autocomplete="off" hidden>
           <button id="btnSkillSourceAdd">Add</button>
         </div>
         <div class="capabilities-title">Location of 'global-system-preferences'</div>
         <div class="source-add-row">
           <input id="txtSystemPreferencesLocation" type="text" placeholder="(default location)">
+          <button id="btnSystemPreferencesBrowse" type="button" title="Browse the file system of the server">Browse...</button>
           <button id="btnSystemPreferencesSet">Apply</button>
         </div>
       </div>
@@ -102,17 +104,6 @@
         <div id="toolSourcesUnavailable" class="muted small" hidden>The host does not provide tool source management.</div>
         <div class="muted small">Global default levels of the tool sources (changeable per chat in the chat details). Changes are applied immediately.</div>
         <div id="toolSourceList" class="source-list"></div>
-        <div id="toolSettingsEditor" class="tool-settings-editor" hidden>
-          <div class="capabilities-title">Settings of <span id="toolSettingsTitle"></span></div>
-          <div id="toolAllowListEditor" class="allow-list-editor" hidden></div>
-          <label id="toolSettingsRawToggle" class="source-secure" hidden><input id="chkToolSettingsRaw" type="checkbox"> Edit as JSON</label>
-          <textarea id="txtToolSettings" rows="8" spellcheck="false"></textarea>
-          <div class="source-add-row">
-            <span class="spacer"></span>
-            <button id="btnToolSettingsCancel" type="button">Cancel</button>
-            <button id="btnToolSettingsSave" type="button" class="primary">Save settings</button>
-          </div>
-        </div>
         <div class="capabilities-title">Add MCP server (Streamable HTTP)</div>
         <div class="source-add-row">
           <input id="txtMcpUrl" type="text" placeholder="https://host/mcp">
@@ -137,6 +128,56 @@
         <span class="spacer"></span>
         <button id="btnSettingsCancel">Cancel</button>
         <button id="btnSettingsSave" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toolSettingsEditor" class="dialog-backdrop" hidden>
+    <div class="dialog wide tool-settings-editor">
+      <h2>Settings of <span id="toolSettingsTitle"></span></h2>
+      <div id="toolEndpointSection" hidden>
+        <div class="capabilities-title">Endpoint</div>
+        <div class="source-add-row">
+          <input id="txtToolLocation" type="text" placeholder="https://server/path">
+        </div>
+      </div>
+      <div id="toolCredentialSection" hidden>
+        <div class="capabilities-title">Token</div>
+        <div class="source-add-row">
+          <span id="toolCredentialState" class="muted small tool-credential-state"></span>
+          <button id="btnToolCredential" type="button" title="Set, replace or (with an empty value) remove the token of this source">Set token...</button>
+        </div>
+      </div>
+      <div class="capabilities-title">Additional description (optional)</div>
+      <div class="muted small">Is provided to the model: describe the purpose of this tool source and (if there are several instances) which infrastructure it points to.</div>
+      <textarea id="txtToolAdditionalDescription" rows="3" spellcheck="true" placeholder="For example: Calendar of the sales team (production CalDAV server) - use it for customer appointments only."></textarea>
+      <div id="toolProviderSettingsSection">
+        <div class="capabilities-title">Provider-specific settings</div>
+        <div id="toolAllowListEditor" class="allow-list-editor" hidden></div>
+        <label id="toolSettingsRawToggle" class="source-secure" hidden><input id="chkToolSettingsRaw" type="checkbox"> Edit as JSON</label>
+        <textarea id="txtToolSettings" rows="8" spellcheck="false"></textarea>
+      </div>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button id="btnToolSettingsCancel" type="button">Cancel</button>
+        <button id="btnToolSettingsSave" type="button" class="primary">Save settings</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="browseDialog" class="dialog-backdrop" hidden>
+    <div class="dialog wide">
+      <h2 id="browseDialogTitle">Select a folder</h2>
+      <div class="source-add-row">
+        <button id="btnBrowseUp" type="button" title="Parent folder">&#x2191;</button>
+        <input id="txtBrowsePath" type="text" placeholder="(drives)">
+        <button id="btnBrowseGo" type="button">Go</button>
+      </div>
+      <div id="browseList" class="browse-list"></div>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button id="btnBrowseCancel" type="button">Cancel</button>
+        <button id="btnBrowseSelectFolder" type="button" class="primary">Select this folder</button>
       </div>
     </div>
   </div>

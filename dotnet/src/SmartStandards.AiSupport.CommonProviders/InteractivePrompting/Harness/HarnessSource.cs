@@ -18,6 +18,8 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
 
     private readonly bool _IsFixed;
 
+    private readonly string _AdditionalDescription;
+
     /// <summary>
     /// Creates a source descriptor.
     /// </summary>
@@ -26,7 +28,21 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     /// <param name="displayName">Name shown in the UI and within control messages.</param>
     /// <param name="defaultLevel">Global default level ('SkillSourceLevels' or 'ToolSourceLevels').</param>
     /// <param name="isFixed">True if the level cannot be changed (for example built-in skills).</param>
-    public HarnessSource(string sourceId, bool isToolSource, string displayName, string defaultLevel, bool isFixed) {
+    public HarnessSource(string sourceId, bool isToolSource, string displayName, string defaultLevel, bool isFixed)
+      : this(sourceId, isToolSource, displayName, defaultLevel, isFixed, null) {
+    }
+
+    /// <summary>
+    /// Creates a source descriptor including an additional (user-maintained) description, which explains the
+    /// purpose of the source to the model (for example which infrastructure a tool instance points to).
+    /// </summary>
+    /// <param name="sourceId">Stable id of the source (also used as key for per-chat overrides).</param>
+    /// <param name="isToolSource">True for a tool source ('ToolSourceLevels'), false for a skill source ('SkillSourceLevels').</param>
+    /// <param name="displayName">Name shown in the UI and within control messages.</param>
+    /// <param name="defaultLevel">Global default level ('SkillSourceLevels' or 'ToolSourceLevels').</param>
+    /// <param name="isFixed">True if the level cannot be changed (for example built-in skills).</param>
+    /// <param name="additionalDescription">Additional description for the model (null or empty = none).</param>
+    public HarnessSource(string sourceId, bool isToolSource, string displayName, string defaultLevel, bool isFixed, string additionalDescription) {
 
       if (string.IsNullOrWhiteSpace(sourceId)) {
         throw new ArgumentNullException(nameof(sourceId));
@@ -46,6 +62,13 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       }
       else {
         _DisplayName = displayName.Trim();
+      }
+
+      if (string.IsNullOrWhiteSpace(additionalDescription)) {
+        _AdditionalDescription = null;
+      }
+      else {
+        _AdditionalDescription = additionalDescription.Trim();
       }
 
     }
@@ -77,6 +100,15 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
     public bool IsFixed {
       get {
         return _IsFixed;
+      }
+    }
+
+    /// <summary>
+    /// Additional description for the model (null if none).
+    /// </summary>
+    public string AdditionalDescription {
+      get {
+        return _AdditionalDescription;
       }
     }
 

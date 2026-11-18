@@ -105,6 +105,16 @@ namespace AI.SmartStandards.InteractivePrompting {
     void SetSkillSourceDisplayName(string sourceId, string displayName);
 
     /// <summary>
+    /// Lists the entries of a (server-side) directory to support a browse dialog for 'File' and 'Folder' skill sources.
+    /// An empty path returns the root entries (drives / file system root). Only directories and (if 'includeFiles')
+    /// '.md' files are returned. Inaccessible entries are skipped.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    FileSystemEntryInfo[] BrowseFileSystem(string path, bool includeFiles);
+
+    /// <summary>
     /// Returns all tool sources (built-in tool providers first, then MCP servers and contract interfaces).
     /// Sources whose tools could not be created are flagged (never removed).
     /// </summary>
@@ -166,6 +176,24 @@ namespace AI.SmartStandards.InteractivePrompting {
     void SetToolSourceCredential(string sourceId, string credential);
 
     /// <summary>
+    /// Changes the endpoint URL of a tool source which is bound to an URL ('Mcp' or 'ContractInterface').
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    void SetToolSourceLocation(string sourceId, string url);
+
+    /// <summary>
+    /// Sets the (optional) additional description of a tool source, which is provided to the model to clarify
+    /// the purpose of the source (or - if there are several instances - which infrastructure it points to).
+    /// Null or empty removes the description.
+    /// </summary>
+#if NET_FX
+    [OperationContract(), WebInvoke(Method = "POST")]
+#endif
+    void SetToolSourceAdditionalDescription(string sourceId, string additionalDescription);
+
+    /// <summary>
     /// Returns the self-contained HTML page of the settings detail tab of a tool source or null
     /// (the UI shows a plain JSON editor for the settings object then).
     /// </summary>
@@ -190,6 +218,44 @@ namespace AI.SmartStandards.InteractivePrompting {
     [OperationContract(), WebInvoke(Method = "POST")]
 #endif
     void SaveToolProviderSettings(string sourceId, string settingsJson);
+
+  }
+
+  /// <summary>
+  /// An entry of a directory listing (see 'BrowseFileSystem').
+  /// </summary>
+  public class FileSystemEntryInfo {
+
+    private string _Name;
+    private string _FullName;
+    private bool _IsDirectory;
+
+    public string Name {
+      get {
+        return _Name;
+      }
+      set {
+        _Name = value;
+      }
+    }
+
+    public string FullName {
+      get {
+        return _FullName;
+      }
+      set {
+        _FullName = value;
+      }
+    }
+
+    public bool IsDirectory {
+      get {
+        return _IsDirectory;
+      }
+      set {
+        _IsDirectory = value;
+      }
+    }
 
   }
 
@@ -235,6 +301,7 @@ namespace AI.SmartStandards.InteractivePrompting {
     private string[] _ToolNames = new string[0];
     private bool _IsReferenceBroken;
     private string _BrokenReason;
+    private string _AdditionalDescription;
 
     public string SourceId {
       get {
@@ -404,6 +471,19 @@ namespace AI.SmartStandards.InteractivePrompting {
       }
       set {
         _BrokenReason = value;
+      }
+    }
+
+    /// <summary>
+    /// Optional additional description which is provided to the model (purpose / infrastructure of this source
+    /// instance). Null if not maintained.
+    /// </summary>
+    public string AdditionalDescription {
+      get {
+        return _AdditionalDescription;
+      }
+      set {
+        _AdditionalDescription = value;
       }
     }
 

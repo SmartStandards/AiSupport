@@ -11,7 +11,7 @@
   const skillLevels = ["Hidden", "OnDemand", "InitializeAtStart"];
   const skillLevelNames = { Hidden: "Hidden", OnDemand: "On demand", InitializeAtStart: "Initialize at start" };
   const toolLevels = ["Hidden", "RequiresConfirmation", "NoConfirmation"];
-  const toolLevelNames = { Hidden: "Hidden", RequiresConfirmation: "Requires confirmation", NoConfirmation: "No confirmation" };
+  const toolLevelNames = { Hidden: "Hidden", RequiresConfirmation: "Requires confirmation", NoConfirmation: "Always allowed (without confirmation)" };
   const initialWaitSeconds = 2;
   const pollIntervalMs = 1000;
 
@@ -1095,20 +1095,20 @@
       });
       row.appendChild(select);
 
-      if (!s.isFixed) {
-        const rename = document.createElement("button");
-        rename.type = "button";
-        rename.className = "small-button";
-        rename.textContent = "\u270E";
-        rename.title = "Change the label of this source (empty = default label)";
-        rename.addEventListener("click", () => {
-          const value = prompt("Label of the skill source (empty = default):", s.displayName || "");
-          if (value !== null) {
-            runSkillSourceAction("SetSkillSourceDisplayName", { sourceId: s.sourceId, displayName: value });
-          }
-        });
-        row.appendChild(rename);
-      }
+      // the rename button is always rendered (disabled for built-in sources) to keep the columns aligned
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.className = "small-button";
+      rename.textContent = "\u270E";
+      rename.title = "Change the label of this source (empty = default label)";
+      rename.disabled = !!s.isFixed;
+      rename.addEventListener("click", () => {
+        const value = prompt("Label of the skill source (empty = default):", s.displayName || "");
+        if (value !== null) {
+          runSkillSourceAction("SetSkillSourceDisplayName", { sourceId: s.sourceId, displayName: value });
+        }
+      });
+      row.appendChild(rename);
 
       const secure = document.createElement("label");
       secure.className = "source-secure";
@@ -1242,6 +1242,9 @@
       const tools = Array.isArray(s.toolNames) ? s.toolNames : [];
       title.textContent = (s.isReferenceBroken ? "\u26A0 " : "") + (s.displayName || s.sourceId);
       title.title = (s.kind ? "[" + s.kind + "] " : "") + (s.location ? s.location + "\n" : "") + tools.join(", ") + (s.brokenReason ? "\n" + s.brokenReason : "");
+      if (s.additionalDescription) {
+        title.title += "\n\n" + s.additionalDescription;
+      }
       row.appendChild(title);
 
       const meta = document.createElement("span");
@@ -1263,29 +1266,12 @@
       select.addEventListener("change", () => runToolSourceAction("SetToolSourceLevel", { sourceId: s.sourceId, level: select.value }));
       row.appendChild(select);
 
-      if (s.supportsCredential) {
-        const credential = document.createElement("button");
-        credential.type = "button";
-        credential.className = "small-button";
-        credential.textContent = s.hasCredentials ? "Token \u2713" : "Token";
-        credential.title = "Set or remove the token of this source";
-        credential.addEventListener("click", () => {
-          const value = prompt("Token for '" + (s.displayName || s.sourceId) + "' (empty = remove):", "");
-          if (value !== null) {
-            runToolSourceAction("SetToolSourceCredential", { sourceId: s.sourceId, credential: value });
-          }
-        });
-        row.appendChild(credential);
-      }
-
-      if (s.hasSettings) {
-        const settings = document.createElement("button");
-        settings.type = "button";
-        settings.className = "small-button";
-        settings.textContent = "Settings";
-        settings.addEventListener("click", () => openToolSettings(s));
-        row.appendChild(settings);
-      }
+      const settings = document.createElement("button");
+      settings.type = "button";
+      settings.className = "small-button";
+      settings.textContent = "Settings";
+      settings.addEventListener("click", () => openToolSettings(s));
+      row.appendChild(settings);
 
       if (!s.isFixed) {
         const remove = document.createElement("button");
@@ -1325,9 +1311,40 @@
     renderToolSourceList();
   }
 
+  function isUrlBoundToolSource(source) {
+    return source.kind === "Mcp" || source.kind === "ContractInterface";
+  }
+
+  function renderToolCredentialState(hasCredentials) {
+    if (hasCredentials) {
+      el("toolCredentialState").textContent = "\u2713 A token is deposited (never displayed).";
+    } else {
+      el("toolCredentialState").textContent = "(no token)";
+    }
+  }
+
+  async function setToolCredentialFromSettings() {
+    const sourceId = el("toolSettingsEditor").dataset.sourceId;
+    const value = prompt("Token for '" + el("toolSettingsEditor").dataset.displayName + "' (empty = remove):", "");
+    if (value === null) {
+      return;
+    }
+    try {
+      await call(extensionsUrl, "SetToolSourceCredential", { sourceId: sourceId, credential: value });
+      renderToolCredentialState(value.trim().length > 0);
+    } catch (e) {
+      alert(e.message || e);
+    }
+    await loadToolSources();
+    renderToolSourceList();
+  }
+
   async function openToolSettings(source) {
     try {
-      const json = await call(extensionsUrl, "GetToolProviderSettings", { sourceId: source.sourceId });
+      let json = "{}";
+      if (source.hasSettings) {
+        json = await call(extensionsUrl, "GetToolProviderSettings", { sourceId: source.sourceId });
+      }
       let pretty = json || "{}";
       let parsed = null;
       try {
@@ -1340,6 +1357,18 @@
       el("toolSettingsTitle").textContent = source.displayName || source.sourceId;
       el("txtToolSettings").value = pretty;
       el("toolSettingsEditor").dataset.sourceId = source.sourceId;
+      el("toolSettingsEditor").dataset.hasSettings = source.hasSettings ? "true" : "false";
+      el("txtToolAdditionalDescription").value = source.additionalDescription || "";
+      el("toolProviderSettingsSection").hidden = !source.hasSettings;
+
+      const hasEndpoint = isUrlBoundToolSource(source);
+      el("toolEndpointSection").hidden = !hasEndpoint;
+      el("txtToolLocation").value = source.location || "";
+      el("toolSettingsEditor").dataset.location = source.location || "";
+      el("toolSettingsEditor").dataset.hasEndpoint = hasEndpoint ? "true" : "false";
+      el("toolCredentialSection").hidden = !source.supportsCredential;
+      el("toolSettingsEditor").dataset.displayName = source.displayName || source.sourceId;
+      renderToolCredentialState(!!source.hasCredentials);
 
       const hasAllowLists = !!parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
         allowListDefinitions.some((d) => Array.isArray(parsed[d.key]));
@@ -1511,12 +1540,22 @@
 
   async function saveToolSettings() {
     const sourceId = el("toolSettingsEditor").dataset.sourceId;
+    const additionalDescription = el("txtToolAdditionalDescription").value.trim();
     try {
-      let settingsJson = el("txtToolSettings").value;
-      if (!el("toolAllowListEditor").hidden) {
-        settingsJson = JSON.stringify(collectAllowListSettings());
+      await call(extensionsUrl, "SetToolSourceAdditionalDescription", { sourceId: sourceId, additionalDescription: additionalDescription });
+      if (el("toolSettingsEditor").dataset.hasEndpoint === "true") {
+        const location = el("txtToolLocation").value.trim();
+        if (location !== el("toolSettingsEditor").dataset.location) {
+          await call(extensionsUrl, "SetToolSourceLocation", { sourceId: sourceId, url: location });
+        }
       }
-      await call(extensionsUrl, "SaveToolProviderSettings", { sourceId: sourceId, settingsJson: settingsJson });
+      if (el("toolSettingsEditor").dataset.hasSettings === "true") {
+        let settingsJson = el("txtToolSettings").value;
+        if (!el("toolAllowListEditor").hidden) {
+          settingsJson = JSON.stringify(collectAllowListSettings());
+        }
+        await call(extensionsUrl, "SaveToolProviderSettings", { sourceId: sourceId, settingsJson: settingsJson });
+      }
       el("toolSettingsEditor").hidden = true;
       await loadToolSources();
       renderToolSourceList();
@@ -1621,6 +1660,106 @@
     };
     el("txtSkillSourceLocation").placeholder = placeholders[kind] || "";
     el("txtSkillSourceCredential").hidden = !isRemoteSkillSourceKind(kind);
+    el("btnSkillSourceBrowse").hidden = isRemoteSkillSourceKind(kind);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Browse dialog (server-side file system, used for 'File' and 'Folder' skill sources)
+
+  const browseState = { path: "", selectFiles: false, targetInputId: null };
+
+  function openBrowseDialog(targetInputId, selectFiles) {
+    browseState.targetInputId = targetInputId;
+    browseState.selectFiles = selectFiles;
+    el("browseDialogTitle").textContent = selectFiles ? "Select a skill file" : "Select a folder";
+    el("btnBrowseSelectFolder").hidden = selectFiles;
+
+    let startPath = el(targetInputId).value.trim();
+    if (/\.md$/i.test(startPath)) {
+      startPath = getParentPath(startPath);
+    }
+
+    el("browseDialog").hidden = false;
+    navigateBrowse(startPath);
+  }
+
+  function getParentPath(path) {
+    const trimmed = path.replace(/[\\/]+$/, "");
+    const index = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+    if (index < 0) {
+      return "";
+    }
+    if (index === 0) {
+      return trimmed.length > 1 ? "/" : "";
+    }
+    const parent = trimmed.substring(0, index);
+    if (/^[A-Za-z]:$/.test(parent)) {
+      return parent + "\\";
+    }
+    if (/^\\\\[^\\]*$/.test(parent)) {
+      return "";
+    }
+    return parent;
+  }
+
+  async function navigateBrowse(path) {
+    let entries;
+
+    try {
+      entries = await call(extensionsUrl, "BrowseFileSystem", { path: path, includeFiles: browseState.selectFiles });
+    } catch (e) {
+      alert(e.message || e);
+      if (el("browseList").childElementCount > 0) {
+        el("txtBrowsePath").value = browseState.path;
+        return;
+      }
+      path = "";
+      try {
+        entries = await call(extensionsUrl, "BrowseFileSystem", { path: "", includeFiles: false });
+      } catch (e2) {
+        entries = [];
+      }
+    }
+
+    browseState.path = path;
+    el("txtBrowsePath").value = path;
+    el("btnBrowseUp").disabled = path.length === 0;
+    el("btnBrowseSelectFolder").disabled = path.length === 0;
+
+    const list = el("browseList");
+    list.innerHTML = "";
+
+    (entries || []).forEach((entry) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "browse-entry";
+      item.textContent = (entry.isDirectory ? "\uD83D\uDCC1 " : "\uD83D\uDCC4 ") + entry.name;
+      item.title = entry.fullName;
+      item.addEventListener("click", () => {
+        if (entry.isDirectory) {
+          navigateBrowse(entry.fullName);
+        } else {
+          applyBrowseSelection(entry.fullName);
+        }
+      });
+      list.appendChild(item);
+    });
+
+    if (!entries || entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "muted small";
+      empty.textContent = "(no entries)";
+      list.appendChild(empty);
+    }
+  }
+
+  function applyBrowseSelection(fullName) {
+    el(browseState.targetInputId).value = fullName;
+    el("browseDialog").hidden = true;
+  }
+
+  function browseSkillSourceLocation() {
+    openBrowseDialog("txtSkillSourceLocation", el("selSkillSourceKind").value === "File");
   }
 
   async function setSystemPreferencesLocation() {
@@ -1900,11 +2039,26 @@
     });
     el("btnSkillSourceAdd").addEventListener("click", addSkillSource);
     el("selSkillSourceKind").addEventListener("change", updateSkillSourceAddRow);
+    el("btnSkillSourceBrowse").addEventListener("click", browseSkillSourceLocation);
+    el("btnSystemPreferencesBrowse").addEventListener("click", () => openBrowseDialog("txtSystemPreferencesLocation", true));
+    el("btnBrowseUp").addEventListener("click", () => navigateBrowse(getParentPath(browseState.path)));
+    el("btnBrowseGo").addEventListener("click", () => navigateBrowse(el("txtBrowsePath").value.trim()));
+    el("txtBrowsePath").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        navigateBrowse(el("txtBrowsePath").value.trim());
+      }
+    });
+    el("btnBrowseSelectFolder").addEventListener("click", () => applyBrowseSelection(browseState.path));
+    el("btnBrowseCancel").addEventListener("click", () => {
+      el("browseDialog").hidden = true;
+    });
     el("btnSystemPreferencesSet").addEventListener("click", setSystemPreferencesLocation);
     el("btnMcpAdd").addEventListener("click", addMcpServer);
     el("btnToolAssemblyUpload").addEventListener("click", uploadToolAssembly);
     el("btnContractRegister").addEventListener("click", registerContractInterface);
     el("btnToolSettingsSave").addEventListener("click", saveToolSettings);
+    el("btnToolCredential").addEventListener("click", setToolCredentialFromSettings);
     el("chkToolSettingsRaw").addEventListener("change", toggleToolSettingsMode);
     document.querySelectorAll("#detailsDialog .tab").forEach((button) => {
       button.addEventListener("click", () => selectDetailsTab(button.dataset.tab));

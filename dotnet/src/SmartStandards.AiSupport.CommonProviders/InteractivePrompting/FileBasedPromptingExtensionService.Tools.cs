@@ -321,6 +321,66 @@ namespace AI.SmartStandards.InteractivePrompting {
     }
 
     /// <summary>
+    /// Changes the endpoint URL of a tool source which is bound to an URL ('Mcp' or 'ContractInterface').
+    /// </summary>
+    public void SetToolSourceLocation(string sourceId, string url) {
+
+      Uri uri;
+
+      if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out uri)) {
+        throw new ArgumentException($"'{url}' is not a valid URL.", nameof(url));
+      }
+
+      if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) {
+        throw new ArgumentException("Only http(s) URLs are supported.", nameof(url));
+      }
+
+      this.UpdateToolSource(sourceId, (source) => {
+
+        if (source.Kind != ToolSourceKinds.Mcp && source.Kind != ToolSourceKinds.ContractInterface) {
+          throw new NotSupportedException($"The tool source '{sourceId}' is not bound to an URL.");
+        }
+
+        source.Location = uri.ToString();
+
+        // the display name is derived from the server name, so it has to follow the new URL
+        if (source.Kind == ToolSourceKinds.Mcp) {
+          source.DisplayName = "MCP " + uri.Host;
+        }
+        else {
+
+          string interfaceName = string.Empty;
+
+          if (source.InterfaceName != null) {
+            interfaceName = source.InterfaceName;
+          }
+
+          string shortName = interfaceName.Substring(interfaceName.LastIndexOf('.') + 1);
+          source.DisplayName = shortName + " (" + uri.Host + ")";
+        }
+
+      });
+
+    }
+
+    /// <summary>
+    /// Sets the (optional) additional description of a tool source (provided to the model). Null or empty removes it.
+    /// </summary>
+    public void SetToolSourceAdditionalDescription(string sourceId, string additionalDescription) {
+
+      string normalized = null;
+
+      if (!string.IsNullOrWhiteSpace(additionalDescription)) {
+        normalized = additionalDescription.Trim();
+      }
+
+      this.UpdateToolSource(sourceId, (source) => {
+        source.AdditionalDescription = normalized;
+      });
+
+    }
+
+    /// <summary>
     /// Returns the HTML page of the settings detail tab of a tool source or null.
     /// </summary>
     public string GetToolProviderSettingsUi(string sourceId) {
@@ -610,7 +670,7 @@ namespace AI.SmartStandards.InteractivePrompting {
         ToolSourceState state = new ToolSourceState();
         _ToolSourceStates[source.SourceId] = state;
 
-        toolbox.AddSource(new HarnessSource(source.SourceId, true, source.DisplayName, NormalizeToolLevel(source.Level), false));
+        toolbox.AddSource(new HarnessSource(source.SourceId, true, source.DisplayName, NormalizeToolLevel(source.Level), false, source.AdditionalDescription));
         _RegisteredToolSourceIds.Add(source.SourceId);
 
         if (provider == null) {
@@ -659,6 +719,7 @@ namespace AI.SmartStandards.InteractivePrompting {
       info.DisplayName = source.DisplayName;
       info.Location = source.Location;
       info.Level = NormalizeToolLevel(source.Level);
+      info.AdditionalDescription = source.AdditionalDescription;
       info.IsFixed = false;
       info.HasCredentials = (GetCredential(credentials, _ToolCredentialPrefix + source.SourceId) != null);
 
@@ -788,6 +849,7 @@ namespace AI.SmartStandards.InteractivePrompting {
       private string _SettingsJson;
       private string _AssemblyId;
       private string _InterfaceName;
+      private string _AdditionalDescription;
 
       public string SourceId {
         get {
@@ -858,6 +920,18 @@ namespace AI.SmartStandards.InteractivePrompting {
         }
         set {
           _InterfaceName = value;
+        }
+      }
+
+      /// <summary>
+      /// User-maintained description for the model (purpose / infrastructure of this source instance).
+      /// </summary>
+      public string AdditionalDescription {
+        get {
+          return _AdditionalDescription;
+        }
+        set {
+          _AdditionalDescription = value;
         }
       }
 

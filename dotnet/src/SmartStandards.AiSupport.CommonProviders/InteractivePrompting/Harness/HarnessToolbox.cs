@@ -565,7 +565,22 @@ namespace AI.SmartStandards.InteractivePrompting.Harness {
       }
 
       foreach (IHarnessTool tool in tools) {
-        definitions.Add(BuildToolDefinition(tool.Name, tool.Description, tool.ParametersJsonSchema));
+
+        string description = tool.Description;
+        string sourceId = this.GetToolSourceId(tool.Name);
+
+        if (sourceId != null) {
+
+          HarnessSource source = this.GetSource(sourceId);
+
+          //(the additional description tells the model the purpose / the infrastructure of the source instance)
+          if (source != null && source.AdditionalDescription != null) {
+            description = description + "\n(Tool source '" + source.DisplayName + "': " + source.AdditionalDescription + ")";
+          }
+
+        }
+
+        definitions.Add(BuildToolDefinition(tool.Name, description, tool.ParametersJsonSchema));
       }
 
       return definitions;

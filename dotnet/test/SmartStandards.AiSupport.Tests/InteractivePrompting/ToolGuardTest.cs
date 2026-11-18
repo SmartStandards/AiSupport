@@ -149,6 +149,52 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     }
 
+    [TestMethod()]
+    public void ExtensionService_ChangedMcpUrlUpdatesDerivedDisplayName() {
+
+      FileBasedPromptingExtensionService service = new FileBasedPromptingExtensionService(
+        Path.Combine(_TempDirectory, "extensions.json"),
+        Path.Combine(_TempDirectory, "user", "SKILL.md"),
+        Path.Combine(_TempDirectory, "system", "SKILL.md")
+      );
+
+      string sourceId = service.AddMcpServer("https://first-server/mcp", null);
+      service.SetToolSourceLocation(sourceId, "https://second-server/mcp");
+
+      ToolSourceInfo info = service.GetToolSources().Single((s) => s.SourceId == sourceId);
+      Assert.AreEqual("MCP second-server", info.DisplayName);
+      StringAssert.Contains(info.Location, "second-server");
+
+      Assert.ThrowsException<ArgumentException>(() => service.SetToolSourceLocation(sourceId, "ftp://other/"));
+
+    }
+
+    [TestMethod()]
+    public void ExtensionService_BrowseFileSystemListsFoldersAndMarkdownFiles() {
+
+      FileBasedPromptingExtensionService service = new FileBasedPromptingExtensionService(
+        Path.Combine(_TempDirectory, "extensions.json"),
+        Path.Combine(_TempDirectory, "user", "SKILL.md"),
+        Path.Combine(_TempDirectory, "system", "SKILL.md")
+      );
+
+      string browseRoot = Path.Combine(_TempDirectory, "browse");
+      Directory.CreateDirectory(Path.Combine(browseRoot, "my-skill"));
+      File.WriteAllText(Path.Combine(browseRoot, "SKILL.md"), "# Skill");
+      File.WriteAllText(Path.Combine(browseRoot, "other.txt"), "x");
+
+      FileSystemEntryInfo[] foldersOnly = service.BrowseFileSystem(browseRoot, false);
+      Assert.AreEqual(1, foldersOnly.Length);
+      Assert.IsTrue(foldersOnly[0].IsDirectory);
+
+      FileSystemEntryInfo[] withFiles = service.BrowseFileSystem(browseRoot, true);
+      Assert.AreEqual(2, withFiles.Length);
+      Assert.IsTrue(withFiles.Any((e) => !e.IsDirectory && e.Name == "SKILL.md"));
+
+      Assert.IsTrue(service.BrowseFileSystem("", false).Length > 0);
+
+    }
+
     private CheapPromptingUIBackend CreateBackend(ScriptedLLM llm, Func<string> settingsGetter, Action<string> settingsSaver) {
 
       HarnessToolbox toolbox = new HarnessToolbox();

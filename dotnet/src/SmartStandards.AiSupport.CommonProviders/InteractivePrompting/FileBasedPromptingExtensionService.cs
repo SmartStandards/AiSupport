@@ -565,6 +565,73 @@ namespace AI.SmartStandards.InteractivePrompting {
 
     }
 
+    /// <summary>
+    /// Lists the entries of a (server-side) directory (empty path = root entries) for the browse dialog.
+    /// </summary>
+    public FileSystemEntryInfo[] BrowseFileSystem(string path, bool includeFiles) {
+
+      List<FileSystemEntryInfo> result = new List<FileSystemEntryInfo>();
+
+      if (string.IsNullOrWhiteSpace(path)) {
+
+        foreach (DriveInfo drive in DriveInfo.GetDrives()) {
+
+          if (!drive.IsReady) {
+            continue;
+          }
+
+          FileSystemEntryInfo entry = new FileSystemEntryInfo();
+          entry.Name = drive.Name;
+          entry.FullName = drive.RootDirectory.FullName;
+          entry.IsDirectory = true;
+          result.Add(entry);
+        }
+
+        return result.ToArray();
+      }
+
+      DirectoryInfo directory = new DirectoryInfo(path.Trim());
+
+      if (!directory.Exists) {
+        throw new DirectoryNotFoundException($"The directory '{path}' does not exist or is not accessible.");
+      }
+
+      try {
+
+        foreach (DirectoryInfo subDirectory in directory.GetDirectories().OrderBy((d) => d.Name, StringComparer.OrdinalIgnoreCase)) {
+
+          if ((subDirectory.Attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) {
+            continue;
+          }
+
+          FileSystemEntryInfo entry = new FileSystemEntryInfo();
+          entry.Name = subDirectory.Name;
+          entry.FullName = subDirectory.FullName;
+          entry.IsDirectory = true;
+          result.Add(entry);
+        }
+
+        if (includeFiles) {
+
+          foreach (FileInfo file in directory.GetFiles("*.md").OrderBy((f) => f.Name, StringComparer.OrdinalIgnoreCase)) {
+            FileSystemEntryInfo entry = new FileSystemEntryInfo();
+            entry.Name = file.Name;
+            entry.FullName = file.FullName;
+            entry.IsDirectory = false;
+            result.Add(entry);
+          }
+
+        }
+
+      }
+      catch (UnauthorizedAccessException ex) {
+        DevLogger.LogError(ex);
+        throw new UnauthorizedAccessException($"Access to the directory '{path}' is denied.");
+      }
+
+      return result.ToArray();
+    }
+
     #endregion
 
     #region " Remote sources "

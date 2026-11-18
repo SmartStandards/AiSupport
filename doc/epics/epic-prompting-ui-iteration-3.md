@@ -97,6 +97,57 @@ Ids are working ids of this epic.
 | CLS-3 | Below the title, the last activity is shown small and gray: relative (`20 min ago`, `1 h ago`) for recent activity, the **time** for older activity of today, the **date** before today. Proposal for the thresholds: < 1 min `just now`, < 60 min `N min ago`, < 3 h `N h ago`, otherwise today `HH:mm`, otherwise the date. |
 | CLS-4 | Chats that are **currently interacting with the AI** (running turn, including waiting for tool results) show an **animated busy indicator** (rotating blue donut) in the chat list. Waiting for a user approval/answer is not "active" in this sense and keeps the existing marker. |
 
+### 2.6 OOB tool source: access to the chat environment
+
+A built-in (out-of-the-box, fixed) tool source **"Chat environment"** gives the model access to the chat application
+itself. All its tools run **without confirmation by default** (default level "Always allowed (without
+confirmation)"); like every source, the level can be changed in the main settings.
+
+| Id | Feature |
+|---|---|
+| ENV-1 | **List the chat history:** returns the chats of the current user/profile (id, name, last activity), respecting the isolation rules of PRF-11/AUTH-4. |
+| ENV-2 | **Read a chat from the history:** returns the message history of a chat (by id) of the current user/profile. |
+| ENV-3 | **Switch the theme permanently** (dark mode / light mode); the change is persisted like a change in the settings dialog. |
+| ENV-4 | **Rename the current chat.** The tool description states that it is **preferred to call it once, immediately after the first prompt of a new session** (so that new chats get a meaningful name automatically). |
+| ENV-5 | Default level of the source: no confirmation (ENV-1..4). |
+
+### 2.7 User levels (roles)
+
+Three user levels restrict what a user may do in the UI **and** server-side (enforcement in the services, the UI only
+reflects the rights; same principle as AUTH-2).
+
+| Id | Capability | 1 - User | 2 - Power user | 3 - Admin |
+|---|---|---|---|---|
+| ROL-1 | Start, delete and navigate chats | yes | yes | yes |
+| ROL-2 | Switch provider/model of a chat | **no** (always the default provider) | yes | yes |
+| ROL-3 | Chat details dialog | **read-only** (no enabling/removing of tools/skills) | full (switch model, load/unload tools and skills) | full |
+| ROL-4 | Compress a chat | yes | yes | yes |
+| ROL-5 | Change the user instructions | yes | yes | yes |
+| ROL-6 | Settings dialog (defaults) | **disabled** (except the user instructions) | **no changes of defaults** | yes |
+| ROL-7 | Add new tools and sources | no | **no** | yes |
+| ROL-8 | Change the system prompt (system preferences) | no | **no** | yes |
+| ROL-9 | Everything that is possible today | no | no | yes (= current behavior) |
+| ROL-10 | Maintain the provider-specific settings of a tool source (for example the allow-list of the file system tools, see TOOL-ALLOW-LIST below) | no | **no** | yes |
+| ROL-11 | Use tools of a source which the admin has set to "hidden" | **no** | **no** | (admin decides) |
+| ROL-12 | Use tools of a non-hidden source (within the per-chat level of ROL-3) | yes (default levels only) | yes (may load/unload purposefully) | yes |
+| ROL-13 | Browse the server file system (browse dialog for skill/tool paths) | no | no | yes |
+
+Notes:
+
+- The admin level corresponds to the current behavior (no restriction).
+- In ASP.NET Core hosting, the level is derived from the access token (relation to AUTH-1/2, claim convention Q8);
+	in the desktop client the local user is admin by default.
+- Guard requests: "Allow permanently" changes a global allow-list and is therefore an admin operation (AUTH-3);
+	whether power users may use per-chat "Allow always" follows ROL-3 (full chat details).
+- **Two lines of defense (TOOL-ALLOW-LIST):** the visibility of a tool source ("hidden" = admin's last word, ROL-11) is
+	the first line; the provider-internal settings (for example the allow-list of directories with access mode of the
+	file system tools) are the second line. Both are part of the tool settings and therefore maintained by the admin
+	only (ROL-10). A power user may use the tools purposefully (ROL-12), but can never extend what the second line
+	permits. This makes it legitimate to release a tool source like the file system tools **globally** (even without
+	confirmation) as long as the admin restricts it to dedicated directories (for example a shared document folder).
+- The enforcement of ROL-10/11/13 happens server-side in the extension service (setters of tool settings, credentials,
+	locations and levels as well as 'BrowseFileSystem' reject non-admin callers); the UI only hides/disables the controls.
+
 ## 3. Design (part A and C)
 
 ### 3.1 Profile storage
@@ -297,7 +348,7 @@ app.MapChatUi("/chat/support/", "support");
 
 ## 6. Requirements (candidates)
 
-AUTH-1..4, TDL-1..4, CLS-1..4) plus:
+AUTH-1..4, TDL-1..4, CLS-1..4, ENV-1..5, ROL-1..13) plus:
 
 | Id | Requirement |
 |---|---|
@@ -332,6 +383,9 @@ AUTH-1..4, TDL-1..4, CLS-1..4) plus:
 | Q6 | Tool DLLs: load from path (file lock) or from bytes (no lock, no `Location`)? | **Decided:** from path. |
 | Q7 | What does "`AddChatUi` gives the MCP endpoints for free" mean? | **Decided:** the host's own MCP facade/proxy endpoints are known to the profile by default (SRV-3). |
 | Q8 | Claim convention for AUTH-1/2 (scope names, wildcard syntax) in AuthTokenHandling. | Open, to be clarified in the part B discussion. |
+| Q9 | User levels (ROL-*): is the level global per user or per profile (relation to AUTH-1/2)? | Open. |
+| Q10 | May a user (level 1) read foreign chats via ENV-1/2? | **Decided by PRF-11/AUTH-4:** no, the tools only see the chats of the current user/profile. |
+| Q11 | Who maintains the detail settings of a tool source (for example the directory allow-list of the file system tools)? | **Decided:** admin only (ROL-10). Hidden sources are the admin's last word (ROL-11); the provider settings are the internal second line of defense which power users cannot extend. Releasing the file system tools globally is legitimate if restricted to dedicated directories. |
 
 ## 9. Work packages
 
@@ -342,6 +396,8 @@ AUTH-1..4, TDL-1..4, CLS-1..4) plus:
 | 3 | `HarnessProfileRuntime` / `HarnessProfileManager`, `ChatSession.ProfileId` and `ChatSession.OwnerId`, (profile, user) filtering in the session store, per-chat runtime resolution in `CheapPromptingUIBackend` |
 | 4 | UI: settings tab "Profiles" (last position), active profile in title, reload after switch, provider combo box on profile start (PRF-12) |
 | 4a | UI chat list: context menu (CLS-1), sort by last activity and relative/time/date subtitle (CLS-2/3), animated busy indicator for active chats (CLS-4) |
+| 4b | OOB tool source "Chat environment" (ENV-1..5): list/read chats, switch theme permanently, rename current chat (preferred once after the first prompt) |
+| 4c | User levels (ROL-1..13): level resolution, server-side enforcement in settings/extension/backend services (incl. tool settings as second line of defense and 'BrowseFileSystem'), read-only/disabled UI states |
 | 5 | Desktop client: `Main(string[] args)`, `--profile`, start dialog, remembering the choice |
 | 6 | Tool DLL references in place (`AddToolAssemblyReference`, broken-reference detection, `ToolAssemblyResolver` for `Resolving` and `AppDomain.AssemblyResolve`) |
 | 7 | MSTest coverage: copy/activate/delete rules, command-line precedence, migration, per-chat runtime capture, resolver probing |
