@@ -1,6 +1,7 @@
 using AI.SmartStandards.InteractivePrompting.Harness;
 using AI.SmartStandards.LowLevelPrompting;
 using Logging.SmartStandards.CopyForAI.SmartStandards;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -707,9 +708,43 @@ namespace AI.SmartStandards.InteractivePrompting {
         }
 
         session.ToolAuditLog = log.ToArray();
+
+        //remember which skills were really loaded into the context of this chat
+        string consumedSkill = GetLoadedSkillName(execution);
+
+        if (consumedSkill != null && !session.ConsumedSkills.Contains(consumedSkill, StringComparer.OrdinalIgnoreCase)) {
+          session.ConsumedSkills = session.ConsumedSkills.Concat(new string[] { consumedSkill }).ToArray();
+        }
+
         _Store.SaveSession(session);
       }
 
+    }
+
+    /// <summary>
+    /// Returns the name of the skill which was successfully loaded by the given execution (or null).
+    /// </summary>
+    private static string GetLoadedSkillName(HarnessToolExecution execution) {
+
+      if (!execution.Success || !string.Equals(execution.Call.Name, HarnessToolbox.LoadSkillToolName, StringComparison.OrdinalIgnoreCase)) {
+        return null;
+      }
+
+      if (execution.Call.Arguments == null || execution.Call.Arguments["name"] == null) {
+        return null;
+      }
+
+      if (execution.Call.Arguments["name"].Type != JTokenType.String) {
+        return null;
+      }
+
+      string skillName = ((string)execution.Call.Arguments["name"]).Trim();
+
+      if (skillName.Length == 0) {
+        return null;
+      }
+
+      return skillName;
     }
 
     /// <summary>
@@ -1403,6 +1438,17 @@ namespace AI.SmartStandards.InteractivePrompting {
             .Where((s) => string.Equals(_Toolbox.GetSkillSourceId(s.Name), source.SourceId, StringComparison.OrdinalIgnoreCase))
             .Select((s) => s.Name)
             .ToArray();
+
+          if (string.Equals(state.EffectiveLevel, SkillSourceLevels.InitializeAtStart, StringComparison.OrdinalIgnoreCase)) {
+            //all skills of the source are pushed into the context
+            state.ConsumedItemNames = state.ItemNames;
+          }
+          else {
+            state.ConsumedItemNames = state.ItemNames
+              .Where((name) => session.ConsumedSkills.Contains(name, StringComparer.OrdinalIgnoreCase))
+              .ToArray();
+          }
+
         }
 
         states.Add(state);

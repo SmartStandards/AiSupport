@@ -467,6 +467,20 @@ namespace AI.SmartStandards.InteractivePrompting {
     private bool _IsFixed;
     private string[] _ItemNames;
     private bool _IsApprovedForChat;
+    private string[] _ConsumedItemNames;
+
+    /// <summary>
+    /// Only for skill sources: names of the skills of this source which are part of the chat context
+    /// (loaded via 'load_skill' or pushed via level 'InitializeAtStart'). Null/empty = nothing consumed.
+    /// </summary>
+    public string[] ConsumedItemNames {
+      get {
+        return _ConsumedItemNames;
+      }
+      set {
+        _ConsumedItemNames = value;
+      }
+    }
 
     /// <summary>
     /// Only for tool sources: true if the user answered a confirmation with 'AllowForChat',

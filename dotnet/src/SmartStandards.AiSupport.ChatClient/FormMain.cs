@@ -18,7 +18,7 @@ namespace AI.SmartStandards.ChatClient {
       _WebView.Dock = DockStyle.Fill;
       _WebView.DefaultBackgroundColor = Color.White;
 
-      this.Text = "SmartStandards - Prompting UI";
+      this.Text = "Prompting UI";
       this.ClientSize = new Size(1100, 760);
       this.MinimumSize = new Size(640, 400);
       this.StartPosition = FormStartPosition.CenterScreen;

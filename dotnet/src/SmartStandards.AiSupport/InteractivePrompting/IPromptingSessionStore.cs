@@ -80,6 +80,7 @@ namespace AI.SmartStandards.InteractivePrompting {
     private Dictionary<string, string> _ToolLevelOverrides = new Dictionary<string, string>();
     private string[] _ChatApprovals = new string[0];
     private ToolAuditEntry[] _ToolAuditLog = new ToolAuditEntry[0];
+    private string[] _ConsumedSkills = new string[0];
 
     public string Id {
       get {
@@ -259,6 +260,18 @@ namespace AI.SmartStandards.InteractivePrompting {
     }
 
     /// <summary>
+    /// Names of the skills which were loaded into the context of this chat (via 'load_skill').
+    /// </summary>
+    public string[] ConsumedSkills {
+      get {
+        return _ConsumedSkills;
+      }
+      set {
+        _ConsumedSkills = value;
+      }
+    }
+
+    /// <summary>
     /// Replaces null values (for example from session files written before Iteration 2) with empty defaults.
     /// </summary>
     public void NormalizeAfterLoad() {
@@ -281,6 +294,10 @@ namespace AI.SmartStandards.InteractivePrompting {
 
       if (_ToolAuditLog == null) {
         _ToolAuditLog = new ToolAuditEntry[0];
+      }
+
+      if (_ConsumedSkills == null) {
+        _ConsumedSkills = new string[0];
       }
 
     }

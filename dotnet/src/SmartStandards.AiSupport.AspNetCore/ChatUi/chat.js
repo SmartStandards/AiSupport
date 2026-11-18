@@ -701,7 +701,8 @@
       renderChatSources("detailsSkillSources", "detailsSkillSourcesSection", state.details.skillSources, false);
       renderChatSources("detailsToolSources", "detailsToolSourcesSection", state.details.toolSources, true);
       el("detailsSecurityEmpty").hidden = !(el("detailsSkillSourcesSection").hidden && el("detailsToolSourcesSection").hidden);
-      updateSkillLevelWarning("detailsSkillSources", "detailsLevelWarning");
+      el("detailsLevelWarning").hidden = true;
+      state.detailsSourcesChanged = false;
 
       fillAuditFilter();
       renderAuditLog();
@@ -717,6 +718,11 @@
   function closeDetails() {
     el("detailsDialog").hidden = true;
     state.details = null;
+    if (state.detailsSourcesChanged) {
+      // show the control messages of the source changes
+      state.detailsSourcesChanged = false;
+      openChat(state.chatId, el("chatTitle").textContent);
+    }
   }
 
   function selectDetailsTab(tabId) {
@@ -747,12 +753,7 @@
       if (providerName !== details.providerName || model !== (details.model || "")) {
         await call(backendUrl, "SetChatProvider", { chatId: state.chatId, providerName: providerName, model: model });
       }
-      const changedSources = collectChangedChatSources(details);
-      for (let i = 0; i < changedSources.length; i++) {
-        const change = changedSources[i];
-        const methodName = change.isTool ? "SetChatToolSourceLevel" : "RaiseChatSkillSourceLevel";
-        await call(backendUrl, methodName, { chatId: state.chatId, sourceId: change.sourceId, level: change.level });
-      }
+      state.detailsSourcesChanged = false;
       closeDetails();
       // control messages (3.8) are shown immediately; the chat list shows a changed name
       await openChat(state.chatId, el("chatTitle").textContent);
@@ -761,16 +762,14 @@
     }
   }
 
-  // Renders the per-chat source levels. Skill levels can only be raised (one-way), fixed sources are read-only.
+  // Renders the per-chat state of the sources as status + status dependent action button (no level comboboxes:
+  // those exist only in the main settings). Changes are applied immediately. Fixed sources only show their status.
   // Older servers without source information leave the section hidden.
   function renderChatSources(containerId, sectionId, sources, isTool) {
     const container = el(containerId);
     container.innerHTML = "";
     const list = Array.isArray(sources) ? sources : [];
     el(sectionId).hidden = (list.length === 0);
-
-    const levels = isTool ? toolLevels : skillLevels;
-    const names = isTool ? toolLevelNames : skillLevelNames;
 
     list.forEach((s) => {
       const row = document.createElement("div");
@@ -783,28 +782,36 @@
       title.title = s.sourceId + (items.length > 0 ? ": " + items.join(", ") : "");
       row.appendChild(title);
 
-      const select = document.createElement("select");
-      select.className = "level-select";
-      select.dataset.sourceId = s.sourceId;
-      select.dataset.label = s.displayName || s.sourceId;
-      select.dataset.isTool = isTool ? "1" : "0";
-      select.dataset.original = s.effectiveLevel || "";
-      const minRank = isTool ? 0 : levels.indexOf(s.effectiveLevel);
-      levels.forEach((level, rank) => {
-        if (rank < minRank) {
-          return;
-        }
-        const option = document.createElement("option");
-        option.value = level;
-        option.textContent = names[level] + (level === s.defaultLevel ? " (default)" : "");
-        select.appendChild(option);
-      });
-      select.value = s.effectiveLevel || "";
-      select.disabled = !!s.isFixed;
-      if (!isTool) {
-        select.addEventListener("change", () => updateSkillLevelWarning(containerId, "detailsLevelWarning"));
+      const status = isTool ? getChatToolSourceStatus(s) : getChatSkillSourceStatus(s);
+
+      const statusLabel = document.createElement("span");
+      statusLabel.className = "source-status " + status.cssClass;
+      statusLabel.textContent = status.text;
+      statusLabel.title = status.hint;
+      row.appendChild(statusLabel);
+
+      if (status.consumed && status.consumed.length > 0) {
+        const info = document.createElement("button");
+        info.type = "button";
+        info.className = "small-button source-info";
+        info.textContent = "\u24D8";
+        info.title = "Show the consumed skills of this source";
+        info.addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleConsumedPopup(info, items, status.consumed);
+        });
+        row.appendChild(info);
       }
-      row.appendChild(select);
+
+      if (status.action && !s.isFixed) {
+        const action = document.createElement("button");
+        action.type = "button";
+        action.className = "small-button source-action";
+        action.textContent = status.action.text;
+        action.title = status.action.hint;
+        action.addEventListener("click", () => changeChatSourceLevel(s, isTool, status.action.level, status.action.confirmText));
+        row.appendChild(action);
+      }
 
       if (isTool) {
         // CHD-8: grey until a tool of the source was used in this chat, then blue; opens the filtered audit log
@@ -822,29 +829,141 @@
         row.appendChild(log);
       }
 
-      if (isTool && s.isApprovedForChat) {
-        const badge = document.createElement("span");
-        badge.className = "source-badge";
-        badge.textContent = "allowed for this chat ";
-        const revoke = document.createElement("button");
-        revoke.type = "button";
-        revoke.className = "small-button";
-        revoke.textContent = "Revoke";
-        revoke.title = "Ask again before the next call of this tool source";
-        revoke.addEventListener("click", async () => {
-          try {
-            await call(backendUrl, "SetChatToolSourceLevel", { chatId: state.chatId, sourceId: s.sourceId, level: s.effectiveLevel });
-            badge.remove();
-          } catch (e) {
-            alert(e.message || e);
-          }
-        });
-        badge.appendChild(revoke);
-        row.appendChild(badge);
-      }
-
       container.appendChild(row);
     });
+  }
+
+  // Status of a skill source within a chat: hidden (grey) -> announced (black) -> (partially) consumed (green).
+  function getChatSkillSourceStatus(s) {
+    const items = Array.isArray(s.itemNames) ? s.itemNames : [];
+    const consumed = Array.isArray(s.consumedItemNames) ? s.consumedItemNames : [];
+
+    if (consumed.length > 0) {
+      const partially = (consumed.length < items.length);
+      const status = {
+        text: partially ? "partially consumed" : "consumed",
+        cssClass: "status-green",
+        hint: consumed.length + " of " + items.length + " skill(s) are part of the chat context",
+        consumed: consumed,
+        action: null
+      };
+      if (partially && s.effectiveLevel !== "InitializeAtStart") {
+        status.action = buildForceSkillAction();
+      }
+      return status;
+    }
+
+    if (s.effectiveLevel === "Hidden") {
+      return {
+        text: "hidden", cssClass: "status-grey", hint: "The model does not know the skills of this source",
+        consumed: null,
+        action: { text: "Announce (make visible)", hint: "Let the model know the skills (loaded on demand)", level: "OnDemand", confirmText: null }
+      };
+    }
+
+    return {
+      text: "announced", cssClass: "status-black", hint: "The model knows the skills and can load them on demand",
+      consumed: null,
+      action: (s.effectiveLevel === "InitializeAtStart") ? null : buildForceSkillAction()
+    };
+  }
+
+  function buildForceSkillAction() {
+    return {
+      text: "Force (push to context)",
+      hint: "Load all skills of this source into the chat context",
+      level: "InitializeAtStart",
+      confirmText: "All skills of this source will be loaded into the context of this chat " +
+        "(higher token usage, cannot be undone within this chat). Continue?"
+    };
+  }
+
+  // Status of a tool source within a chat: hidden (grey) -> announced/confirmation required (black) -> always allowed (green).
+  function getChatToolSourceStatus(s) {
+    if (s.effectiveLevel === "NoConfirmation" || s.isApprovedForChat) {
+      return {
+        text: "always allowed", cssClass: "status-green", hint: "The tools of this source are executed without confirmation",
+        consumed: null,
+        action: { text: "Revoke", hint: "Ask again before the next call of this tool source", level: "RequiresConfirmation", confirmText: null }
+      };
+    }
+
+    if (s.effectiveLevel === "Hidden") {
+      return {
+        text: "hidden", cssClass: "status-grey", hint: "The model does not know the tools of this source",
+        consumed: null,
+        action: { text: "Announce (make visible)", hint: "Let the model use the tools (with confirmation)", level: "RequiresConfirmation", confirmText: null }
+      };
+    }
+
+    return {
+      text: "announced (confirmation required)", cssClass: "status-black", hint: "Every call of a tool of this source must be confirmed",
+      consumed: null,
+      action: { text: "Allow always (without confirmation)", hint: "Execute the tools of this source without asking within this chat", level: "NoConfirmation", confirmText: null }
+    };
+  }
+
+  // Applies a level change of a chat source immediately and re-renders the security tab.
+  async function changeChatSourceLevel(source, isTool, level, confirmText) {
+    if (confirmText && !confirm(confirmText)) {
+      return;
+    }
+    try {
+      const methodName = isTool ? "SetChatToolSourceLevel" : "RaiseChatSkillSourceLevel";
+      await call(backendUrl, methodName, { chatId: state.chatId, sourceId: source.sourceId, level: level });
+      state.detailsSourcesChanged = true;
+      const details = await call(backendUrl, "GetChatDetails", { chatId: state.chatId });
+      if (state.details && details) {
+        state.details.skillSources = details.skillSources;
+        state.details.toolSources = details.toolSources;
+      }
+      renderChatSources("detailsSkillSources", "detailsSkillSourcesSection", state.details.skillSources, false);
+      renderChatSources("detailsToolSources", "detailsToolSourcesSection", state.details.toolSources, true);
+    } catch (e) {
+      alert(stripUjmwFaultPrefix(e.message || e));
+    }
+  }
+
+  // Small popup next to the info icon, which lists the skills of a source and marks the consumed ones.
+  function toggleConsumedPopup(anchor, items, consumed) {
+    const existing = document.querySelector(".consumed-popup");
+    if (existing) {
+      const sameAnchor = (existing.dataset.anchorId === anchor.dataset.anchorId);
+      existing.remove();
+      if (sameAnchor) {
+        return;
+      }
+    }
+
+    if (!anchor.dataset.anchorId) {
+      anchor.dataset.anchorId = String(Date.now()) + Math.random();
+    }
+
+    const popup = document.createElement("div");
+    popup.className = "consumed-popup";
+    popup.dataset.anchorId = anchor.dataset.anchorId;
+
+    const consumedLower = consumed.map((name) => String(name).toLowerCase());
+    items.forEach((name) => {
+      const line = document.createElement("div");
+      const isConsumed = consumedLower.indexOf(String(name).toLowerCase()) >= 0;
+      line.className = isConsumed ? "status-green" : "status-black";
+      line.textContent = (isConsumed ? "\u2714 " : "\u2013 ") + name;
+      popup.appendChild(line);
+    });
+
+    const rect = anchor.getBoundingClientRect();
+    popup.style.left = Math.round(rect.left) + "px";
+    popup.style.top = Math.round(rect.bottom + 4) + "px";
+    document.body.appendChild(popup);
+
+    const close = (e) => {
+      if (!popup.contains(e.target)) {
+        popup.remove();
+        document.removeEventListener("click", close);
+      }
+    };
+    setTimeout(() => document.addEventListener("click", close), 0);
   }
 
   // Shows the SKM-6 warning as soon as a skill source is (or is about to be) set to 'Initialize at start'.
@@ -903,18 +1022,6 @@
         "<div class=\"small\">" + escapeHtml(outcome) + "</div>";
       container.appendChild(row);
     });
-  }
-
-  function collectChangedChatSources() {
-    const result = [];
-    ["detailsSkillSources", "detailsToolSources"].forEach((containerId) => {
-      el(containerId).querySelectorAll("select[data-source-id]").forEach((select) => {
-        if (!select.disabled && select.value !== select.dataset.original) {
-          result.push({ sourceId: select.dataset.sourceId, level: select.value, isTool: select.dataset.isTool === "1" });
-        }
-      });
-    });
-    return result;
   }
 
   // ---------------------------------------------------------------------------
